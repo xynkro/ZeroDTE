@@ -1,0 +1,179 @@
+// © Caspar — ZeroDTE project
+// Copy this entire file into TradingView's Pine Editor, save, "Add to chart" on SPX.
+// Designed for SPX 5-minute timeframe. ET-anchored session (regular hours).
+//@version=5
+indicator("ZeroDTE Range Predictor", shorttitle="0DTE-RP", overlay=true, max_lines_count=20, max_labels_count=50)
+
+// ==================== INPUTS ====================
+grp_session = "Session"
+session_tz       = input.string("America/New_York", "Session timezone", group=grp_session)
+obs_minutes      = input.int(15, "Observation window (minutes after open)", minval=5, maxval=60, group=grp_session)
+session_start_h  = input.int(9, "Session start hour (ET)", minval=0, maxval=23, group=grp_session)
+session_start_m  = input.int(30, "Session start minute (ET)", minval=0, maxval=59, group=grp_session)
+
+grp_regime = "Regime"
+volatile_mult    = input.float(1.5, "Volatile threshold (obs_range / ATR(14) D1)", minval=0.5, maxval=5.0, step=0.1, group=grp_regime)
+
+grp_proj = "Range projection"
+nv_range_mult    = input.float(1.5, "NON-VOLATILE: project range (× obs_range each side)", minval=0.5, maxval=5.0, step=0.1, group=grp_proj)
+v_atr_mult       = input.float(2.0, "VOLATILE: project range (× ATR(14) D1 each side)", minval=0.5, maxval=5.0, step=0.1, group=grp_proj)
+
+grp_indicators = "Reversal indicators"
+rsi_len          = input.int(14, "RSI length", minval=2, group=grp_indicators)
+rsi_long_thr     = input.int(70, "RSI overbought (call signal)", minval=50, maxval=95, group=grp_indicators)
+rsi_short_thr    = input.int(30, "RSI oversold (put signal)", minval=5, maxval=50, group=grp_indicators)
+stoch_k_len      = input.int(14, "Stoch %K length", minval=2, group=grp_indicators)
+stoch_d_len      = input.int(3, "Stoch %D length", minval=1, group=grp_indicators)
+stoch_high_thr   = input.int(80, "Stoch overbought level", minval=50, maxval=95, group=grp_indicators)
+stoch_low_thr    = input.int(20, "Stoch oversold level", minval=5, maxval=50, group=grp_indicators)
+wvf_period       = input.int(22, "Williams Vix Fix period", minval=5, group=grp_indicators)
+wvf_bb_mult      = input.float(2.0, "WVF BB multiplier (spike threshold)", minval=1.0, maxval=4.0, step=0.1, group=grp_indicators)
+near_proj_atr    = input.float(0.5, "Signal triggers when within X×ATR of projected boundary", minval=0.1, maxval=2.0, step=0.1, group=grp_indicators)
+
+grp_display = "Display"
+show_obs_range   = input.bool(true, "Show observation range box", group=grp_display)
+show_proj_lines  = input.bool(true, "Show projected high/low lines", group=grp_display)
+show_signals     = input.bool(true, "Show entry signal triangles", group=grp_display)
+show_regime_lbl  = input.bool(true, "Show regime label", group=grp_display)
+
+// ==================== TIME HELPERS ====================
+session_h = hour(time, session_tz)
+session_m = minute(time, session_tz)
+mins_since_open = (session_h - session_start_h) * 60 + (session_m - session_start_m)
+
+is_session_start = session_h == session_start_h and session_m == session_start_m
+is_obs_window    = mins_since_open >= 0 and mins_since_open < obs_minutes
+is_obs_end       = mins_since_open == obs_minutes // first bar AFTER observation period
+is_session       = mins_since_open >= 0 and mins_since_open <= 390 // 6.5h * 60 = 390
+
+// ==================== OBSERVATION RANGE ====================
+var float obs_high = na
+var float obs_low  = na
+var int   obs_session_id = na
+session_id = year(time, session_tz) * 10000 + month(time, session_tz) * 100 + dayofmonth(time, session_tz)
+
+if session_id != obs_session_id and is_session_start
+    obs_high := high
+    obs_low  := low
+    obs_session_id := session_id
+else if is_obs_window and not na(obs_high)
+    obs_high := math.max(obs_high, high)
+    obs_low  := math.min(obs_low,  low)
+
+// ==================== REGIME CLASSIFIER (at obs end) ====================
+atr_d1 = request.security(syminfo.tickerid, "D", ta.atr(14), lookahead=barmerge.lookahead_off)
+var float regime_obs_range = na
+var bool  regime_volatile  = false
+var bool  regime_locked    = false
+
+if is_obs_end and not regime_locked and not na(obs_high) and not na(atr_d1)
+    regime_obs_range := obs_high - obs_low
+    regime_volatile := (regime_obs_range / atr_d1) > volatile_mult
+    regime_locked := true
+
+// reset at session start
+if is_session_start
+    regime_locked := false
+
+// ==================== RANGE PROJECTION ====================
+var float proj_high = na
+var float proj_low  = na
+
+if is_obs_end and regime_locked
+    if regime_volatile
+        proj_high := close + v_atr_mult * atr_d1
+        proj_low  := close - v_atr_mult * atr_d1
+    else
+        proj_high := obs_high + nv_range_mult * regime_obs_range
+        proj_low  := obs_low  - nv_range_mult * regime_obs_range
+
+// ==================== INDICATORS ====================
+rsi_v = ta.rsi(close, rsi_len)
+stoch_k = ta.stoch(close, high, low, stoch_k_len)
+stoch_d = ta.sma(stoch_k, stoch_d_len)
+
+// Williams Vix Fix: spike when price falls hard from highest_close over period
+hclose_period = ta.highest(close, wvf_period)
+wvf = (hclose_period - low) / hclose_period * 100
+wvf_bb_mid = ta.sma(wvf, wvf_period)
+wvf_bb_dev = ta.stdev(wvf, wvf_period) * wvf_bb_mult
+wvf_upper  = wvf_bb_mid + wvf_bb_dev
+wvf_spike  = wvf > wvf_upper
+
+// Stoch crossovers
+stoch_cross_down_from_high = ta.crossunder(stoch_k, stoch_d) and stoch_k[1] > stoch_high_thr
+stoch_cross_up_from_low    = ta.crossover(stoch_k, stoch_d)  and stoch_k[1] < stoch_low_thr
+
+// Distance to projected boundaries
+atr_5m = ta.atr(14)
+near_upper = not na(proj_high) and (proj_high - close) <= near_proj_atr * atr_5m and (proj_high - close) >= 0
+near_lower = not na(proj_low)  and (close - proj_low)  <= near_proj_atr * atr_5m and (close - proj_low)  >= 0
+
+// ==================== ENTRY SIGNALS ====================
+sell_call_cs = is_session and not regime_volatile and rsi_v > rsi_long_thr  and stoch_cross_down_from_high and near_upper
+sell_put_cs  = is_session and not regime_volatile and rsi_v < rsi_short_thr and stoch_cross_up_from_low    and near_lower
+
+// Optional WVF confirmation strengthens the signal
+sell_call_cs_strong = sell_call_cs and wvf_spike
+sell_put_cs_strong  = sell_put_cs  and wvf_spike
+
+// One-shot per session per side (prevents repeated triggers while indicator stays extreme)
+var bool fired_call_today = false
+var bool fired_put_today  = false
+if is_session_start
+    fired_call_today := false
+    fired_put_today  := false
+
+sell_call_first = sell_call_cs and not fired_call_today
+sell_put_first  = sell_put_cs  and not fired_put_today
+if sell_call_first
+    fired_call_today := true
+if sell_put_first
+    fired_put_today := true
+
+// ==================== PLOTS ====================
+plot(show_proj_lines and not regime_volatile ? proj_high : na, "Predicted day HIGH (call CS zone)", color=color.new(color.red, 0), linewidth=2, style=plot.style_linebr)
+plot(show_proj_lines and not regime_volatile ? proj_low  : na, "Predicted day LOW (put CS zone)",   color=color.new(color.green, 0), linewidth=2, style=plot.style_linebr)
+plot(show_proj_lines and regime_volatile ? proj_high : na, "Volatile predicted HIGH", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+plot(show_proj_lines and regime_volatile ? proj_low  : na, "Volatile predicted LOW",  color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+
+// Observation range box
+bgcolor(show_obs_range and is_obs_window ? color.new(color.gray, 85) : na, title="Obs window")
+
+// Signal triangles
+plotshape(show_signals and sell_call_first, title="SELL CALL CS", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.normal, text="CALL CS")
+plotshape(show_signals and sell_put_first,  title="SELL PUT CS",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.normal, text="PUT CS")
+
+// Regime label at observation end
+var label regime_label = na
+if is_obs_end and show_regime_lbl
+    label.delete(regime_label)
+    regime_text = regime_volatile ? "VOLATILE — STAND ASIDE" : "NON-VOLATILE — RANGE TRADE"
+    regime_color = regime_volatile ? color.orange : color.green
+    regime_label := label.new(bar_index, high * 1.001, regime_text, color=regime_color, textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ==================== ALERTS ====================
+alertcondition(sell_call_first, "ZeroDTE: SELL CALL CS",
+     "ZeroDTE-RP: SELL CALL CREDIT SPREAD on {{ticker}}. RSI {{plot_0}} | price near projected high. Manual confirm + place order.")
+alertcondition(sell_put_first, "ZeroDTE: SELL PUT CS",
+     "ZeroDTE-RP: SELL PUT CREDIT SPREAD on {{ticker}}. RSI {{plot_0}} | price near projected low. Manual confirm + place order.")
+alertcondition(sell_call_cs_strong, "ZeroDTE: SELL CALL CS (WVF confirmed)",
+     "ZeroDTE-RP: STRONG sell-call signal — WVF spike confirmed. {{ticker}}.")
+alertcondition(sell_put_cs_strong, "ZeroDTE: SELL PUT CS (WVF confirmed)",
+     "ZeroDTE-RP: STRONG sell-put signal — WVF spike confirmed. {{ticker}}.")
+
+// ==================== TABLE (live diagnostics) ====================
+var table diag_tbl = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 70), border_width=1)
+if barstate.islast
+    f_show(row, label, val, col_val) =>
+        table.cell(diag_tbl, 0, row, label, text_color=color.white, text_size=size.small)
+        table.cell(diag_tbl, 1, row, val,   text_color=col_val, text_size=size.small)
+
+    regime_str = regime_locked ? (regime_volatile ? "VOLATILE" : "NON-VOL") : "(pre-obs)"
+    regime_col = not regime_locked ? color.gray : (regime_volatile ? color.orange : color.green)
+    f_show(0, "Regime", regime_str, regime_col)
+    f_show(1, "Pred HIGH", str.tostring(proj_high, format.mintick), color.red)
+    f_show(2, "Pred LOW",  str.tostring(proj_low,  format.mintick), color.green)
+    f_show(3, "RSI", str.tostring(rsi_v, "#.0"), rsi_v > rsi_long_thr ? color.red : rsi_v < rsi_short_thr ? color.green : color.white)
+    f_show(4, "Stoch %K/%D", str.tostring(stoch_k, "#.0") + " / " + str.tostring(stoch_d, "#.0"), color.white)
+    f_show(5, "WVF spike",   wvf_spike ? "YES" : "no", wvf_spike ? color.yellow : color.gray)

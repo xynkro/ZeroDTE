@@ -1,0 +1,12 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+.idea/
+backend/data/historical/*.json
+backend/data/backtest_results/*.json
+!backend/data/historical/.gitkeep
+!backend/data/backtest_results/.gitkeep

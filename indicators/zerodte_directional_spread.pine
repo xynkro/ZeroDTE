@@ -1,0 +1,229 @@
+//@version=6
+// ZeroDTE Directional Spread Tracker
+// Mirrors the live backend (directional_spread_manager.py, DIRECTIONAL_PNL_MODEL=bs):
+//   - Same entry signals as predictor.py (Stoch reversal cross + EMA10/30 trend
+//     filter + VWAP gate + prime-window/cooldown + non-volatile regime).
+//   - Strikes placed at TRUE Black-Scholes delta using intraday realized vol.
+//   - Management = high-TP / no-ladder THETA HARVEST (the honest re-validation
+//     winner): hold the spread, take profit at TP% of credit, hard loss-stop when
+//     the spread doubles, time-stop 30m before close, else settle at expiry.
+//   - Spread repriced each bar with Black-Scholes (shrinking time-to-expiry).
+// On-chart P&L is an estimate; the backend + Telegram carry the authoritative fills.
+indicator("ZeroDTE Directional Spread", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// Inputs (mirror .env)
+shortDelta = input.int(30, "Short delta", minval=5, maxval=45, step=5, group="Strategy")
+wing       = input.float(10.0, "Wing width ($)", group="Strategy")
+premMult   = input.float(1.2, "IV / realized-vol premium", group="Strategy")
+tpPct      = input.float(90.0, "Take-profit (% of credit)", group="Strategy")
+costRT     = input.float(25.0, "Round-trip cost ($/spread)", group="Strategy")
+showTable  = input.bool(true, "Show stats table", group="Display")
+showLines  = input.bool(true, "Draw strike lines", group="Display")
+
+// Time / session (ET)
+etMin     = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
+OPEN_MIN  = 570
+CLOSE_MIN = 960
+OBS_END   = OPEN_MIN + 15
+PRIME_S   = 10 * 60 + 30
+PRIME_E   = 13 * 60
+NO_NEW    = 14 * 60 + 30
+TSTOP_MIN = CLOSE_MIN - 30
+newDay    = ta.change(time("D")) != 0
+
+// Black-Scholes (tv = sigma*sqrt(T))
+ncdf(x) =>
+    t = 1.0 / (1.0 + 0.2316419 * math.abs(x))
+    dd = 0.3989422804014327 * math.exp(-x * x / 2.0)
+    p = dd * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
+    x >= 0 ? 1.0 - p : p
+
+bsCall(S, K, tv) =>
+    out = 0.0
+    if tv <= 0.0
+        out := math.max(0.0, S - K)
+    else
+        d1 = (math.log(S / K) + 0.5 * tv * tv) / tv
+        out := S * ncdf(d1) - K * ncdf(d1 - tv)
+    out
+
+bsPut(S, K, tv) =>
+    out = 0.0
+    if tv <= 0.0
+        out := math.max(0.0, K - S)
+    else
+        d1 = (math.log(S / K) + 0.5 * tv * tv) / tv
+        out := K * ncdf(-(d1 - tv)) - S * ncdf(-d1)
+    out
+
+spreadVal(isCall, S, sK, lK, tv) =>
+    isCall ? math.max(0.0, bsCall(S, sK, tv) - bsCall(S, lK, tv)) : math.max(0.0, bsPut(S, sK, tv) - bsPut(S, lK, tv))
+
+zAbs = shortDelta <= 5 ? 1.645 : shortDelta <= 10 ? 1.282 : shortDelta <= 15 ? 1.036 : shortDelta <= 20 ? 0.842 : shortDelta <= 25 ? 0.674 : shortDelta <= 30 ? 0.524 : shortDelta <= 35 ? 0.385 : 0.253
+
+// Vol + periods to expiry
+logret    = math.log(close / close[1])
+rv5       = ta.stdev(logret, 20)
+periodsRem = math.max((CLOSE_MIN - etMin) / 5.0, 0.0)
+tvNow     = rv5 * math.sqrt(periodsRem) * premMult
+
+// Indicators (match predictor.py)
+k      = ta.stoch(close, high, low, 14)
+d      = ta.sma(k, 3)
+ema10  = ta.ema(close, 10)
+ema30  = ta.ema(close, 30)
+spreadPct = (ema10 - ema30) / ema30 * 100.0
+trendUp   = spreadPct > 0.05
+trendDn   = spreadPct < -0.05
+rsi    = ta.rsi(close, 14)
+vwap   = ta.vwap(hlc3)
+wvf    = (ta.highest(close, 22) - low) / ta.highest(close, 22) * 100.0
+wvfSpike = wvf > (ta.sma(wvf, 22) + 2.0 * ta.stdev(wvf, 22))
+
+var float obsHi = na
+var float obsLo = na
+if newDay
+    obsHi := na
+    obsLo := na
+if etMin >= OPEN_MIN and etMin < OBS_END
+    obsHi := na(obsHi) ? high : math.max(obsHi, high)
+    obsLo := na(obsLo) ? low : math.min(obsLo, low)
+atrD1 = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead=barmerge.lookahead_off)
+obsRange = (not na(obsHi) and not na(obsLo)) ? obsHi - obsLo : na
+regimeVol = (not na(obsRange) and not na(atrD1) and atrD1 > 0) ? (obsRange / atrD1 > 1.5) : false
+
+inPrime = etMin >= PRIME_S and etMin <= PRIME_E
+crossDownHi = k[1] > d[1] and k < d and k[1] > 80
+crossUpLo   = k[1] < d[1] and k > d and k[1] < 20
+
+callRsi = rsi > 65
+putRsi  = rsi < 35
+nearEma = math.abs(close - ema10) / close * 100.0 < 0.30
+confCall = (callRsi ? 1 : 0) + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
+confPut  = (putRsi ? 1 : 0)  + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
+
+var int lastCall = -100
+var int lastPut  = -100
+callCoolOK = bar_index - lastCall >= 6
+putCoolOK  = bar_index - lastPut >= 6
+
+canEnter = etMin >= OBS_END and etMin < NO_NEW and not regimeVol
+callSig = canEnter and crossDownHi and not trendUp and callCoolOK and close > vwap and confCall >= 3
+putSig  = canEnter and crossUpLo  and not trendDn and putCoolOK  and close < vwap and confPut  >= 3
+
+// Open-trade state (arrays — mutable inside functions; scalars are not)
+var array<bool>  tActive = array.new<bool>()
+var array<bool>  tIsCall = array.new<bool>()
+var array<float> tShort  = array.new<float>()
+var array<float> tLong   = array.new<float>()
+var array<float> tCredit = array.new<float>()
+var array<float> tPeak   = array.new<float>()
+var array<line>  tLine   = array.new<line>()
+
+// Counters held in 1-element arrays so functions can mutate them
+var array<int>   gCnt = array.new<int>(3, 0)    // [signals, wins, losses]
+var array<float> gPnl = array.new<float>(1, 0.0)
+
+openTrade(isCall) =>
+    sK = isCall ? close * math.exp(0.5 * tvNow * tvNow + zAbs * tvNow) : close * math.exp(0.5 * tvNow * tvNow - zAbs * tvNow)
+    lK = isCall ? sK + wing : sK - wing
+    creditPS = spreadVal(isCall, close, sK, lK, tvNow)
+    if creditPS > 0.02 and periodsRem > 0
+        creditUSD = creditPS * 100.0
+        array.push(tActive, true)
+        array.push(tIsCall, isCall)
+        array.push(tShort, sK)
+        array.push(tLong, lK)
+        array.push(tCredit, creditUSD)
+        array.push(tPeak, 0.0)
+        ln = showLines ? line.new(bar_index, sK, bar_index + 12, sK, color=isCall ? color.red : color.green, width=1, style=line.style_dashed) : na
+        array.push(tLine, ln)
+        n = array.get(gCnt, 0) + 1
+        array.set(gCnt, 0, n)
+        lbl = (isCall ? "SELL CALL " : "SELL PUT ") + str.tostring(shortDelta) + "D #" + str.tostring(n) + "\n$" + str.tostring(sK, "#.0") + " cr $" + str.tostring(creditUSD, "#")
+        label.new(bar_index, isCall ? high : low, lbl, style=isCall ? label.style_label_down : label.style_label_up, color=isCall ? color.new(color.red, 20) : color.new(color.green, 20), textcolor=color.white, size=size.small)
+
+if callSig
+    openTrade(true)
+    lastCall := bar_index
+if putSig
+    openTrade(false)
+    lastPut := bar_index
+
+closeTrade(i, exitPct, isWin, reason) =>
+    creditUSD = array.get(tCredit, i)
+    pnl = creditUSD * (exitPct / 100.0) - costRT
+    array.set(gPnl, 0, array.get(gPnl, 0) + pnl)
+    array.set(gCnt, isWin ? 1 : 2, array.get(gCnt, isWin ? 1 : 2) + 1)
+    array.set(tActive, i, false)
+    ln = array.get(tLine, i)
+    if not na(ln)
+        line.set_x2(ln, bar_index)
+    isCall = array.get(tIsCall, i)
+    txt = (isWin ? "WIN " : "LOSS ") + reason + "\n" + (pnl >= 0 ? "+$" : "-$") + str.tostring(math.abs(pnl), "#")
+    label.new(bar_index, isCall ? low : high, txt, style=isCall ? label.style_label_up : label.style_label_down, color=isWin ? color.new(color.teal, 25) : color.new(color.maroon, 25), textcolor=color.white, size=size.tiny)
+
+if array.size(tActive) > 0
+    for i = 0 to array.size(tActive) - 1
+        if array.get(tActive, i)
+            isCall = array.get(tIsCall, i)
+            sK = array.get(tShort, i)
+            lK = array.get(tLong, i)
+            creditUSD = array.get(tCredit, i)
+            creditPS = creditUSD / 100.0
+            maxLossPct = (creditPS - wing) / creditPS * 100.0
+            worstPx = isCall ? high : low
+            bestPx  = isCall ? low : high
+            if etMin >= CLOSE_MIN
+                vEod = spreadVal(isCall, close, sK, lK, 0.0)
+                ep = math.max(maxLossPct, math.min(100.0, (creditPS - vEod) / creditPS * 100.0))
+                closeTrade(i, ep, ep > 0, "EOD")
+            else
+                vW = spreadVal(isCall, worstPx, sK, lK, tvNow)
+                vB = spreadVal(isCall, bestPx, sK, lK, tvNow)
+                pkW = math.max(maxLossPct, math.min(100.0, (creditPS - vW) / creditPS * 100.0))
+                pkB = math.max(maxLossPct, math.min(100.0, (creditPS - vB) / creditPS * 100.0))
+                if pkB > array.get(tPeak, i)
+                    array.set(tPeak, i, pkB)
+                breached = isCall ? worstPx >= sK : worstPx <= sK
+                if pkW <= -100.0
+                    closeTrade(i, pkW, false, breached ? "BREACH" : "STOP2x")
+                else if pkB >= tpPct
+                    closeTrade(i, tpPct, true, "TP" + str.tostring(tpPct, "#"))
+                else if etMin >= TSTOP_MIN
+                    vC = spreadVal(isCall, close, sK, lK, tvNow)
+                    ep = math.max(maxLossPct, math.min(100.0, (creditPS - vC) / creditPS * 100.0))
+                    closeTrade(i, ep, ep > 0, "T-30m")
+
+// Stats table
+var table tbl = table.new(position.top_right, 2, 8, border_width=1, frame_color=color.gray, frame_width=1)
+if showTable and barstate.islast
+    nSig = array.get(gCnt, 0)
+    nWin = array.get(gCnt, 1)
+    nLos = array.get(gCnt, 2)
+    pnlSum = array.get(gPnl, 0)
+    denom = nWin + nLos > 0 ? nWin + nLos : 1
+    wr = 100.0 * nWin / denom
+    nOpen = 0
+    if array.size(tActive) > 0
+        for i = 0 to array.size(tActive) - 1
+            nOpen += array.get(tActive, i) ? 1 : 0
+    table.cell(tbl, 0, 0, "ZeroDTE Directional", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
+    table.cell(tbl, 1, 0, "30D TP90 theta", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
+    table.cell(tbl, 0, 1, "Strategy", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 1, str.tostring(shortDelta) + "D / $" + str.tostring(wing, "#") + " / no-ladder", text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 2, "Signals", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 2, str.tostring(nSig), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 3, "Closed W / L", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 3, str.tostring(nWin) + " / " + str.tostring(nLos), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 4, "Win rate", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 4, str.tostring(wr, "#.0") + "%", text_color=wr >= 60 ? color.lime : color.orange, text_size=size.small)
+    table.cell(tbl, 0, 5, "Est P&L", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 5, (pnlSum >= 0 ? "+$" : "-$") + str.tostring(math.abs(pnlSum), "#"), text_color=pnlSum >= 0 ? color.lime : color.red, text_size=size.small)
+    table.cell(tbl, 0, 6, "Open now", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 6, str.tostring(nOpen), text_color=color.white, text_size=size.small)
+    table.cell(tbl, 0, 7, "P&L truth", text_color=color.silver, text_size=size.small)
+    table.cell(tbl, 1, 7, "backend + Telegram", text_color=color.aqua, text_size=size.small)
+
+plotshape(callSig, "Sell Call signal", shape.triangledown, location.abovebar, color.red, size=size.tiny)
+plotshape(putSig, "Sell Put signal", shape.triangleup, location.belowbar, color.green, size=size.tiny)

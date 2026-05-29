@@ -774,27 +774,30 @@ class Orchestrator:
                 # Re-fire the entry ping with management plan attached
                 if pt is not None and getattr(self, "_is_live_bar", False):
                     try:
-                        primary = next((w for w in ev.wave_strikes if w.instrument == "XSP"), None) \
-                                  or (ev.wave_strikes[0] if ev.wave_strikes else None)
-                        if primary:
-                            tg.ping_signal(
-                                side=ev.side,
-                                underlying_price=ev.underlying_price,
-                                short_strike=float(primary.short_strike),
-                                long_strike=float(primary.long_strike) if primary.long_strike else None,
-                                estimated_credit=float(primary.estimated_credit_dollars)
-                                                  if primary.estimated_credit_dollars else None,
-                                confluence_score=ev.confluence_score,
-                                confluence_max=len(ev.confluence) if ev.confluence else 5,
-                                trend=self.predictor.current_state().get("trend", "flat"),
-                                instrument=primary.instrument,
-                                pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
-                                trade_no=pt.trade_no,
-                                contracts=pt.contracts,
-                                sizing_note=sizing_note,
-                                tp_target=pt.tp_underlying_target,
-                                stop_target=pt.stop_underlying_target,
-                            )
+                        # Source alert data from the ACTUAL opened trade (pt), not
+                        # ev.wave_strikes — directional trades use SPX/30Δ/BS strikes,
+                        # which differ from the legacy XSP wave suggestion.
+                        is_dir = pt.strategy == "directional_spread"
+                        tg.ping_signal(
+                            side=pt.side,
+                            underlying_price=pt.underlying_at_signal,
+                            short_strike=float(pt.short_strike),
+                            long_strike=float(pt.long_strike) if pt.long_strike else None,
+                            estimated_credit=float(pt.estimated_credit) if pt.estimated_credit else None,
+                            confluence_score=ev.confluence_score,
+                            confluence_max=len(ev.confluence) if ev.confluence else 5,
+                            trend=self.predictor.current_state().get("trend", "flat"),
+                            instrument=pt.instrument,
+                            pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
+                            trade_no=pt.trade_no,
+                            contracts=pt.contracts,
+                            sizing_note=sizing_note,
+                            tp_target=pt.tp_underlying_target,
+                            stop_target=pt.stop_underlying_target,
+                            strategy=pt.strategy,
+                            tp_pct=settings.DIRECTIONAL_TP_TARGET if is_dir else None,
+                            short_delta=settings.DIRECTIONAL_SHORT_DELTA if is_dir else None,
+                        )
                     except Exception as e:
                         log.warning("entry-ping with mgmt fields failed: %s", e)
         self.state.last_signals = self._signal_history[-20:]
@@ -1743,6 +1746,7 @@ class Orchestrator:
             # Telegram exit alert — only on LIVE bars (not mock-feed replay)
             if getattr(self, "_is_live_bar", False):
                 try:
+                    _is_dir = pt.strategy == "directional_spread"
                     tg.ping_signal_exit(
                         trade_no=pt.trade_no,
                         side=pt.side,
@@ -1754,6 +1758,8 @@ class Orchestrator:
                         pnl=pt.pnl or 0.0,
                         exit_reason=pt.exit_reason or "",
                         pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
+                        peak_pct_kept=pt.peak_pct_kept if _is_dir else None,
+                        tp_pct=settings.DIRECTIONAL_TP_TARGET if _is_dir else None,
                     )
                 except Exception as e:
                     log.warning("ping_signal_exit failed: %s", e)

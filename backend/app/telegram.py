@@ -469,6 +469,25 @@ def ping_daily_loss_limit(
                 chat_id=chat_id, message_thread_id=thread_id)
 
 
+def ping_feed_stale(
+    age_min: float,
+    feed: str,
+    pwa_url: str | None = None,
+) -> dict | None:
+    """⚠️ FEED STALE alert — market data stopped flowing during RTH, so open 0DTE
+    positions are no longer being checked for TP/STOP/EOD. Fires once per episode."""
+    lines = [
+        f"⚠️ FEED STALE — no market data for {age_min:.0f} min during market hours",
+        f"feed: {feed} (frozen — open positions NOT being managed)",
+        f"action: check Alpaca / restart the backend",
+    ]
+    if pwa_url:
+        lines.append(f"📱 {pwa_url}")
+    chat_id, thread_id = _route_zero_dte()
+    return send("\n".join(lines), parse_mode="none",
+                chat_id=chat_id, message_thread_id=thread_id)
+
+
 def ping_iv_gate_skip(
     vix_value: float,
     threshold: float,

@@ -42,6 +42,7 @@ class StateStore:
         self._last_write_ts = 0.0
         self._writer_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._pending_payload: dict | None = None
 
     def load(self) -> dict | None:
         """Load state from disk. Returns None if file missing / unreadable /
@@ -90,12 +91,18 @@ class StateStore:
         except Exception as e:
             log.warning("state_store save failed: %s", e)
 
-    def save_async(self, payload_callable):
-        """Mark state dirty + ensure debounce writer is running.
-        payload_callable returns a fresh dict on each invocation."""
+    def save_async(self, payload: dict):
+        """Stage a FULLY-MATERIALIZED state snapshot for a debounced write.
+
+        `payload` must be a plain dict the caller built synchronously on its own
+        thread (the event loop). The writer thread must never iterate the live
+        mutable structures itself — doing so previously could raise
+        'list changed size during iteration' or persist a half-updated trade.
+        Latest snapshot wins within the debounce window.
+        """
         with self._lock:
             self._dirty = True
-            self._payload_fn = payload_callable
+            self._pending_payload = payload
             if self._writer_thread is None or not self._writer_thread.is_alive():
                 self._writer_thread = threading.Thread(
                     target=self._writer_loop, daemon=True, name="state-store-writer",
@@ -106,9 +113,9 @@ class StateStore:
         while not self._stop.is_set():
             time.sleep(DEBOUNCE_SEC)
             with self._lock:
-                if not self._dirty:
+                if not self._dirty or self._pending_payload is None:
                     continue
-                payload = self._payload_fn()
+                payload = self._pending_payload
                 self._dirty = False
             self.save(payload)
 

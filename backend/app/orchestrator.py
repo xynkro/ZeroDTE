@@ -71,6 +71,14 @@ class Orchestrator:
         )
         self.paper_trades: list[PaperTrade] = []
         self._signal_history: list[SignalEvent] = []
+        # Per-trade Alpaca entry tasks (by pt.id) — the exit awaits the entry so a
+        # same-bar stop can't close internally before the broker order is placed
+        # (which would orphan a live position).
+        self._broker_entry_tasks: dict = {}
+        # Feed-staleness watchdog state — wall-clock of the last bar handled.
+        self._last_bar_wall: datetime | None = None
+        self._feed_stale_alerted: bool = False
+        self._staleness_task = None
         # Cache last fetched chain per instrument to avoid hammering IBKR
         self._last_chain_ts: dict[str, datetime] = {}
         self._last_chain: dict[str, dict] = {}
@@ -128,16 +136,23 @@ class Orchestrator:
             log.warning("state restore failed (continuing fresh): %s", e)
 
     def _persist_state(self) -> None:
-        """Schedule debounced write of live state to disk."""
+        """Schedule debounced write of live state to disk.
+
+        The snapshot is materialized SYNCHRONOUSLY here on the event-loop thread
+        (no await between the list copies and model_dump), so the background writer
+        thread never iterates self.paper_trades / self._signal_history while the
+        loop is appending to them ('list changed size during iteration' / torn write).
+        """
         try:
-            state_store.save_async(lambda: {
-                "signal_history": [s.model_dump() for s in self._signal_history],
-                "paper_trades":   [t.model_dump() for t in self.paper_trades],
-                "iron_condor_history": [b.model_dump() for b in self.state.iron_condor_history],
+            snapshot = {
+                "signal_history": [s.model_dump() for s in list(self._signal_history)],
+                "paper_trades":   [t.model_dump() for t in list(self.paper_trades)],
+                "iron_condor_history": [b.model_dump() for b in list(self.state.iron_condor_history)],
                 "trade_seq_today": self._trade_seq_today,
                 "trade_seq_date":  self._trade_seq_date,
                 "eod_ic_built_today": self._eod_ic_built_today,
-            })
+            }
+            state_store.save_async(snapshot)
         except Exception as e:
             log.warning("persist_state failed: %s", e)
 
@@ -151,6 +166,8 @@ class Orchestrator:
         # 60s safety-net for EOD summary — fires if past 16:30 ET and no
         # bar-driven trigger arrived
         self._eod_safety_task = asyncio.create_task(self._eod_safety_loop())
+        # Feed-staleness alarm (detects a frozen feed during RTH)
+        self._staleness_task = asyncio.create_task(self._feed_staleness_watchdog())
 
         # ── Feed priority: Alpaca → IBKR → yfinance → idle ──
         import os
@@ -270,6 +287,12 @@ class Orchestrator:
                 await self._eod_safety_task
             except (asyncio.CancelledError, Exception):
                 pass
+        if self._staleness_task:
+            self._staleness_task.cancel()
+            try:
+                await self._staleness_task
+            except (asyncio.CancelledError, Exception):
+                pass
         if self.bot_poller:
             await self.bot_poller.stop()
         if self.feed is not None:
@@ -385,7 +408,55 @@ class Orchestrator:
         except Exception as e:
             log.exception("EOD safety loop error: %s", e)
 
+    def _is_rth_now(self) -> bool:
+        """True during regular US equity hours (Mon-Fri 09:30-16:00 ET)."""
+        now = datetime.now(ET)
+        if now.weekday() >= 5:  # Sat/Sun
+            return False
+        m = now.hour * 60 + now.minute
+        return 9 * 60 + 30 <= m < 16 * 60
+
+    async def _feed_staleness_watchdog(self):
+        """Alarm if the feed stops delivering bars during RTH.
+
+        The poll loop re-dispatches a bar every few seconds while the feed is alive,
+        so >5 min of silence during market hours means it's frozen (e.g. Alpaca
+        auth/5xx makes _fetch_bars return [] while connected stays True) and open
+        0DTE positions are no longer being checked for TP/STOP/EOD. No auto-failover
+        — just a loud alarm (dashboard status=error + Telegram) so it can't go unnoticed.
+        """
+        STALE_SEC = 300
+        while True:
+            try:
+                await asyncio.sleep(60)
+                if not self._is_rth_now() or self._last_bar_wall is None:
+                    continue
+                age = (datetime.now(ET) - self._last_bar_wall).total_seconds()
+                if age > STALE_SEC and not self._feed_stale_alerted:
+                    self._feed_stale_alerted = True
+                    feed_name = type(self.feed).__name__ if self.feed else "none"
+                    log.error("FEED STALE: no bar in %.0fs during RTH (feed=%s connected=%s). "
+                              "Open positions are NOT being managed — investigate / restart.",
+                              age, feed_name, getattr(self.feed, "connected", "?"))
+                    self.state.backend_status = "error"
+                    try:
+                        tg.ping_feed_stale(age_min=age / 60.0, feed=feed_name,
+                                           pwa_url=settings.DASHBOARD_PUBLIC_URL or None)
+                    except Exception as e:
+                        log.warning("feed-stale ping failed: %s", e)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning("staleness watchdog error: %s", e)
+
     async def handle_bar(self, bar: Bar):
+        # Feed liveness — record receipt time; clear any stale alert now data flows.
+        self._last_bar_wall = datetime.now(ET)
+        if self._feed_stale_alerted:
+            self._feed_stale_alerted = False
+            if self.state.backend_status == "error":
+                self.state.backend_status = "ok"
+            log.info("Feed recovered — bars flowing again.")
         signals = self.predictor.on_bar(bar)
         # Telegram gate: only fire pings on LIVE bars (within 10 min of now).
         # Mock-feed replay floods otherwise — every session for every historical
@@ -1718,10 +1789,13 @@ class Orchestrator:
                      "credit=$%.0f wing=$%.0f size=%dct (%s)",
                      trade_no, ev.side, sp_directional.short_strike, sp_directional.long_strike,
                      credit_est, wing_dollars, pt.contracts, sizing_note)
-            # Submit to Alpaca paper broker if configured
+            # Submit to Alpaca paper broker if configured. Mark pending + register the
+            # entry task synchronously so the exit path can await it (prevents a
+            # same-bar stop from orphaning a not-yet-placed live order).
             if settings.PAPER_BROKER == "alpaca" and hasattr(self, "alpaca_trader") \
                and self.alpaca_trader is not None:
-                asyncio.create_task(self._submit_alpaca_entry(pt))
+                pt.broker_status = "pending"
+                self._broker_entry_tasks[pt.id] = asyncio.create_task(self._submit_alpaca_entry(pt))
             return pt, sizing_note
 
         # Legacy wave_manager path
@@ -1756,8 +1830,10 @@ class Orchestrator:
             log.info("Trade #%d closed: outcome=%s pnl=%.0f reason=%s",
                      pt.trade_no, pt.outcome, pt.pnl or 0.0, pt.exit_reason)
             self._persist_state()  # capture exit immediately
-            # Submit close order to Alpaca paper broker
-            if settings.PAPER_BROKER == "alpaca" and pt.alpaca_order_id \
+            # Submit close order to Alpaca paper broker. Gate on "had a broker entry"
+            # (pt.id registered), NOT on alpaca_order_id — the entry task may not have
+            # set it yet. _submit_alpaca_exit awaits that entry task before deciding.
+            if settings.PAPER_BROKER == "alpaca" and pt.id in self._broker_entry_tasks \
                and hasattr(self, "alpaca_trader") and self.alpaca_trader is not None:
                 asyncio.create_task(self._submit_alpaca_exit(pt))
             # Telegram exit alert — only on LIVE bars (not mock-feed replay)
@@ -1823,8 +1899,21 @@ class Orchestrator:
             log.exception("Alpaca entry failed for trade #%d: %s", pt.trade_no, e)
 
     async def _submit_alpaca_exit(self, pt: PaperTrade):
-        """Close Alpaca paper position when directional spread exits."""
+        """Close Alpaca paper position when directional spread exits.
+
+        Awaits the entry task first so we never race it — a same-bar stop can close
+        the trade internally before the entry order is even placed. Once the entry
+        resolves, if no live order was placed (shadow/error) there's nothing to close.
+        """
         from .directional_spread_manager import spy_strike_params
+        entry_task = self._broker_entry_tasks.pop(pt.id, None)
+        if entry_task is not None:
+            try:
+                await entry_task
+            except Exception:
+                pass
+        if not pt.alpaca_order_id:
+            return  # entry placed no live order — nothing to reverse
         try:
             # Try cancel first (if order still pending)
             cancelled = await self.alpaca_trader.cancel_order(pt.alpaca_order_id)

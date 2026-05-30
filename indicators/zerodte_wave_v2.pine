@@ -1,0 +1,604 @@
+//@version=6
+indicator("ZeroDTE Wave v2", shorttitle="Wave v2", overlay=true,
+          max_lines_count=200, max_labels_count=500, max_boxes_count=100, max_bars_back=500)
+
+// ────────────────────────────────────────────────────────────────────────
+// ZeroDTE Wave Trading — overlay for SPX/SPY/XSP (5m bars)
+// PHASE 1 GOSPEL — variable-only confluence + 4 gates (mirrors orchestrator.py).
+//
+// ENTRY: Stoch reversal cross + EMA10/30 trend filter + 6-bar cooldown
+//        + 09:45-14:30 ET window
+//   AND PASSES ALL OF:
+//     • Confluence ≥ minConfluence (default 3/5)
+//     • Macro blackout OFF (manual toggle for FOMC/CPI days)
+//     • VIX bucket allows entries (skip if VIX ≥ 22)
+//     • Trades-today < MAX_TRADES_PER_DAY (default 3)
+//
+// CONFLUENCE FACTORS (5 variable, score 0-5):
+//   1. RSI directional (>65 for CALL / <35 for PUT)
+//   2. WVF spike (Williams VIX Fix above BB upper)
+//   3. Macro clear (manual blackout toggle is OFF)
+//   4. VIX bucket OK (VIX1D < 22 — wave-tradeable bucket)
+//   5. Near EMA10 (entry within 0.30% of EMA10 — fresh setup, not late)
+//
+// EXIT (priority STOP > TP > TIME > EOD):
+//   STOP — underlying touches short strike (max loss)
+//   TP   — underlying moves favorably by favMovePct
+//   TIME — within timeStopMin of close (default 15 min before 16:00)
+//   EOD  — at/past 16:00 ET, expire OTM (full credit)
+//
+// Each entry/exit gets a session-unique # so they pair up visually.
+// All inputs tweakable from Settings — defaults mirror live .env.
+// ────────────────────────────────────────────────────────────────────────
+
+// ── Inputs ──────────────────────────────────────────────────────────────
+g0 = "Phase 1+4 Gates (mirror orchestrator)"
+minConfluence    = input.int(3,       "Min confluence score (out of 6)", group=g0, minval=1, maxval=6,
+                              tooltip="Signals below this score don't fire. Phase 4: 6 factors total (added prime-window). Mirrors WAVE_MIN_CONFLUENCE_SCORE.")
+fullSizeConf     = input.int(4,       "Full-size threshold (out of 6)",  group=g0, minval=1, maxval=6,
+                              tooltip="At/above this = full size; below = 60% size. Mirrors WAVE_FULL_SIZE_CONFLUENCE.")
+maxTradesPerDay  = input.int(3,       "Max trades per day",              group=g0, minval=1, maxval=10,
+                              tooltip="Daily entry cap. Mirrors MAX_TRADES_PER_DAY.")
+manualBlackout   = input.bool(false,  "Macro blackout (FOMC/CPI day)",   group=g0,
+                              tooltip="Toggle ON before high-impact events. Mirrors WAVE_BLACKOUT_BLOCKS_ENTRIES.")
+vixSymbol        = input.string("CBOE:VIX1D", "VIX symbol",
+                              options=["CBOE:VIX1D", "TVC:VIX"], group=g0,
+                              tooltip="VIX1D preferred (intraday). VIX is daily fallback.")
+vixStandAside    = input.float(22.0,  "VIX stand-aside threshold",       group=g0, minval=10.0, step=0.5,
+                              tooltip="≥this VIX = wave stands aside. Matches WAVE_VIX_BUCKETS '99:0' bucket.")
+extensionPct     = input.float(0.30,  "Max extension from EMA10 (%)",    group=g0, minval=0.05, step=0.05,
+                              tooltip="Confluence factor 5: entry must be within this % of EMA10.")
+
+g0b = "Phase 2 (exit refinements)"
+useVolScaledTp   = input.bool(true,   "Vol-scaled TP (ATR-based)",       group=g0b,
+                              tooltip="ON: TP = tpAtrMult × ATR(D1). OFF: TP = favMovePct × underlying.")
+tpAtrMult        = input.float(0.4,   "TP = N x ATR(D1)",                group=g0b, minval=0.05, step=0.05,
+                              tooltip="0.4 ≈ matches old 0.3% on normal-vol days, auto-widens on high-vol.")
+sameBarGuard     = input.bool(true,   "Same-bar exit guard (TP/TIME)",   group=g0b,
+                              tooltip="ON: TP/TIME can't fire on entry bar. STOP always fires (capital protection).")
+midSessionRegate = input.bool(true,   "Mid-session vol re-gate",         group=g0b,
+                              tooltip="ON: lock new entries if rolling 30m range > N×expected.")
+midVolMult       = input.float(2.0,   "Mid-session vol multiplier",      group=g0b, minval=1.0, step=0.5)
+
+g0c = "Phase 4 (entry quality)"
+useVwapGate      = input.bool(true,   "VWAP gate (canonical mean-rev)",  group=g0c,
+                              tooltip="ON: SELL CALL only if price > VWAP, SELL PUT only if price < VWAP. Canonical 0DTE rule.")
+primeWinStartH   = input.int(10,      "Prime window start hour ET",      group=g0c, minval=9, maxval=15)
+primeWinStartM   = input.int(30,      "Prime window start min ET",       group=g0c, minval=0, maxval=59)
+primeWinEndH     = input.int(13,      "Prime window end hour ET",        group=g0c, minval=10, maxval=15)
+primeWinEndM     = input.int(0,       "Prime window end min ET",         group=g0c, minval=0, maxval=59)
+
+g1 = "Trend filter (Pullback variant)"
+useTrendFilter   = input.bool(true,   "Suppress counter-trend signals",  group=g1)
+emaFastLen       = input.int(10,      "EMA fast length",                 group=g1, minval=2)
+emaSlowLen       = input.int(30,      "EMA slow length",                 group=g1, minval=3)
+trendThresholdPct= input.float(0.05,  "Trend spread threshold (pct)",    group=g1, minval=0.0, step=0.01)
+
+g2 = "Stoch reversal trigger"
+stochKLen        = input.int(14,      "Stoch %K length",                 group=g2, minval=2)
+stochDLen        = input.int(3,       "Stoch %D smoothing",              group=g2, minval=1)
+stochHighThr     = input.int(75,      "Stoch high threshold (CALL)",     group=g2)
+stochLowThr      = input.int(25,      "Stoch low threshold (PUT)",       group=g2)
+cooldownBars     = input.int(6,       "Cooldown bars (same direction)",  group=g2, minval=0)
+
+g3 = "Time-of-day window (ET)"
+sessionStartH    = input.int(9,       "Session start hour ET",           group=g3, minval=0, maxval=23)
+sessionStartM    = input.int(30,      "Session start min ET",            group=g3, minval=0, maxval=59)
+obsWindowMin     = input.int(15,      "Observation window length (min)", group=g3, minval=5, maxval=60)
+noNewEntryH      = input.int(14,      "No-new-entry hour ET",            group=g3)
+noNewEntryM      = input.int(0,       "No-new-entry min ET",             group=g3,
+                              tooltip="Phase 3 canonical: 14:00 (was 14:30) — wider gamma buffer per CBOE/TradingBlock.")
+
+g4 = "Confluence factor inputs"
+rsiLen           = input.int(14,      "RSI length",                      group=g4, minval=2)
+rsiCallThr       = input.int(65,      "RSI overbought (CALL conf)",      group=g4)
+rsiPutThr        = input.int(35,      "RSI oversold (PUT conf)",         group=g4)
+wvfPeriod        = input.int(22,      "WVF period",                      group=g4, minval=5)
+wvfBbMult        = input.float(2.0,   "WVF BB multiplier",               group=g4, minval=0.5, step=0.1)
+
+g5 = "Strike & wave management"
+strikeDistancePct= input.float(1.5,   "Strike distance pct OTM",         group=g5, minval=0.1, step=0.1,
+                              tooltip="Phase 3 canonical: 1.5% OTM ≈ 10-15Δ short. Was 0.5% (25Δ — negative EV).")
+favMovePct       = input.float(0.3,   "TP favorable move pct",           group=g5, minval=0.05, step=0.05)
+timeStopMin      = input.int(30,      "TIME stop min before close",      group=g5, minval=0, maxval=120,
+                              tooltip="Phase 3 canonical: 30min (was 15min) — wider gamma buffer.")
+stopRequiresBarClose = input.bool(true, "STOP requires bar CLOSE through strike", group=g5,
+                              tooltip="Phase 3b: ON = realistic (close only). OFF = legacy intra-bar wick.")
+
+g6 = "Visualization"
+showEntries      = input.bool(true,   "Entry markers + strike labels",   group=g6)
+showExits        = input.bool(true,   "Exit markers (STOP/TP/TIME/EOD)", group=g6)
+showTradeLines   = input.bool(true,   "Entry-to-exit slope line",        group=g6)
+showStatusTable  = input.bool(true,   "Status table (top-right)",        group=g6)
+showCutoffMark   = input.bool(true,   "14:30 ET cutoff line",            group=g6)
+labelStaggerMult = input.float(0.6,   "Label stagger × ATR (multi exits)", group=g6, minval=0.0, step=0.1)
+
+// ── Instrument auto-detect + timeframe check ────────────────────────────
+_root    = str.upper(syminfo.root != "" ? syminfo.root : syminfo.ticker)
+isSPX    = str.contains(_root, "SPX")
+isSPY    = str.contains(_root, "SPY")
+isXSP    = str.contains(_root, "XSP")
+instName = isSPX ? "SPX" : isSPY ? "SPY" : isXSP ? "XSP" : syminfo.ticker
+tfMinutes = timeframe.in_seconds() / 60
+tfOk      = tfMinutes == 5
+
+// ── Indicators ──────────────────────────────────────────────────────────
+emaFast  = ta.ema(close, emaFastLen)
+emaSlow  = ta.ema(close, emaSlowLen)
+stochK   = ta.stoch(close, high, low, stochKLen)
+stochD   = ta.sma(stochK, stochDLen)
+atr14    = ta.atr(14)
+rsi14    = ta.rsi(close, rsiLen)
+
+// Williams VIX Fix + BB upper for spike detection
+wvfHighest = ta.highest(close, wvfPeriod)
+wvfRaw     = (wvfHighest - low) / wvfHighest * 100
+wvfMid     = ta.sma(wvfRaw, wvfPeriod)
+wvfStd     = ta.stdev(wvfRaw, wvfPeriod)
+wvfSpike   = wvfRaw > (wvfMid + wvfBbMult * wvfStd)
+
+// VIX (daily) — pulled from request.security so it tracks live
+vixDaily = request.security(vixSymbol, "D", close, lookahead=barmerge.lookahead_off)
+
+// Daily ATR(14) for vol-scaled TP (Phase 2). Read from D timeframe.
+atrD1 = request.security(syminfo.tickerid, "D", ta.atr(14), lookahead=barmerge.lookahead_off)
+
+// Phase 4: session VWAP. Resets at session start (09:30 ET).
+sessVwap = ta.vwap(hlc3)
+
+// Trend
+spreadPct = (emaFast - emaSlow) / emaSlow * 100.0
+trendUp   = useTrendFilter and spreadPct >  trendThresholdPct
+trendDown = useTrendFilter and spreadPct < -trendThresholdPct
+
+// ── ET time gating ──────────────────────────────────────────────────────
+inSession = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+etHour    = hour(time, "America/New_York")
+etMin     = minute(time, "America/New_York")
+etMinsSinceMidnight = etHour * 60 + etMin
+sessionStartMin = sessionStartH * 60 + sessionStartM
+obsEndMin       = sessionStartMin + obsWindowMin
+noNewEntryMin   = noNewEntryH * 60 + noNewEntryM
+closeMin        = 16 * 60
+timeStopMinET   = closeMin - timeStopMin
+
+inObsRange      = inSession and etMinsSinceMidnight >= sessionStartMin and etMinsSinceMidnight < obsEndMin
+waveEntryWindow = inSession and etMinsSinceMidnight >= obsEndMin and etMinsSinceMidnight < noNewEntryMin
+isTimeStopBar   = inSession and etMinsSinceMidnight >= timeStopMinET and etMinsSinceMidnight < closeMin
+isEodBar        = etMinsSinceMidnight >= closeMin
+
+// ── Observation-window high/low (resets per session) ────────────────────
+var float obsHigh = na
+var float obsLow  = na
+// FIX: `inSession and not inSession[1]` fails on SPY (ETF) when extended hours
+// are OFF — every bar is in-session, so the gap between days is invisible.
+// Adding date-change detection covers both cases:
+//   Extended hours ON  → `not inSession[1]` fires at 09:30 (pre-market gap)
+//   Extended hours OFF → `_dayChange != 0` fires at 09:30 (day change)
+_dayChange = ta.change(time("D"))
+newSession = inSession and (not inSession[1] or _dayChange != 0)
+if newSession
+    obsHigh := na
+    obsLow  := na
+
+if inObsRange
+    obsHigh := na(obsHigh) ? high : math.max(obsHigh, high)
+    obsLow  := na(obsLow)  ? low  : math.min(obsLow, low)
+
+var float projHigh = na
+var float projLow  = na
+obsJustEnded = etMinsSinceMidnight == obsEndMin and etMinsSinceMidnight[1] < obsEndMin
+if obsJustEnded and not na(obsHigh) and not na(obsLow)
+    obsRange = obsHigh - obsLow
+    projHigh := obsHigh + 1.5 * obsRange
+    projLow  := obsLow  - 1.5 * obsRange
+
+// ── Raw entry trigger (stoch reversal cross at extreme) ─────────────────
+crossDown = ta.crossunder(stochK, stochD) and stochK[1] > stochHighThr
+crossUp   = ta.crossover(stochK, stochD)   and stochK[1] < stochLowThr
+
+var int lastCallBar = -10000
+var int lastPutBar  = -10000
+callCoolOk = bar_index - lastCallBar >= cooldownBars
+putCoolOk  = bar_index - lastPutBar  >= cooldownBars
+
+// ── Confluence factors (5 variable, mirror orchestrator) ────────────────
+// Side-specific: CALL signals check RSI overbought; PUT signals check oversold
+confRsiCall   = rsi14 > rsiCallThr
+confRsiPut    = rsi14 < rsiPutThr
+confWvfSpike  = wvfSpike
+confMacroClear = not manualBlackout
+confVixOk      = na(vixDaily) ? true : vixDaily < vixStandAside
+extPct         = na(emaFast) or close == 0 ? 999.0 : math.abs(close - emaFast) / close * 100.0
+confNearEma    = extPct < extensionPct
+
+// Phase 4: prime-window confluence factor (10:30-13:00 ET = canonical sweet spot)
+primeWinStartMin = primeWinStartH * 60 + primeWinStartM
+primeWinEndMin   = primeWinEndH   * 60 + primeWinEndM
+confPrimeWindow  = etMinsSinceMidnight >= primeWinStartMin and etMinsSinceMidnight < primeWinEndMin
+
+// Phase 4: VWAP gate — BUT allow trend-aligned signals through.
+// In uptrend: SELL PUT is the safe play (trend away from short put) → bypass VWAP.
+// In downtrend: SELL CALL is the safe play → bypass VWAP.
+// This prevents the deadlock where trend blocks one side and VWAP blocks the other.
+vwapGateCall = useVwapGate ? (close > sessVwap or trendDown) : true
+vwapGatePut  = useVwapGate ? (close < sessVwap or trendUp)  : true
+
+// Per-side score — 6 factors (RSI side-specific, prime window same for both)
+confScoreCall = (confRsiCall ? 1 : 0) + (confWvfSpike ? 1 : 0) + (confMacroClear ? 1 : 0) + (confVixOk ? 1 : 0) + (confNearEma ? 1 : 0) + (confPrimeWindow ? 1 : 0)
+confScorePut  = (confRsiPut  ? 1 : 0) + (confWvfSpike ? 1 : 0) + (confMacroClear ? 1 : 0) + (confVixOk ? 1 : 0) + (confNearEma ? 1 : 0) + (confPrimeWindow ? 1 : 0)
+
+// ── Trades-per-day counter (resets each session) ────────────────────────
+var int tradesToday = 0
+if newSession
+    tradesToday := 0
+
+dailyCapOk = tradesToday < maxTradesPerDay
+
+// Phase 2: mid-session vol re-gate. Track rolling 30m realized range vs expected
+// (= ATR_D1 / sqrt(78/6) ≈ /3.61). Once flipped to volatile, stays till new session.
+// FIX: only compute range30m when all 6 lookback bars are within current session,
+// otherwise overnight gap inflates range and falsely triggers the gate.
+var int barsInSession = 0
+if newSession
+    barsInSession := 0
+if inSession
+    barsInSession := barsInSession + 1
+
+range30mValid   = barsInSession >= 6
+_highest6       = ta.highest(high, 6)
+_lowest6        = ta.lowest(low, 6)
+range30m        = range30mValid ? _highest6 - _lowest6 : 0.0
+expected30m     = na(atrD1) ? 0.0 : atrD1 / 3.61
+midVolThreshold = expected30m * midVolMult
+
+var bool midSessionVolatile = false
+if newSession
+    midSessionVolatile := false
+if midSessionRegate and inSession and range30mValid and etMinsSinceMidnight >= obsEndMin and etMinsSinceMidnight < closeMin and not midSessionVolatile and midVolThreshold > 0 and range30m > midVolThreshold
+    midSessionVolatile := true
+
+midSessionOk = not (midSessionRegate and midSessionVolatile)
+
+// ── Gates: raw signal + confluence + blackout + VIX + daily cap + mid-session + VWAP ─
+callEntry = waveEntryWindow and crossDown and callCoolOk and not trendUp and confScoreCall >= minConfluence and confMacroClear and confVixOk and dailyCapOk and midSessionOk and vwapGateCall
+putEntry  = waveEntryWindow and crossUp   and putCoolOk  and not trendDown and confScorePut  >= minConfluence and confMacroClear and confVixOk and dailyCapOk and midSessionOk and vwapGatePut
+
+if callEntry
+    lastCallBar := bar_index
+    tradesToday := tradesToday + 1
+if putEntry
+    lastPutBar := bar_index
+    tradesToday := tradesToday + 1
+
+// Per-session trade counter for #N labeling
+var int sessionTradeCounter = 0
+if newSession
+    sessionTradeCounter := 0
+if callEntry or putEntry
+    sessionTradeCounter := sessionTradeCounter + 1
+
+// ── Open-trade state arrays ─────────────────────────────────────────────
+var array<string> tSide      = array.new_string()
+var array<int>    tNum       = array.new_int()
+var array<int>    tConfScore = array.new_int()
+var array<int>    tEntryBar  = array.new_int()
+var array<float>  tEntryPx   = array.new_float()
+var array<float>  tShortStrk = array.new_float()
+var array<float>  tTpTarget  = array.new_float()
+
+// Phase 2: vol-scaled TP. distance = tpAtrMult × ATR(D1) when enabled & ATR available.
+// Falls back to legacy fixed % move when ATR(D1) is na or vol-scaled is off.
+tpDistanceCall = useVolScaledTp and not na(atrD1) and atrD1 > 0 ? atrD1 * tpAtrMult : close * (favMovePct / 100.0)
+tpDistancePut  = useVolScaledTp and not na(atrD1) and atrD1 > 0 ? atrD1 * tpAtrMult : close * (favMovePct / 100.0)
+
+if callEntry
+    array.push(tSide,      "call")
+    array.push(tNum,       sessionTradeCounter)
+    array.push(tConfScore, confScoreCall)
+    array.push(tEntryBar,  bar_index)
+    array.push(tEntryPx,   close)
+    array.push(tShortStrk, close * (1 + strikeDistancePct / 100.0))
+    array.push(tTpTarget,  close - tpDistanceCall)
+
+if putEntry
+    array.push(tSide,      "put")
+    array.push(tNum,       sessionTradeCounter)
+    array.push(tConfScore, confScorePut)
+    array.push(tEntryBar,  bar_index)
+    array.push(tEntryPx,   close)
+    array.push(tShortStrk, close * (1 - strikeDistancePct / 100.0))
+    array.push(tTpTarget,  close + tpDistancePut)
+
+// ── Per-bar exit check (priority: STOP > TP > TIME > EOD) ───────────────
+fireExitStop = false
+fireExitTp   = false
+fireExitTime = false
+fireExitEod  = false
+
+exitStackCount = 0
+
+n = array.size(tSide)
+if n > 0
+    for i = n - 1 to 0
+        side  = array.get(tSide, i)
+        tnum  = array.get(tNum, i)
+        ebar  = array.get(tEntryBar, i)
+        epx   = array.get(tEntryPx, i)
+        sstrk = array.get(tShortStrk, i)
+        tp    = array.get(tTpTarget, i)
+
+        exitReason = ""
+        exitColor  = color.gray
+        exitPx     = close
+
+        // Phase 2: same-bar exit guard. Skip TP/TIME on entry bar; STOP always fires.
+        isSameBar = sameBarGuard and bar_index == ebar
+
+        // Phase 3b: STOP triggers — close-through-strike (realistic) vs intra-bar wick (legacy)
+        callStopHit = stopRequiresBarClose ? close >= sstrk : high >= sstrk
+        putStopHit  = stopRequiresBarClose ? close <= sstrk : low  <= sstrk
+
+        if side == "call"
+            if callStopHit
+                exitReason := "STOP"
+                exitColor  := color.red
+                exitPx     := sstrk
+                fireExitStop := true
+            else if not isSameBar and low <= tp
+                exitReason := "TP"
+                exitColor  := color.green
+                exitPx     := tp
+                fireExitTp := true
+            else if not isSameBar and isTimeStopBar
+                exitReason := "TIME"
+                exitColor  := color.orange
+                exitPx     := close
+                fireExitTime := true
+            else if isEodBar
+                exitReason := "EOD"
+                exitColor  := color.green
+                exitPx     := close
+                fireExitEod := true
+        else
+            if putStopHit
+                exitReason := "STOP"
+                exitColor  := color.red
+                exitPx     := sstrk
+                fireExitStop := true
+            else if not isSameBar and high >= tp
+                exitReason := "TP"
+                exitColor  := color.green
+                exitPx     := tp
+                fireExitTp := true
+            else if not isSameBar and isTimeStopBar
+                exitReason := "TIME"
+                exitColor  := color.orange
+                exitPx     := close
+                fireExitTime := true
+            else if isEodBar
+                exitReason := "EOD"
+                exitColor  := color.green
+                exitPx     := close
+                fireExitEod := true
+
+        if exitReason != ""
+            stackOffset = (exitStackCount + 1) * atr14 * labelStaggerMult
+            yPos = side == "call" ? (high + stackOffset) : (low - stackOffset)
+            exitStackCount := exitStackCount + 1
+
+            if showExits
+                exitText = str.format("EXIT #{0} {1} {2} ${3,number,#.##}",
+                                       tnum, exitReason, side == "call" ? "C" : "P", exitPx)
+                label.new(bar_index, yPos,
+                          text=exitText,
+                          style=side == "call" ? label.style_label_down : label.style_label_up,
+                          color=color.new(exitColor, 0),
+                          textcolor=color.white,
+                          size=size.small)
+
+            if showTradeLines
+                line.new(ebar, epx, bar_index, exitPx,
+                         color=color.new(exitColor, 20),
+                         style=exitReason == "STOP" ? line.style_dashed : line.style_solid,
+                         width=2)
+
+            array.remove(tSide,      i)
+            array.remove(tNum,       i)
+            array.remove(tConfScore, i)
+            array.remove(tEntryBar,  i)
+            array.remove(tEntryPx,   i)
+            array.remove(tShortStrk, i)
+            array.remove(tTpTarget,  i)
+
+if newSession
+    array.clear(tSide)
+    array.clear(tNum)
+    array.clear(tConfScore)
+    array.clear(tEntryBar)
+    array.clear(tEntryPx)
+    array.clear(tShortStrk)
+    array.clear(tTpTarget)
+
+// ── Plotting (background, EMAs, projection) ─────────────────────────────
+plot(emaFast, "EMA10", color=color.new(color.yellow, 0), linewidth=1)
+plot(emaSlow, "EMA30", color=color.new(color.purple, 0), linewidth=1)
+// Phase 4: session VWAP (canonical mean-reversion reference line)
+plot(useVwapGate ? sessVwap : na, "VWAP", color=color.new(color.aqua, 0), linewidth=2, style=plot.style_line)
+
+bgcolor(trendUp    ? color.new(color.green, 95) : na, title="Up trend bg")
+bgcolor(trendDown  ? color.new(color.red,   95) : na, title="Down trend bg")
+bgcolor(inObsRange ? color.new(color.blue,  88) : na, title="Obs window")
+// Stand-aside bg tint: any gate blocking new entries (VIX/cap/blackout/mid-session/VWAP)
+// VWAP gate is side-specific so this just shows when *both* sides would be blocked.
+vwapBothBlocked = useVwapGate and (close == sessVwap)  // edge case: at VWAP exactly
+standAside = (not confVixOk) or (not dailyCapOk) or (not confMacroClear) or (midSessionRegate and midSessionVolatile)
+bgcolor(standAside and inSession ? color.new(color.red, 96) : na, title="Stand-aside bg")
+// Wrong-timeframe warning — persistent orange tint when not on 5m
+bgcolor(not tfOk ? color.new(color.orange, 92) : na, title="TF warning bg")
+
+plot(projHigh, "Projected H", color=color.new(color.red,   50), linewidth=1, style=plot.style_circles)
+plot(projLow,  "Projected L", color=color.new(color.green, 50), linewidth=1, style=plot.style_circles)
+
+cutoffLine = etMinsSinceMidnight == noNewEntryMin and etMinsSinceMidnight[1] < noNewEntryMin
+if showCutoffMark and cutoffLine
+    line.new(bar_index, low * 0.995, bar_index, high * 1.005,
+             color=color.new(color.gray, 0), style=line.style_dashed, width=1)
+
+// ── Entry markers (with confluence score badge) ─────────────────────────
+plotshape(showEntries and callEntry, title="ENTER SELL CALL", style=shape.triangledown,
+          location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+plotshape(showEntries and putEntry,  title="ENTER SELL PUT",  style=shape.triangleup,
+          location=location.belowbar, color=color.new(color.green, 0), size=size.small)
+
+if showEntries and callEntry
+    cs  = close * (1 + strikeDistancePct / 100)
+    tpc = close - tpDistanceCall  // Phase 2: vol-scaled TP target
+    sizeBadge = confScoreCall >= fullSizeConf ? "💎 FULL" : "60%"
+    label.new(bar_index, high + atr14 * 0.3,
+              text=str.format("#{0} CALL {1}/6 ({2})\nshort ${3,number,#.##}\nTP ${4,number,#.##}",
+                              sessionTradeCounter, confScoreCall, sizeBadge, cs, tpc),
+              style=label.style_label_down,
+              color=color.new(color.red, 30),
+              textcolor=color.white,
+              size=size.small)
+
+if showEntries and putEntry
+    ps  = close * (1 - strikeDistancePct / 100)
+    tpp = close + tpDistancePut   // Phase 2: vol-scaled TP target
+    sizeBadge = confScorePut >= fullSizeConf ? "💎 FULL" : "60%"
+    label.new(bar_index, low - atr14 * 0.3,
+              text=str.format("#{0} PUT {1}/6 ({2})\nshort ${3,number,#.##}\nTP ${4,number,#.##}",
+                              sessionTradeCounter, confScorePut, sizeBadge, ps, tpp),
+              style=label.style_label_up,
+              color=color.new(color.green, 30),
+              textcolor=color.white,
+              size=size.small)
+
+// ── Status table (top-right) ────────────────────────────────────────────
+var table tt = table.new(position.top_right, 4, 12, border_width=1,
+                          frame_color=color.gray, frame_width=1)
+if showStatusTable and barstate.islast
+    // Headers
+    table.cell(tt, 0, 0, "Wave " + instName, text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(tt, 1, 0, "Side",         text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(tt, 2, 0, "Short / dist", text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(tt, 3, 0, "TP / dist",    text_color=color.white, bgcolor=color.new(color.blue, 70))
+
+    nOpen = array.size(tSide)
+    if nOpen == 0
+        // Gate status block when no trades open
+        biasTxt = trendUp ? "UP" : trendDown ? "DOWN" : "FLAT"
+        biasCol = trendUp ? color.green : trendDown ? color.red : color.gray
+        table.cell(tt, 0, 1, "Bias",   text_color=color.white)
+        table.cell(tt, 1, 1, biasTxt,  text_color=color.white, bgcolor=color.new(biasCol, 50))
+        table.cell(tt, 2, 1, str.format("Stoch K={0,number,#}", stochK), text_color=color.white)
+        table.cell(tt, 3, 1, str.format("D={0,number,#}",       stochD), text_color=color.white)
+
+        winTxt = waveEntryWindow ? "OPEN" : isEodBar ? "EOD" : isTimeStopBar ? "TIME-STOP" : "CLOSED"
+        winCol = waveEntryWindow ? color.green : color.gray
+        table.cell(tt, 0, 2, "Window", text_color=color.white)
+        table.cell(tt, 1, 2, winTxt,   text_color=color.white, bgcolor=color.new(winCol, 50))
+        table.cell(tt, 2, 2, str.format("ET {0,number,00}:{1,number,00}", etHour, etMin), text_color=color.white)
+        table.cell(tt, 3, 2, str.format("Trades: {0}/{1}", tradesToday, maxTradesPerDay), text_color=color.white)
+
+        // VIX gate status
+        vixTxt = na(vixDaily) ? "n/a" : str.format("{0,number,#.#}", vixDaily)
+        vixCol = confVixOk ? color.green : color.red
+        table.cell(tt, 0, 3, "VIX",   text_color=color.white)
+        table.cell(tt, 1, 3, vixTxt,  text_color=color.white, bgcolor=color.new(vixCol, 50))
+        table.cell(tt, 2, 3, confVixOk ? "OK" : "STAND-ASIDE", text_color=color.white)
+        table.cell(tt, 3, 3, str.format("< {0,number,#.#}", vixStandAside), text_color=color.white)
+
+        // Macro blackout status
+        bo_txt = manualBlackout ? "BLOCKED" : "clear"
+        bo_col = manualBlackout ? color.red : color.green
+        table.cell(tt, 0, 4, "Blackout", text_color=color.white)
+        table.cell(tt, 1, 4, bo_txt,     text_color=color.white, bgcolor=color.new(bo_col, 50))
+        table.cell(tt, 2, 4, "Manual",   text_color=color.white)
+        table.cell(tt, 3, 4, "—",        text_color=color.white)
+
+        // Live confluence preview (would-be score if signal fired right now)
+        table.cell(tt, 0, 5, "Conf preview", text_color=color.white, bgcolor=color.new(color.gray, 70))
+        table.cell(tt, 1, 5, "CALL",         text_color=color.white, bgcolor=color.new(color.gray, 70))
+        table.cell(tt, 2, 5, str.format("{0}/6", confScoreCall), text_color=color.white,
+                   bgcolor=confScoreCall >= minConfluence ? color.new(color.green, 50) : color.new(color.red, 50))
+        table.cell(tt, 3, 5, "PUT " + str.format("{0}/6", confScorePut), text_color=color.white,
+                   bgcolor=confScorePut >= minConfluence ? color.new(color.green, 50) : color.new(color.red, 50))
+
+        // Confluence factor breakdown
+        table.cell(tt, 0, 6, "RSI",  text_color=color.white)
+        table.cell(tt, 1, 6, str.format("{0,number,#}", rsi14),
+                   text_color=color.white,
+                   bgcolor=color.new((confRsiCall or confRsiPut) ? color.green : color.gray, 60))
+        table.cell(tt, 2, 6, "WVF spike", text_color=color.white)
+        table.cell(tt, 3, 6, confWvfSpike ? "YES" : "no",
+                   text_color=color.white,
+                   bgcolor=color.new(confWvfSpike ? color.green : color.gray, 60))
+
+        table.cell(tt, 0, 7, "Near EMA10", text_color=color.white)
+        table.cell(tt, 1, 7, confNearEma ? "YES" : "no",
+                   text_color=color.white,
+                   bgcolor=color.new(confNearEma ? color.green : color.gray, 60))
+        table.cell(tt, 2, 7, str.format("ext={0,number,#.##}%", extPct), text_color=color.white)
+        table.cell(tt, 3, 7, str.format("< {0,number,#.##}%", extensionPct), text_color=color.white)
+
+        // Row 8: Instrument + timeframe + mid-session vol gate
+        table.cell(tt, 0, 8, instName, text_color=color.white, bgcolor=color.new(color.blue, 60))
+        table.cell(tt, 1, 8, str.format("{0}m", tfMinutes), text_color=color.white,
+                   bgcolor=tfOk ? color.new(color.green, 50) : color.new(color.red, 50))
+        table.cell(tt, 2, 8, tfOk ? "TF OK" : "USE 5m!", text_color=color.white,
+                   bgcolor=tfOk ? color.new(color.green, 50) : color.new(color.red, 50))
+        table.cell(tt, 3, 8, midSessionOk ? "Vol OK" : "VOL GATE!", text_color=color.white,
+                   bgcolor=midSessionOk ? color.new(color.green, 60) : color.new(color.red, 60))
+
+        // Row 9: Trend filter — shows exactly which sides are blocked
+        trendTxt = trendUp ? "UP" : trendDown ? "DOWN" : "FLAT"
+        trendCol = trendUp ? color.green : trendDown ? color.red : color.gray
+        callBlocked = useTrendFilter and trendUp
+        putBlocked  = useTrendFilter and trendDown
+        table.cell(tt, 0, 9, "Trend", text_color=color.white)
+        table.cell(tt, 1, 9, trendTxt, text_color=color.white, bgcolor=color.new(trendCol, 50))
+        table.cell(tt, 2, 9, callBlocked ? "CALL blk" : "CALL ok", text_color=color.white,
+                   bgcolor=callBlocked ? color.new(color.red, 50) : color.new(color.green, 50))
+        table.cell(tt, 3, 9, putBlocked ? "PUT blk" : "PUT ok", text_color=color.white,
+                   bgcolor=putBlocked ? color.new(color.red, 50) : color.new(color.green, 50))
+
+        // Row 10: VWAP gate — shows effective gate after trend-bypass
+        table.cell(tt, 0, 10, "VWAP", text_color=color.white)
+        table.cell(tt, 1, 10, str.format("${0,number,#.##}", sessVwap), text_color=color.white)
+        table.cell(tt, 2, 10, vwapGateCall ? "CALL ok" : "CALL blk", text_color=color.white,
+                   bgcolor=vwapGateCall ? color.new(color.green, 60) : color.new(color.red, 60))
+        table.cell(tt, 3, 10, vwapGatePut ? "PUT ok" : "PUT blk", text_color=color.white,
+                   bgcolor=vwapGatePut ? color.new(color.green, 60) : color.new(color.red, 60))
+    else
+        // Open-trade rows
+        for i = 0 to math.min(nOpen - 1, 3)
+            sideRow  = array.get(tSide, i)
+            tnumRow  = array.get(tNum, i)
+            confRow  = array.get(tConfScore, i)
+            sstrkRow = array.get(tShortStrk, i)
+            tpRow    = array.get(tTpTarget, i)
+
+            distToStop = sideRow == "call" ? (sstrkRow - close) / close * 100 : (close - sstrkRow) / close * 100
+            distToTp   = sideRow == "call" ? (close - tpRow)    / close * 100 : (tpRow    - close) / close * 100
+
+            statusCol = distToStop < 0.05 ? color.red : distToStop < 0.15 ? color.orange : color.green
+
+            table.cell(tt, 0, i + 1, str.format("#{0} ({1}/6)", tnumRow, confRow), text_color=color.white)
+            table.cell(tt, 1, i + 1, str.upper(sideRow),
+                       text_color=color.white, bgcolor=color.new(statusCol, 60))
+            table.cell(tt, 2, i + 1,
+                       str.format("${0,number,#.##}\n{1,number,#.##}%", sstrkRow, distToStop),
+                       text_color=color.white)
+            table.cell(tt, 3, i + 1,
+                       str.format("${0,number,#.##}\n{1,number,#.##}%", tpRow, distToTp),
+                       text_color=color.white)
+
+// ── Alerts ──────────────────────────────────────────────────────────────
+alertcondition(callEntry, title="WAVE ENTER SELL CALL", message="WAVE ENTER SELL CALL (passed gates)")
+alertcondition(putEntry,  title="WAVE ENTER SELL PUT",  message="WAVE ENTER SELL PUT (passed gates)")
+alertcondition(fireExitStop, title="WAVE EXIT - STOP", message="WAVE EXIT STOP - short strike breached. Close at max loss.")
+alertcondition(fireExitTp,   title="WAVE EXIT - TP",   message="WAVE EXIT TP - favorable move. Close for managed profit.")
+alertcondition(fireExitTime, title="WAVE EXIT - TIME", message="WAVE EXIT TIME - close before pin risk.")
+alertcondition(fireExitEod,  title="WAVE EXIT - EOD",  message="WAVE EXIT EOD - let expire OTM.")

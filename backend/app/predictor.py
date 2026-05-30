@@ -8,8 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, time
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
+
+
+_ET = ZoneInfo("America/New_York")
 
 
 # ===== LOCKED PARAMETERS (mirror Pine inputs; no per-day tuning) =====
@@ -31,6 +35,37 @@ STOCH_LOW_THR = 20
 WVF_PERIOD = 22
 WVF_BB_MULT = 2.0
 NEAR_PROJ_ATR = 0.5         # signal must be within 0.5×ATR(5m) of projected boundary
+
+# ── PULLBACK TREND FILTER (added after 12mo backtest validation) ──
+# In live, we suppress counter-trend signals — only sell-call in flat/down,
+# only sell-put in flat/up. This is the lesson from TV's classic Pullback
+# strategies (Davin's 10/200MA, Coral Trend, etc.). On April-2025 tariff
+# days, this filter turned -$3140 (MeanRev) into +$1020 (Pullback).
+TREND_FILTER_ENABLED = True
+EMA_FAST_LEN = 10
+EMA_SLOW_LEN = 30
+TREND_SPREAD_THRESHOLD = 0.05  # % EMA spread required to call it "trending"
+
+# Day-of-week filter (configurable via env; lesson from options.cafe)
+import os as _os
+MWF_ONLY = _os.environ.get("MWF_ONLY", "").lower() in ("true", "1", "yes")
+
+# Wave time-of-day cutoff: don't fire NEW wave entries after this ET time.
+# Default 14:30 ET (= 90 min before close). Past this, premiums are thin AND
+# gamma rises fast — no new entries can capture meaningful TP within remaining
+# session time. Existing positions continue to be managed normally (TP/STOP/EOD).
+def _parse_hhmm(s: str, default_minutes: int) -> int:
+    try:
+        if ":" in s:
+            h, m = s.split(":")
+            return int(h) * 60 + int(m)
+        return int(s)
+    except (ValueError, TypeError):
+        return default_minutes
+WAVE_NO_NEW_ENTRY_AFTER_ET_MIN = _parse_hhmm(
+    _os.environ.get("WAVE_NO_NEW_ENTRY_AFTER_ET", "14:30"),
+    default_minutes=14 * 60 + 30,
+)
 
 
 @dataclass
@@ -67,6 +102,8 @@ class SessionResult:
     proj_low: Optional[float]
     obs_high: Optional[float]
     obs_low: Optional[float]
+    obs_open: Optional[float]       # open of first obs bar (for drift calc)
+    obs_close: Optional[float]      # close of last obs bar
     session_high: float
     session_low: float
     session_close: float
@@ -128,6 +165,45 @@ def _wilder_atr(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
     return out
 
 
+def _ema(arr: np.ndarray, length: int) -> np.ndarray:
+    """Standard EMA. Used for the Pullback trend filter."""
+    out = np.full_like(arr, np.nan, dtype=float)
+    if len(arr) < length:
+        return out
+    alpha = 2.0 / (length + 1.0)
+    out[length - 1] = arr[:length].mean()
+    for i in range(length, len(arr)):
+        out[i] = arr[i] * alpha + out[i - 1] * (1 - alpha)
+    return out
+
+
+def _classify_trend(closes: np.ndarray, ema_fast: np.ndarray, ema_slow: np.ndarray, i: int) -> str:
+    """Classify trend at bar i: 'up' / 'down' / 'flat'.
+    Used to suppress counter-trend signals (the Pullback lesson).
+
+    HISTORICAL BUG (fixed 2026-05-09): the original classifier required BOTH
+    `spread > threshold` AND `close > ema_fast` for "up" (and inverse for "down").
+    A single intrabar dip below ema_fast (e.g. close $7390.14 vs ema_fast $7390.78
+    on 2026-05-08 11:40 ET) flipped trend to "flat" mid-trend, letting a
+    counter-trend CALL signal through that breached for -$380.
+
+    NEW LOGIC: classify on EMA spread alone. The fast/slow spread already
+    encodes "strong trend" — adding the close-vs-fast check was redundant and
+    created single-bar bypasses. Bars below the EMA in an uptrend are normal
+    pullbacks and should NOT flip the trend classification.
+    """
+    if i < 0 or i >= len(closes):
+        return "flat"
+    if np.isnan(ema_fast[i]) or np.isnan(ema_slow[i]):
+        return "flat"
+    spread_pct = (ema_fast[i] - ema_slow[i]) / ema_slow[i] * 100.0
+    if spread_pct > TREND_SPREAD_THRESHOLD:
+        return "up"
+    if spread_pct < -TREND_SPREAD_THRESHOLD:
+        return "down"
+    return "flat"
+
+
 def _wvf(closes: np.ndarray, lows: np.ndarray, period: int,
          bb_mult: float) -> tuple[np.ndarray, np.ndarray]:
     n = len(closes)
@@ -160,6 +236,7 @@ def run_backtest(bars: list[Bar], atr_d1_func) -> list[SessionResult]:
     """Run the indicator's logic over historical bars, grouped by session.
     `atr_d1_func(date_iso) -> float` returns prior D1 ATR(14) for regime classification.
     """
+    opens = np.array([b.open for b in bars])
     closes = np.array([b.close for b in bars])
     highs = np.array([b.high for b in bars])
     lows = np.array([b.low for b in bars])
@@ -169,6 +246,9 @@ def run_backtest(bars: list[Bar], atr_d1_func) -> list[SessionResult]:
     stoch_k_arr, stoch_d_arr = _stoch(highs, lows, closes, STOCH_K_LEN, STOCH_D_LEN)
     atr5_arr = _wilder_atr(highs, lows, closes, RSI_LEN)
     wvf_arr, wvf_spike_arr = _wvf(closes, lows, WVF_PERIOD, WVF_BB_MULT)
+    # EMAs for Pullback trend filter (computed across all bars; filter consults at signal bar)
+    ema_fast_arr = _ema(closes, EMA_FAST_LEN)
+    ema_slow_arr = _ema(closes, EMA_SLOW_LEN)
 
     # Group bars by session date (ET local date)
     session_bars: dict[str, list[int]] = {}
@@ -206,7 +286,8 @@ def run_backtest(bars: list[Bar], atr_d1_func) -> list[SessionResult]:
 
         obs_high = max(highs[i] for i in obs_idxs)
         obs_low = min(lows[i] for i in obs_idxs)
-        obs_close = closes[obs_idxs[-1]]
+        obs_open = float(opens[obs_idxs[0]])   # open of first obs bar
+        obs_close = closes[obs_idxs[-1]]        # close of last obs bar
         obs_range = obs_high - obs_low
 
         atr_d1 = atr_d1_func(sid)
@@ -235,20 +316,46 @@ def run_backtest(bars: list[Bar], atr_d1_func) -> list[SessionResult]:
         proj_low_held = sess_low > proj_low
         both_held = proj_high_held and proj_low_held
 
-        # Generate intraday signals (NON-VOLATILE only; volatile = stand aside)
+        # Generate intraday signals — matches Pine v0.5 deployed indicator:
+        # LOOSE defaults (Stoch reversal cross only), 6-bar cooldown between
+        # same-direction signals, multiple signals per session allowed.
         signals: list[Signal] = []
-        fired_call = False
-        fired_put = False
+        last_call_idx: int | None = None
+        last_put_idx: int | None = None
+        COOLDOWN_BARS = 6  # matches Pine v0.5 default
+
+        # Day-of-week filter: skip Tue/Thu when MWF_ONLY is enabled.
+        # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri.
+        if MWF_ONLY:
+            session_dt_obj = times[idxs[0]]
+            weekday = session_dt_obj.weekday()
+            if weekday in (1, 3):  # Tue or Thu — skip wave signals this session
+                # Still record the session header (regime, projections) but no wave entries
+                results.append(SessionResult(
+                    session_date=sid,
+                    regime=regime_str,
+                    proj_high=proj_high, proj_low=proj_low,
+                    obs_high=obs_high, obs_low=obs_low,
+                    obs_open=obs_open, obs_close=obs_close,
+                    session_high=sess_high, session_low=sess_low,
+                    session_close=sess_close,
+                    proj_high_held=proj_high_held,
+                    proj_low_held=proj_low_held,
+                    both_held=both_held,
+                    signals=[],
+                ))
+                continue
+
         if not regime_volatile:
             for k in range(1, len(post_obs_idxs)):
                 i = post_obs_idxs[k]
                 i_prev = post_obs_idxs[k - 1]
-                if np.isnan(rsi_arr[i]) or np.isnan(stoch_k_arr[i]) or np.isnan(stoch_d_arr[i]):
+                if np.isnan(stoch_k_arr[i]) or np.isnan(stoch_d_arr[i]):
                     continue
                 if np.isnan(atr5_arr[i]) or atr5_arr[i] <= 0:
                     continue
 
-                # Stoch crossovers
+                # Stoch reversal crossovers (the core trigger; matches Pine v0.5)
                 k_now = stoch_k_arr[i]
                 k_prev = stoch_k_arr[i_prev]
                 d_now = stoch_d_arr[i]
@@ -260,46 +367,57 @@ def run_backtest(bars: list[Bar], atr_d1_func) -> list[SessionResult]:
                     k_prev < d_prev and k_now > d_now and k_prev < STOCH_LOW_THR
                 )
 
-                near_upper = 0 <= (proj_high - closes[i]) <= NEAR_PROJ_ATR * atr5_arr[i]
-                near_lower = 0 <= (closes[i] - proj_low) <= NEAR_PROJ_ATR * atr5_arr[i]
+                # Time-of-day gate: no new wave entries after WAVE_NO_NEW_ENTRY_AFTER_ET.
+                # Premiums get too thin late-day for meaningful TP, and gamma
+                # makes adverse moves brutal in the last 90 min. Existing
+                # positions continue to be managed normally.
+                bar_et = times[i].astimezone(_ET) if times[i].tzinfo else times[i]
+                if (bar_et.hour * 60 + bar_et.minute) >= WAVE_NO_NEW_ENTRY_AFTER_ET_MIN:
+                    continue
 
-                sell_call = (rsi_arr[i] > RSI_LONG_THR
-                             and cross_down_from_high
-                             and near_upper)
-                sell_put = (rsi_arr[i] < RSI_SHORT_THR
-                            and cross_up_from_low
-                            and near_lower)
+                # Cooldown gates
+                call_cool_ok = last_call_idx is None or (k - last_call_idx) >= COOLDOWN_BARS
+                put_cool_ok = last_put_idx is None or (k - last_put_idx) >= COOLDOWN_BARS
 
-                if sell_call and not fired_call:
+                # Pullback trend filter — suppress counter-trend signals.
+                # Backtested on 12mo SPX: turned April-2025 tariff carnage from
+                # -$3140 (no filter) to +$1020 (with filter).
+                trend = _classify_trend(closes, ema_fast_arr, ema_slow_arr, i) \
+                        if TREND_FILTER_ENABLED else "flat"
+
+                if cross_down_from_high and call_cool_ok and trend != "up":
                     sig = Signal(
                         time=times[i], side="sell_call_cs",
                         entry_price=closes[i],
                         proj_high=proj_high, proj_low=proj_low, regime=regime_str,
-                        rsi=rsi_arr[i], stoch_k=k_now, stoch_d=d_now,
+                        rsi=rsi_arr[i] if not np.isnan(rsi_arr[i]) else 50.0,
+                        stoch_k=k_now, stoch_d=d_now,
                         wvf=wvf_arr[i] if not np.isnan(wvf_arr[i]) else 0.0,
                         wvf_spike=bool(wvf_spike_arr[i]),
                         strong=bool(wvf_spike_arr[i]),
                     )
                     signals.append(sig)
-                    fired_call = True
-                if sell_put and not fired_put:
+                    last_call_idx = k
+                if cross_up_from_low and put_cool_ok and trend != "down":
                     sig = Signal(
                         time=times[i], side="sell_put_cs",
                         entry_price=closes[i],
                         proj_high=proj_high, proj_low=proj_low, regime=regime_str,
-                        rsi=rsi_arr[i], stoch_k=k_now, stoch_d=d_now,
+                        rsi=rsi_arr[i] if not np.isnan(rsi_arr[i]) else 50.0,
+                        stoch_k=k_now, stoch_d=d_now,
                         wvf=wvf_arr[i] if not np.isnan(wvf_arr[i]) else 0.0,
                         wvf_spike=bool(wvf_spike_arr[i]),
                         strong=bool(wvf_spike_arr[i]),
                     )
                     signals.append(sig)
-                    fired_put = True
+                    last_put_idx = k
 
         results.append(SessionResult(
             session_date=sid,
             regime=regime_str,
             proj_high=proj_high, proj_low=proj_low,
             obs_high=obs_high, obs_low=obs_low,
+            obs_open=obs_open, obs_close=obs_close,
             session_high=sess_high, session_low=sess_low,
             session_close=sess_close,
             proj_high_held=proj_high_held,

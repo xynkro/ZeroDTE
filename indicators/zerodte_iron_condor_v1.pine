@@ -1,0 +1,200 @@
+//@version=5
+indicator("ZeroDTE Iron Condor v1", shorttitle="ZeroDTE IC", overlay=true,
+          max_lines_count=20, max_labels_count=50, max_boxes_count=20)
+
+// ────────────────────────────────────────────────────────────────────────
+// ZeroDTE Iron Condor — overlay for SPX/SPY/XSP (auto-detects instrument)
+//
+// Mirrors the live Python IC builder (orchestrator.py + strikes.py) as of
+// 2026-05-09. Designed for 5m/15m bars on the underlying.
+//
+// Logic:
+//   1. Track observation window 09:30-09:45 ET
+//   2. Lock projected H/L at 09:45 (regime classification: non-volatile = obs_range × 1.5 each side)
+//   3. At configured EOD_IC_BUILD_ET (default 09:45), compute IC strikes:
+//        short_call = underlying × (1 + 1.0% OTM)  [geometric / 20Δ floor]
+//        long_call  = short_call + wing_width
+//        short_put  = underlying × (1 - 1.0% OTM)
+//        long_put   = short_put  - wing_width
+//   4. Draw the IC box (call wing + put wing + ATM zone)
+//   5. Highlight if either wing is breached intraday (= STOP-LOSS trigger zone)
+//   6. Color-shade GOOD / ATM / BAAAAD outcome zones
+//
+// Configurable via inputs (matching live env):
+//   IC_DEFAULT_PCT_OTM=0.5    (was 1.0 — bumped to 0.5 for 20Δ targeting)
+//   IC_WING_WIDTH=10          (SPX 10pt wings, Henry Schwartz CBOE config)
+//   EOD_IC_BUILD_ET=09:45
+// ────────────────────────────────────────────────────────────────────────
+
+g1 = "IC build timing"
+buildHourET = input.int(9,  "Build hour ET",   group=g1, minval=9, maxval=15)
+buildMinET  = input.int(45, "Build minute ET", group=g1, minval=0, maxval=59)
+
+g2 = "Observation window"
+obsStartH    = input.int(9,  "Obs start hour ET",  group=g2)
+obsStartM    = input.int(30, "Obs start min ET",   group=g2)
+obsWindowMin = input.int(15, "Obs length (min)",   group=g2, minval=5, maxval=60)
+
+g3 = "Strike picker (matches live system)"
+pctOtm       = input.float(0.5,  "Short strike % OTM",       group=g3, minval=0.1, step=0.1,
+                           tooltip="0.5% ≈ 20Δ short. 1.0% ≈ 8Δ (Henry's late-day config)")
+wingWidth    = input.float(10.0, "Wing width (SPX points)",  group=g3, minval=1, step=1,
+                           tooltip="10pt = Henry CBOE recommendation. Auto-scales: 1pt on SPY, 0.5pt XSP.")
+
+g4 = "Visualization"
+showIcBox       = input.bool(true,  "Draw IC box at build",        group=g4)
+showOutcomeZones= input.bool(true,  "Shade GOOD/ATM/BAAAAD zones", group=g4)
+showBreachAlerts= input.bool(true,  "Mark wing-breach with line",  group=g4)
+
+// ── Instrument auto-detect (SPX vs SPY/XSP) ────────────────────────────
+// Wing widths are input in SPX points and auto-scaled for SPY/XSP (~1/10).
+_root   = str.upper(syminfo.root != "" ? syminfo.root : syminfo.ticker)
+isSPX   = str.contains(_root, "SPX")
+isSPY   = str.contains(_root, "SPY")
+isXSP   = str.contains(_root, "XSP")
+pxScale = isSPY or isXSP ? 0.1 : 1.0   // SPY/XSP prices ≈ 1/10 of SPX
+effWingWidth = wingWidth * pxScale       // 10 SPX pts → 1 SPY pt
+instName = isSPX ? "SPX" : isSPY ? "SPY" : isXSP ? "XSP" : syminfo.ticker
+
+// ── ET clock ────────────────────────────────────────────────────────────
+inSession = not na(time(timeframe.period, "0930-1600", "America/New_York"))
+etHour    = hour(time, "America/New_York")
+etMin     = minute(time, "America/New_York")
+etMins    = etHour * 60 + etMin
+obsStartMin = obsStartH * 60 + obsStartM
+obsEndMin   = obsStartMin + obsWindowMin
+buildMin    = buildHourET * 60 + buildMinET
+
+// ── Observation window tracking ─────────────────────────────────────────
+var float obsHigh = na
+var float obsLow  = na
+newSession = inSession and not inSession[1]
+if newSession
+    obsHigh := na
+    obsLow  := na
+
+inObs = inSession and etMins >= obsStartMin and etMins < obsEndMin
+if inObs
+    obsHigh := na(obsHigh) ? high : math.max(obsHigh, high)
+    obsLow  := na(obsLow)  ? low  : math.min(obsLow, low)
+
+// ── Projection (locked at obs end) ──────────────────────────────────────
+var float projHigh = na
+var float projLow  = na
+obsJustEnded = etMins == obsEndMin and etMins[1] < obsEndMin
+if obsJustEnded and not na(obsHigh) and not na(obsLow)
+    obsRange = obsHigh - obsLow
+    projHigh := obsHigh + 1.5 * obsRange
+    projLow  := obsLow  - 1.5 * obsRange
+
+// ── IC strikes (locked at build time) ───────────────────────────────────
+var float shortCall = na
+var float longCall  = na
+var float shortPut  = na
+var float longPut   = na
+var float icCredit  = na           // estimated credit (heuristic 12% of wing per side)
+var int   icBuiltBar = na
+var float icBuiltPrice = na
+
+icBuildTrigger = etMins == buildMin and etMins[1] < buildMin and inSession
+if icBuildTrigger and na(shortCall)
+    icBuiltPrice := close
+    shortCall    := close * (1.0 + pctOtm / 100.0)
+    longCall     := shortCall + effWingWidth
+    shortPut     := close * (1.0 - pctOtm / 100.0)
+    longPut      := shortPut  - effWingWidth
+    // Heuristic: each wing collects ~12% of wing × $100 multiplier
+    icCredit     := effWingWidth * 100 * 0.12 * 2  // total credit
+    icBuiltBar   := bar_index
+
+// Reset at new session (clear yesterday's IC)
+if newSession and bar_index > 0
+    shortCall    := na
+    longCall     := na
+    shortPut     := na
+    longPut      := na
+    icCredit     := na
+    icBuiltBar   := na
+    icBuiltPrice := na
+    projHigh     := na
+    projLow      := na
+
+// ── Plotting ────────────────────────────────────────────────────────────
+// Projected H/L (locked at obs end)
+plot(projHigh, "Projected H", color=color.new(color.red,   60), linewidth=1, style=plot.style_circles)
+plot(projLow,  "Projected L", color=color.new(color.green, 60), linewidth=1, style=plot.style_circles)
+
+// Observation window highlight
+bgcolor(inObs ? color.new(color.blue, 90) : na, title="Obs window")
+
+// IC strike lines (extend right from build bar)
+plot(shortCall, "Short CALL", color=color.new(color.red,   0), linewidth=2, style=plot.style_line)
+plot(longCall,  "Long CALL",  color=color.new(color.red,   60), linewidth=1, style=plot.style_line)
+plot(shortPut,  "Short PUT",  color=color.new(color.green, 0), linewidth=2, style=plot.style_line)
+plot(longPut,   "Long PUT",   color=color.new(color.green, 60), linewidth=1, style=plot.style_line)
+
+// GOOD / BAAAAD shading zones (always drawn relative to current strikes)
+goodZoneTop  = plot(showOutcomeZones ? shortCall : na, color=color.new(color.green, 100), display=display.none)
+goodZoneBot  = plot(showOutcomeZones ? shortPut  : na, color=color.new(color.green, 100), display=display.none)
+fill(goodZoneTop, goodZoneBot, color=color.new(color.green, 95), title="GOOD (in-the-box)")
+
+// IC build marker
+if icBuildTrigger and not na(icBuiltPrice)
+    label.new(bar_index, icBuiltPrice,
+              text=str.format("🦅 IC built · C${0,number,#.##}/${1,number,#.##}  P${2,number,#.##}/${3,number,#.##}",
+                              shortCall, longCall, shortPut, longPut),
+              style=label.style_label_down, color=color.new(color.gray, 30),
+              textcolor=color.white, size=size.small)
+
+// Wing-breach markers (intraday tag of either short)
+breachCall = showBreachAlerts and not na(shortCall) and high >= shortCall
+breachPut  = showBreachAlerts and not na(shortPut)  and low  <= shortPut
+plotshape(breachCall, title="CALL wing tagged", style=shape.xcross, location=location.abovebar,
+          color=color.new(color.red, 0), size=size.small)
+plotshape(breachPut,  title="PUT wing tagged",  style=shape.xcross, location=location.belowbar,
+          color=color.new(color.red, 0), size=size.small)
+
+// Stop-loss zone reference: extend short call/put as horizontal price lines
+// (TradingView's `hline` only works for static — using `plot` for dynamic per-day)
+
+// ── Status table (top-right) ────────────────────────────────────────────
+var table icTable = table.new(position.top_right, 2, 7, border_width=1)
+if barstate.islast and not na(shortCall)
+    icHeadroom = shortCall - close
+    icCushion  = close - shortPut
+    inGood = close < shortCall and close > shortPut
+    inAtmCallSide = close >= shortCall and close < longCall
+    inAtmPutSide  = close <= shortPut  and close > longPut
+    inBaaaadCall  = close >= longCall
+    inBaaaadPut   = close <= longPut
+    statusLabel = inGood ? "✓ GOOD" :
+                  inAtmCallSide or inAtmPutSide ? "🤏 ATM" :
+                  inBaaaadCall or inBaaaadPut ? "✗ BAAAAD" :
+                  "—"
+    statusColor = inGood ? color.green :
+                  inAtmCallSide or inAtmPutSide ? color.orange :
+                  inBaaaadCall or inBaaaadPut ? color.red :
+                  color.gray
+
+    table.cell(icTable, 0, 0, "IC " + instName, text_color=color.white, bgcolor=color.new(color.blue, 70))
+    table.cell(icTable, 1, 0, statusLabel, text_color=color.white, bgcolor=color.new(statusColor, 50))
+    table.cell(icTable, 0, 1, "Short CALL", text_color=color.white)
+    table.cell(icTable, 1, 1, str.format("${0,number,#.##}", shortCall), text_color=color.white)
+    table.cell(icTable, 0, 2, "Short PUT",  text_color=color.white)
+    table.cell(icTable, 1, 2, str.format("${0,number,#.##}", shortPut),  text_color=color.white)
+    table.cell(icTable, 0, 3, "Headroom (call)", text_color=color.white)
+    table.cell(icTable, 1, 3, str.format("${0,number,#.##}", icHeadroom), text_color=color.white)
+    table.cell(icTable, 0, 4, "Cushion (put)",   text_color=color.white)
+    table.cell(icTable, 1, 4, str.format("${0,number,#.##}", icCushion),  text_color=color.white)
+    table.cell(icTable, 0, 5, "Est credit", text_color=color.white)
+    table.cell(icTable, 1, 5, str.format("~${0,number,#.##}", icCredit),  text_color=color.white)
+    table.cell(icTable, 0, 6, "Scale", text_color=color.white)
+    table.cell(icTable, 1, 6, str.format("wing={0,number,#.#}pt", effWingWidth), text_color=color.white, bgcolor=color.new(color.blue, 60))
+
+// ── Alerts ──────────────────────────────────────────────────────────────
+alertcondition(icBuildTrigger, title="ZeroDTE IC built",
+               message="ZeroDTE IC built · short C={{plot('Short CALL')}} P={{plot('Short PUT')}}")
+alertcondition(breachCall, title="ZeroDTE IC: CALL wing tagged",
+               message="🛑 IC CALL tagged · close to STOP-LOSS at breakeven")
+alertcondition(breachPut,  title="ZeroDTE IC: PUT wing tagged",
+               message="🛑 IC PUT tagged · close to STOP-LOSS at breakeven")

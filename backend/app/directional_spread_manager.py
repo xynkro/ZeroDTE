@@ -134,16 +134,22 @@ def spy_strike_params(
     recomputing from the legacy DELTA_TO_OTM_PCT proxy table. This also guarantees the
     exit reverses the exact same strikes the entry submitted.
 
-    SPY ≈ SPX / 10, $0.50 strike increments, wing = SPY_WING_DOLLARS ($1 default).
+    SPY ≈ SPX / 10, wing = SPY_WING_DOLLARS ($1 default).
+
+    SPY 0DTE options list on a $1.00 strike grid near the money — there are NO
+    $0.50 strikes (verified against the live CBOE chain 2026-05-30: spot $756.48,
+    ATM strikes 751,752,...,762, all $1 apart). So both legs are rounded to whole
+    dollars; a half-dollar strike doesn't exist and Alpaca rejects the multi-leg
+    order. Rounding to $1 costs at most $0.50 of strike placement (~0.07% of a
+    ~$750 underlying — a fraction of a delta), far less than an unfillable order.
     """
     wing = settings.SPY_WING_DOLLARS
-    # Round the short to the nearest $0.50, then set the long exactly one wing away
-    # (keeps a clean $1 wing on a $0.50-aligned short — both legs stay on the grid).
-    short_strike = round(spx_short_strike / 10.0 * 2) / 2
+    # Round both legs to the nearest whole dollar (SPY's listed 0DTE strike grid).
+    short_strike = float(round(spx_short_strike / 10.0))
     if side == "sell_call_cs":
-        long_strike = short_strike + wing
+        long_strike = float(round(short_strike + wing))
     else:
-        long_strike = short_strike - wing
+        long_strike = float(round(short_strike - wing))
     credit = (spx_credit_dollars / 10.0) if spx_credit_dollars is not None else None
     return {
         "short_strike": short_strike,

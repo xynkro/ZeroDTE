@@ -164,11 +164,13 @@ alertcondition(sell_put_cs_strong, "ZeroDTE: SELL PUT CS (WVF confirmed)",
 
 // ==================== TABLE (live diagnostics) ====================
 var table diag_tbl = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 70), border_width=1)
-if barstate.islast
-    f_show(row, label, val, col_val) =>
-        table.cell(diag_tbl, 0, row, label, text_color=color.white, text_size=size.small)
-        table.cell(diag_tbl, 1, row, val,   text_color=col_val, text_size=size.small)
 
+// Function MUST be at script-level (Pine v5 doesn't allow function defs inside `if`)
+f_show(int row, string lbl_text, string val_text, color val_color) =>
+    table.cell(diag_tbl, 0, row, lbl_text, text_color=color.white, text_size=size.small)
+    table.cell(diag_tbl, 1, row, val_text, text_color=val_color, text_size=size.small)
+
+if barstate.islast
     regime_str = regime_locked ? (regime_volatile ? "VOLATILE" : "NON-VOL") : "(pre-obs)"
     regime_col = not regime_locked ? color.gray : (regime_volatile ? color.orange : color.green)
     f_show(0, "Regime", regime_str, regime_col)

@@ -4,12 +4,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .config import settings
 from .orchestrator import Orchestrator
+
+# PWA served from the backend so the phone loads the whole app from ONE origin
+# (e.g. http://mings-macbook-pro.taile25066.ts.net:8765/ over Tailscale). The
+# frontend's API_BASE = location.hostname:8765 then auto-resolves to this backend.
+FRONTEND_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
 
 
 log = logging.getLogger(__name__)
@@ -37,6 +44,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def serve_pwa():
+    """Serve the single-file PWA dashboard at the root path."""
+    if FRONTEND_INDEX.exists():
+        return FileResponse(FRONTEND_INDEX, media_type="text/html")
+    return {"error": f"frontend not found at {FRONTEND_INDEX}"}
 
 
 @app.get("/api/status")

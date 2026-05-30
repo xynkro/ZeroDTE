@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
 <title>ZeroDTE Dashboard</title>
+<meta name="theme-color" content="#0b0d12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ZeroDTE" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="/icon-192.png" />
 <style>
   :root {
     --bg: #0b0d12; --panel: #131722; --panel2: #1c2033; --panel3: #242838;
@@ -770,8 +778,21 @@
 </div>
 
 <script>
-  const API_BASE = `http://${location.hostname || 'localhost'}:8765`;
-  const WS_URL   = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.hostname || 'localhost'}:8765/ws`;
+  // Same-origin when the backend itself served this page — either directly on
+  // :8765, or proxied by `tailscale serve` over HTTPS (port 443, no explicit port).
+  // Falls back to :8765 for a separate dev server (e.g. Vite on :5179).
+  const _httpish = location.protocol === 'http:' || location.protocol === 'https:';
+  const _sameOrigin = _httpish && (location.port === '8765' || location.port === '');
+  const API_BASE = _sameOrigin ? location.origin : `http://${location.hostname || 'localhost'}:8765`;
+  const _wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const WS_URL   = _sameOrigin
+    ? `${_wsProto}://${location.host}/ws`
+    : `${_wsProto}://${location.hostname || 'localhost'}:8765/ws`;
+
+  // Register the service worker — enables install-to-home-screen as a real PWA (HTTPS).
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  }
 
   let MODE = 'wave';   // 'wave' | 'ic' | 'both'
   let TF   = '5';      // tradingview interval

@@ -16,7 +16,8 @@ from .orchestrator import Orchestrator
 # PWA served from the backend so the phone loads the whole app from ONE origin
 # (e.g. http://mings-macbook-pro.taile25066.ts.net:8765/ over Tailscale). The
 # frontend's API_BASE = location.hostname:8765 then auto-resolves to this backend.
-FRONTEND_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "index.html"
+FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
+FRONTEND_INDEX = FRONTEND_DIR / "index.html"
 
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,34 @@ async def serve_pwa():
     if FRONTEND_INDEX.exists():
         return FileResponse(FRONTEND_INDEX, media_type="text/html")
     return {"error": f"frontend not found at {FRONTEND_INDEX}"}
+
+
+# PWA assets — manifest, service worker, icons (installable PWA over HTTPS).
+@app.get("/manifest.webmanifest")
+async def pwa_manifest():
+    return FileResponse(FRONTEND_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+async def pwa_service_worker():
+    # Served from root so its scope is the whole app. no-cache so updates ship fast.
+    return FileResponse(FRONTEND_DIR / "sw.js", media_type="application/javascript",
+                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+
+
+@app.get("/icon-192.png")
+async def pwa_icon_192():
+    return FileResponse(FRONTEND_DIR / "icon-192.png", media_type="image/png")
+
+
+@app.get("/icon-512.png")
+async def pwa_icon_512():
+    return FileResponse(FRONTEND_DIR / "icon-512.png", media_type="image/png")
+
+
+@app.get("/apple-touch-icon.png")
+async def pwa_apple_icon():
+    return FileResponse(FRONTEND_DIR / "apple-touch-icon.png", media_type="image/png")
 
 
 @app.get("/api/status")

@@ -308,6 +308,20 @@ class AlpacaTrader:
             log.error("Alpaca list orders failed: %s", e)
             return []
 
+    async def close_all_positions(self) -> dict:
+        """Emergency flatten — liquidate ALL open positions AND cancel ALL open
+        orders in a single call (Alpaca DELETE /v2/positions?cancel_orders=true)."""
+        try:
+            client = await self._ensure_client()
+            url = f"{settings.ALPACA_BASE_URL}/v2/positions"
+            resp = await client.delete(url, params={"cancel_orders": "true"})
+            resp.raise_for_status()
+            data = resp.json()
+            return {"ok": True, "closed": len(data) if isinstance(data, list) else 0}
+        except Exception as e:
+            log.error("Alpaca close-all-positions failed: %s", e)
+            return {"ok": False, "error": str(e)}
+
     # ──────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────

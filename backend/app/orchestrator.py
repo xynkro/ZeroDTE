@@ -272,8 +272,14 @@ class Orchestrator:
                 pass
         if self.bot_poller:
             await self.bot_poller.stop()
-        await self.feed.disconnect()
+        if self.feed is not None:
+            await self.feed.disconnect()
         await self.macro.stop()
+        if getattr(self, "alpaca_trader", None) is not None:
+            try:
+                await self.alpaca_trader.close()  # close the httpx client (was leaked)
+            except Exception:
+                pass
 
     async def _ibkr_reconnect_loop(self):
         """Try to attach to IBKR every 60s. Handles both:
@@ -1564,6 +1570,10 @@ class Orchestrator:
         if not ev.wave_strikes:
             return None, ""
 
+        # ── GATE 0: Kill switch / trading halt ──
+        if settings.TRADING_HALTED:
+            return None, "skipped: trading HALTED (kill switch active)"
+
         # ── GATE 1: Confluence threshold ──
         min_score = settings.WAVE_MIN_CONFLUENCE_SCORE
         if ev.confluence_score < min_score:
@@ -1591,6 +1601,13 @@ class Orchestrator:
                 trades_today, settings.MAX_TRADES_PER_DAY,
             )
             return None, f"skipped: daily cap reached ({trades_today}/{settings.MAX_TRADES_PER_DAY})"
+
+        # ── GATE 3b: Max concurrent OPEN positions (real limit — was never enforced) ──
+        open_now = sum(1 for t in self.paper_trades if not t.closed)
+        if open_now >= settings.MAX_CONCURRENT_POSITIONS:
+            log.info("Signal gated [max_concurrent]: %d/%d positions already open",
+                     open_now, settings.MAX_CONCURRENT_POSITIONS)
+            return None, f"skipped: {open_now}/{settings.MAX_CONCURRENT_POSITIONS} positions already open"
 
         # ── GATE 4: VIX bucket ──
         vix_ok, vix_value, vix_rationale = self._check_vix_bucket_for_wave()

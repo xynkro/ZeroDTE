@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -18,6 +18,17 @@ from .orchestrator import Orchestrator
 # frontend's API_BASE = location.hostname:8765 then auto-resolves to this backend.
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 FRONTEND_INDEX = FRONTEND_DIR / "index.html"
+
+# Whitelist for the backtest `data_file` query param — blocks path traversal /
+# arbitrary local-file reads (the API is network-exposed with no auth).
+_ALLOWED_DATA_FILES = {"SPX_5m_60d.json", "SPX_5m_1y.json", "SPX_5m_3y.json"}
+
+
+def _safe_data_file(name: str) -> str:
+    base = Path(name or "").name  # strip any ../ or directory components
+    if base not in _ALLOWED_DATA_FILES:
+        raise HTTPException(status_code=400, detail="invalid data_file")
+    return base
 
 
 log = logging.getLogger(__name__)
@@ -56,31 +67,38 @@ async def serve_pwa():
 
 
 # PWA assets — manifest, service worker, icons (installable PWA over HTTPS).
+def _asset(filename: str, media_type: str, headers: dict | None = None):
+    p = FRONTEND_DIR / filename
+    if not p.exists():
+        raise HTTPException(status_code=404, detail=f"{filename} not found")
+    return FileResponse(p, media_type=media_type, headers=headers)
+
+
 @app.get("/manifest.webmanifest")
 async def pwa_manifest():
-    return FileResponse(FRONTEND_DIR / "manifest.webmanifest", media_type="application/manifest+json")
+    return _asset("manifest.webmanifest", "application/manifest+json")
 
 
 @app.get("/sw.js")
 async def pwa_service_worker():
     # Served from root so its scope is the whole app. no-cache so updates ship fast.
-    return FileResponse(FRONTEND_DIR / "sw.js", media_type="application/javascript",
-                        headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
+    return _asset("sw.js", "application/javascript",
+                  {"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"})
 
 
 @app.get("/icon-192.png")
 async def pwa_icon_192():
-    return FileResponse(FRONTEND_DIR / "icon-192.png", media_type="image/png")
+    return _asset("icon-192.png", "image/png")
 
 
 @app.get("/icon-512.png")
 async def pwa_icon_512():
-    return FileResponse(FRONTEND_DIR / "icon-512.png", media_type="image/png")
+    return _asset("icon-512.png", "image/png")
 
 
 @app.get("/apple-touch-icon.png")
 async def pwa_apple_icon():
-    return FileResponse(FRONTEND_DIR / "apple-touch-icon.png", media_type="image/png")
+    return _asset("apple-touch-icon.png", "image/png")
 
 
 @app.get("/api/status")
@@ -334,6 +352,7 @@ async def backtest_matrix(
     daily move 2.08%) so high WRs reflect this benign regime, NOT crash regimes.
     """
     from .multi_tf_backtest import run_matrix
+    data_file = _safe_data_file(data_file)
     return run_matrix(
         instrument=instrument,
         strike_distance_pct=strike_distance_pct,
@@ -354,6 +373,7 @@ async def backtest_regime(data_file: str = "SPX_5m_1y.json"):
     from zoneinfo import ZoneInfo as _ZI
     import statistics as _stat
     _ET = _ZI("America/New_York")
+    data_file = _safe_data_file(data_file)
     path = settings.data_dir / "historical" / data_file
     if not path.exists():
         path = settings.data_dir / "historical" / "SPX_5m_60d.json"
@@ -366,6 +386,9 @@ async def backtest_regime(data_file: str = "SPX_5m_1y.json"):
         d = et.strftime("%Y-%m-%d")
         by_date.setdefault(d, []).append(b)
     dates = sorted(by_date.keys())
+    if len(dates) < 2:
+        return {"error": "insufficient data: need ≥2 sessions to profile regime",
+                "n_sessions": len(dates)}
     opens = [by_date[d][0]["open"] for d in dates]
     closes = [by_date[d][-1]["close"] for d in dates]
     highs = [max(b["high"] for b in by_date[d]) for d in dates]
@@ -523,6 +546,8 @@ async def monitor_stats():
     daily_map = defaultdict(lambda: {"pnl": 0, "trades": 0, "wins": 0})
     for t in closed:
         day = (t.fired_at or "")[:10]
+        if not day:
+            continue  # don't bucket timestamp-less trades under a phantom "" date
         daily_map[day]["pnl"] += (t.pnl or 0)
         daily_map[day]["trades"] += 1
         if (t.pnl or 0) > 0:
@@ -631,16 +656,33 @@ async def flow_scan_now():
 
 @app.post("/api/alpaca/kill")
 async def alpaca_kill():
-    """Emergency kill: cancel all open Alpaca orders, disable paper broker."""
+    """EMERGENCY KILL — actually stops everything:
+      1. HALT the strategy (no new paper/broker entries, via settings.TRADING_HALTED)
+      2. Disable the live broker (TRADING_ENABLED=False, PAPER_BROKER=none)
+      3. Flatten + cancel everything at Alpaca (close all positions, cancel all orders)
+    Resume with POST /api/trading/resume (or restart). Flags are set BEFORE the broker
+    call so no in-flight task can open a new position behind the kill.
+    """
+    settings.TRADING_HALTED = True
+    settings.TRADING_ENABLED = False
     settings.PAPER_BROKER = "none"
-    if not hasattr(orch, "alpaca_trader") or orch.alpaca_trader is None:
-        return {"ok": True, "cancelled": 0, "paper_broker": "none"}
-    try:
-        orders = await orch.alpaca_trader.get_orders("open")
-        cancelled = 0
-        for o in orders:
-            if await orch.alpaca_trader.cancel_order(o["id"]):
-                cancelled += 1
-        return {"ok": True, "cancelled": cancelled, "paper_broker": "none"}
-    except Exception as e:
-        return {"ok": False, "error": str(e), "paper_broker": "none"}
+    result = {"ok": True, "halted": True, "trading_enabled": False, "paper_broker": "none"}
+    if hasattr(orch, "alpaca_trader") and orch.alpaca_trader is not None:
+        flat = await orch.alpaca_trader.close_all_positions()
+        result["flatten"] = flat
+        if not flat.get("ok"):
+            result["ok"] = False
+    log.warning("KILL SWITCH activated — strategy HALTED, broker disabled, flatten=%s",
+                result.get("flatten"))
+    return result
+
+
+@app.post("/api/trading/resume")
+async def trading_resume():
+    """Clear the kill-switch halt so the strategy can open entries again. Does NOT
+    re-enable the live broker — set TRADING_ENABLED / PAPER_BROKER deliberately."""
+    settings.TRADING_HALTED = False
+    log.warning("Trading RESUMED — halt cleared (broker stays: enabled=%s broker=%s)",
+                settings.TRADING_ENABLED, settings.PAPER_BROKER)
+    return {"ok": True, "halted": False,
+            "trading_enabled": settings.TRADING_ENABLED, "paper_broker": settings.PAPER_BROKER}

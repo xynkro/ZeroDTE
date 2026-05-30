@@ -75,7 +75,11 @@ def recommend_contracts(
 
     effective_risk = base_risk * mult
     n = int(effective_risk // max_loss_per_contract_usd)
-    n = max(0, min(n, settings.MAX_CONCURRENT_POSITIONS))
+    # Absolute per-trade risk ceiling (SIZE_CAP_USD); MAX_CONCURRENT_POSITIONS gates
+    # simultaneous OPEN trades in the orchestrator, not contracts per trade.
+    if settings.SIZE_CAP_USD and settings.SIZE_CAP_USD > 0:
+        n = min(n, int(settings.SIZE_CAP_USD // max_loss_per_contract_usd))
+    n = max(0, n)
 
     # FLOOR: any signal that passed the gate (≥3/5 = mult ≥0.6) gets ≥1 contract
     # even if account is too small for full sizing. Trader can size smaller manually.

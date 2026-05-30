@@ -184,18 +184,23 @@ def recommend_contracts(
 
     Sizing rule (post-pivot):
       base_risk = account_size × risk_per_trade_pct/100
-      contracts = floor(base_risk / max_loss_per_contract), capped at MAX_CONCURRENT_POSITIONS
+      contracts = floor(base_risk / max_loss_per_contract), then capped by the
+      absolute SIZE_CAP_USD per-trade risk ceiling. (MAX_CONCURRENT_POSITIONS is
+      NOT a contract cap — it gates simultaneous OPEN trades in the orchestrator.)
 
-    With 40Δ + $10 wing: max_loss ≈ $600 per contract.
+    With 30-40Δ + $10 wing: max_loss ≈ $600-700 per contract.
     With $400 risk budget (4% of $10k): 0 contracts mathematically → forced to 1 (over budget).
-    Trader can bump RISK_PER_TRADE_PCT to size up.
+    Trader can bump RISK_PER_TRADE_PCT (and SIZE_CAP_USD) to size up.
     """
     if max_loss_per_contract_usd <= 0:
         return 0, "no loss data"
 
     base_risk = settings.ACCOUNT_SIZE_USD * (settings.RISK_PER_TRADE_PCT / 100.0)
     n = int(base_risk // max_loss_per_contract_usd)
-    n = max(0, min(n, settings.MAX_CONCURRENT_POSITIONS))
+    # Absolute per-trade risk ceiling — one trade's max loss never exceeds SIZE_CAP_USD.
+    if settings.SIZE_CAP_USD and settings.SIZE_CAP_USD > 0:
+        n = min(n, int(settings.SIZE_CAP_USD // max_loss_per_contract_usd))
+    n = max(0, n)
 
     # Floor: if any signal passes gate, allow at least 1 contract (small accts)
     if n == 0 and max_loss_per_contract_usd > 0:
@@ -338,11 +343,20 @@ def check_exit(trade: PaperTrade, bar: Bar) -> Optional[dict]:
     close_min = 16 * 60
     time_stop_min = close_min - settings.WAVE_TIME_STOP_MIN_BEFORE_CLOSE
 
-    # EOD — expire OTM if still alive
+    # EOD settle — full credit only if OTM; max loss if the short expired ITM.
     if bar_min >= close_min:
-        _close(trade, bar, outcome="max_profit_otm",
-               reason="expired OTM at 16:00 ET — full credit kept")
-        trade.pnl = (trade.estimated_credit or 0) * trade.contracts
+        call_itm = trade.side == "sell_call_cs" and bar.close >= trade.short_strike
+        put_itm = trade.side == "sell_put_cs" and bar.close <= trade.short_strike
+        if call_itm or put_itm:
+            wing_dollars = abs(trade.long_strike - trade.short_strike)
+            max_loss = (wing_dollars * 100) - (trade.estimated_credit or 0)
+            _close(trade, bar, outcome="breach_max_loss",
+                   reason=f"expired ITM — short ${trade.short_strike:.0f} vs close ${bar.close:.2f}")
+            trade.pnl = -max_loss * trade.contracts
+        else:
+            _close(trade, bar, outcome="max_profit_otm",
+                   reason="expired OTM at 16:00 ET — full credit kept")
+            trade.pnl = (trade.estimated_credit or 0) * trade.contracts
         return _exit_dict(trade, bar)
 
     # Same-bar guard (capital protection — STOP fires same bar; TP/TIME don't)

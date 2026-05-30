@@ -65,6 +65,9 @@ class Settings:
     SHADOW_MODE: bool = _b("SHADOW_MODE", True)
     PAPER_BROKER: str = os.getenv("PAPER_BROKER", "none")  # "none" | "alpaca"
     SIZE_CAP_USD: float = _f("SIZE_CAP_USD", 500.0)
+    # Runtime kill switch — set True by POST /api/alpaca/kill to HALT all new entries
+    # (paper + broker). Cleared by POST /api/trading/resume or a restart. In-memory only.
+    TRADING_HALTED: bool = False
 
     # Position sizing (per-trade)
     ACCOUNT_SIZE_USD: float = _f("ACCOUNT_SIZE_USD", 7500.0)   # paper acct ~ live

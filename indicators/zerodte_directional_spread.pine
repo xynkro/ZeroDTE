@@ -61,9 +61,25 @@ spreadVal(isCall, S, sK, lK, tv) =>
 
 zAbs = shortDelta <= 5 ? 1.645 : shortDelta <= 10 ? 1.282 : shortDelta <= 15 ? 1.036 : shortDelta <= 20 ? 0.842 : shortDelta <= 25 ? 0.674 : shortDelta <= 30 ? 0.524 : shortDelta <= 35 ? 0.385 : 0.253
 
-// Vol + periods to expiry
+// Vol + periods to expiry.
+// SESSION-ANCHORED realized vol (matches backend _session_realized_std): use only
+// today's intra-session log returns, EXCLUDING the overnight-gap return (the first
+// bar of the session). A rolling cross-session window (ta.stdev(logret,20)) pulls in
+// overnight gaps + the prior session's volatility, which inflated vol and pushed the
+// strikes ~5x too far OTM ("$100-wide" bug, May 2026).
 logret    = math.log(close / close[1])
-rv5       = ta.stdev(logret, 20)
+var float sumR  = 0.0
+var float sumR2 = 0.0
+var int   nR    = 0
+if newDay
+    sumR := 0.0
+    sumR2 := 0.0
+    nR := 0          // drop the overnight-gap return (this bar's logret)
+else
+    sumR  := sumR + logret
+    sumR2 := sumR2 + logret * logret
+    nR    := nR + 1
+rv5       = nR >= 5 ? math.sqrt(math.max(0.0, (sumR2 - sumR * sumR / nR) / (nR - 1))) : na
 periodsRem = math.max((CLOSE_MIN - etMin) / 5.0, 0.0)
 tvNow     = rv5 * math.sqrt(periodsRem) * premMult
 

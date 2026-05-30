@@ -1770,11 +1770,12 @@ class Orchestrator:
         """Submit directional spread entry to Alpaca paper API as SPY."""
         from .directional_spread_manager import spy_strike_params
         try:
-            spy_price = pt.underlying_at_signal / 10.0
+            # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale), not a
+            # legacy proxy — so the Alpaca paper fills validate the real strategy.
             params = spy_strike_params(
                 side=pt.side,
-                spy_price=spy_price,
-                short_delta=settings.DIRECTIONAL_SHORT_DELTA,
+                spx_short_strike=pt.short_strike,
+                spx_credit_dollars=pt.estimated_credit,
             )
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
 
@@ -1814,12 +1815,12 @@ class Orchestrator:
                 pt.broker_status = "closed"
                 log.info("Alpaca paper exit (cancelled): trade #%d", pt.trade_no)
             else:
-                # Order was filled — place reverse spread to close
-                spy_price = pt.underlying_at_signal / 10.0
+                # Order was filled — place reverse spread to close. Same strikes as
+                # entry (derived from the trade's SPX short strike) so it reverses cleanly.
                 params = spy_strike_params(
                     side=pt.side,
-                    spy_price=spy_price,
-                    short_delta=settings.DIRECTIONAL_SHORT_DELTA,
+                    spx_short_strike=pt.short_strike,
+                    spx_credit_dollars=pt.estimated_credit,
                 )
                 today_str = datetime.now(ET).strftime("%Y-%m-%d")
                 result = await self.alpaca_trader.close_credit_spread(

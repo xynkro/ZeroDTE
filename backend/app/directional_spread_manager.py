@@ -123,23 +123,28 @@ DELTA_TO_CREDIT_PCT = {
 
 def spy_strike_params(
     side: str,
-    spy_price: float,
-    short_delta: int,
+    spx_short_strike: float,
+    spx_credit_dollars: float | None = None,
 ) -> dict:
-    """Compute SPY-scaled strikes for Alpaca paper trading.
+    """SPY-scaled strikes that MIRROR the actual SPX directional trade (1/10 scale).
 
-    SPY options have $0.50 strike increments. Wing = SPY_WING_DOLLARS ($1 default).
-    Same delta/OTM% math as SPX — percentages are scale-independent.
+    The Alpaca paper account exists to validate the strategy actually being run, so
+    we derive the SPY strikes from the trade's real SPX short strike (`pt.short_strike`,
+    which is the Black-Scholes strike when DIRECTIONAL_PNL_MODEL=bs) rather than
+    recomputing from the legacy DELTA_TO_OTM_PCT proxy table. This also guarantees the
+    exit reverses the exact same strikes the entry submitted.
+
+    SPY ≈ SPX / 10, $0.50 strike increments, wing = SPY_WING_DOLLARS ($1 default).
     """
-    otm_pct = DELTA_TO_OTM_PCT.get(short_delta, 0.22)
     wing = settings.SPY_WING_DOLLARS
+    # Round the short to the nearest $0.50, then set the long exactly one wing away
+    # (keeps a clean $1 wing on a $0.50-aligned short — both legs stay on the grid).
+    short_strike = round(spx_short_strike / 10.0 * 2) / 2
     if side == "sell_call_cs":
-        short_strike = round(spy_price * (1 + otm_pct / 100.0) * 2) / 2  # nearest $0.50
         long_strike = short_strike + wing
     else:
-        short_strike = round(spy_price * (1 - otm_pct / 100.0) * 2) / 2
         long_strike = short_strike - wing
-    credit = credit_dollars_for_delta(short_delta, wing, multiplier=100)
+    credit = (spx_credit_dollars / 10.0) if spx_credit_dollars is not None else None
     return {
         "short_strike": short_strike,
         "long_strike": long_strike,

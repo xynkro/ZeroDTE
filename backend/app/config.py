@@ -137,6 +137,15 @@ class Settings:
     IC_INSTRUMENT: str = os.getenv("IC_INSTRUMENT", "XSP")
     IC_WING_WIDTH: float = _f("IC_WING_WIDTH", 0)               # 0 = instrument default
 
+    # EOD IC — CBOE real-delta strike placement (fixes the "geometric pennies" bug:
+    # the old picker placed shorts at 1-6Δ → ~$35 credit / ~$965 risk = 27:1 garbage).
+    # Now places shorts at a real delta off the CBOE chain with wider SPX wings and
+    # SKIPS entirely when the credit is too thin to be worth the wing risk.
+    EOD_IC_USE_CBOE: bool = _b("EOD_IC_USE_CBOE", True)
+    EOD_IC_SHORT_DELTA: float = _f("EOD_IC_SHORT_DELTA", 0.16)    # short-leg delta target
+    EOD_IC_WING_DOLLARS: float = _f("EOD_IC_WING_DOLLARS", 25.0)  # SPX wing width ($)
+    EOD_IC_MIN_CREDIT_PCT: float = _f("EOD_IC_MIN_CREDIT_PCT", 10.0)  # min credit as % of wing → else skip
+
     # IC auto-build time (ET, "HH:MM"). Default 09:45 = right after observation
     # window completes. Henry Schwartz's CBOE article suggests 12:30 ET for
     # tighter risk/reward, but user preference is "fire and forget early".

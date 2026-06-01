@@ -130,6 +130,110 @@ def compute_gex(chain: dict, neutral_band: float = 0.05) -> GexResult:
         return GexResult(ok=False, symbol="?", error=str(e))
 
 
+def pick_iron_condor(chain: dict, short_delta: float = 0.16, wing: float = 25.0,
+                     min_dte_date: str | None = None) -> dict:
+    """Pick a real, delta-based iron condor from a CBOE delayed-quotes chain.
+
+    Places both shorts at ~short_delta using the chain's REAL deltas (not a
+    geometric %OTM guess), longs one `wing` away (nearest listed strike), and
+    computes the actual fillable credit from bid/ask. Uses the NEAREST expiry
+    (the 0DTE on a live trading day). Returns a dict with ok=False + error on
+    failure so callers degrade gracefully.
+
+    Credit convention (conservative / fillable): you SELL the short (collect its
+    bid) and BUY the long (pay its ask), per side.
+    """
+    try:
+        data = chain.get("data") or {}
+        spot = float(data.get("current_price") or data.get("close") or 0.0)
+        options = data.get("options") or []
+        if spot <= 0 or not options:
+            return {"ok": False, "error": "empty chain / no spot"}
+
+        # Parse + group by expiry
+        by_exp: dict[str, dict] = {}
+        for o in options:
+            sym = o.get("option", "")
+            m = _OCC.search(sym)
+            if not m:
+                continue
+            exp, cp, strike8 = m.group(1), m.group(2), m.group(3)
+            strike = int(strike8) / 1000.0
+            rec = by_exp.setdefault(exp, {"calls": {}, "puts": {}})
+            leg = {"strike": strike, "delta": o.get("delta") or 0.0,
+                   "bid": o.get("bid") or 0.0, "ask": o.get("ask") or 0.0}
+            (rec["calls"] if cp == "C" else rec["puts"])[strike] = leg
+
+        if not by_exp:
+            return {"ok": False, "error": "no parseable options"}
+        # Nearest expiry ≥ min_dte_date (default: earliest expiry present = 0DTE live)
+        exps = sorted(by_exp.keys())
+        if min_dte_date:
+            future = [e for e in exps if e >= min_dte_date]
+            exp = future[0] if future else exps[0]
+        else:
+            exp = exps[0]
+        calls, puts = by_exp[exp]["calls"], by_exp[exp]["puts"]
+        call_strikes = sorted(calls.keys())
+        put_strikes = sorted(puts.keys())
+        if not call_strikes or not put_strikes:
+            return {"ok": False, "error": f"expiry {exp} missing a side"}
+
+        # Short call: OTM call (strike>spot) with delta nearest +short_delta
+        otm_calls = [s for s in call_strikes if s > spot and calls[s]["delta"] > 0]
+        otm_puts = [s for s in put_strikes if s < spot and puts[s]["delta"] < 0]
+        if not otm_calls or not otm_puts:
+            return {"ok": False, "error": "no OTM strikes with greeks"}
+        sc = min(otm_calls, key=lambda s: abs(calls[s]["delta"] - short_delta))
+        sp = min(otm_puts, key=lambda s: abs(abs(puts[s]["delta"]) - short_delta))
+        # Longs: nearest listed strike ≥/≤ short ± wing
+        lc_candidates = [s for s in call_strikes if s >= sc + wing]
+        lp_candidates = [s for s in put_strikes if s <= sp - wing]
+        if not lc_candidates or not lp_candidates:
+            return {"ok": False, "error": "wing strikes not listed"}
+        lc = min(lc_candidates)
+        lp = max(lp_candidates)
+
+        call_credit = (calls[sc]["bid"] or 0.0) - (calls[lc]["ask"] or 0.0)
+        put_credit = (puts[sp]["bid"] or 0.0) - (puts[lp]["ask"] or 0.0)
+        total_credit = call_credit + put_credit
+        call_wing = lc - sc
+        put_wing = sp - lp
+        max_wing = max(call_wing, put_wing)
+        max_loss = max_wing * 100 - total_credit * 100   # one side breaches
+        credit_usd = total_credit * 100
+        credit_pct = (credit_usd / (max_wing * 100) * 100) if max_wing > 0 else 0.0
+
+        return {
+            "ok": True, "expiry": exp, "spot": spot,
+            "short_call": sc, "long_call": lc, "short_put": sp, "long_put": lp,
+            "short_call_delta": round(calls[sc]["delta"], 3),
+            "short_put_delta": round(puts[sp]["delta"], 3),
+            "call_credit_usd": round(call_credit * 100, 2),
+            "put_credit_usd": round(put_credit * 100, 2),
+            "total_credit_usd": round(credit_usd, 2),
+            "max_loss_usd": round(max_loss, 2),
+            "credit_pct_of_wing": round(credit_pct, 1),
+            "call_wing": call_wing, "put_wing": put_wing,
+        }
+    except Exception as e:
+        log.warning("pick_iron_condor failed: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+async def fetch_chain(symbol: str = "_SPX", timeout: float = 20.0) -> dict | None:
+    """Fetch the raw CBOE delayed-quotes chain. Returns None on failure."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+            resp = await client.get(CBOE_URL.format(sym=symbol))
+            resp.raise_for_status()
+            return resp.json()
+    except Exception as e:
+        log.warning("fetch_chain(%s) failed: %s", symbol, e)
+        return None
+
+
 async def fetch_gex(symbol: str = "_SPX", timeout: float = 20.0) -> GexResult:
     """Fetch the CBOE chain and compute GEX. Async (httpx). Never raises — returns
     GexResult(ok=False, ...) on any failure so callers degrade gracefully."""

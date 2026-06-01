@@ -1199,6 +1199,112 @@ class Orchestrator:
             log.exception("EOD IC build (forced) failed: %s", e)
             raise
 
+    async def _build_ic_from_cboe(self, bar: Bar, ph: float, pl: float) -> bool:
+        """Build the EOD iron condor from the live CBOE chain at a real delta.
+
+        Returns True if it HANDLED the IC (built+alerted, or deliberately skipped
+        for thin premium); False if CBOE was unavailable so the caller falls back
+        to the legacy geometric picker. This is the fix for the penny-IC bug: real
+        delta-based strikes + wider SPX wings + actual credit + a min-credit gate.
+        """
+        from . import gex as _gex
+        from .models import StrikeSuggestion, IronCondorBuilder
+        et_now = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
+
+        chain = await _gex.fetch_chain(settings.GEX_SYMBOL)
+        if not chain:
+            return False  # CBOE down → caller falls back to geometric
+        ic = _gex.pick_iron_condor(
+            chain, short_delta=settings.EOD_IC_SHORT_DELTA,
+            wing=settings.EOD_IC_WING_DOLLARS, min_dte_date=et_now.strftime("%y%m%d"),
+        )
+        if not ic.get("ok"):
+            log.warning("CBOE IC pick failed (%s) — falling back", ic.get("error"))
+            return False
+
+        dlt = int(round(settings.EOD_IC_SHORT_DELTA * 100))
+        date_key = et_now.strftime("%Y-%m-%d")
+
+        # ── Min-credit gate: skip thin premium entirely (the whole point) ──
+        if ic["credit_pct_of_wing"] < settings.EOD_IC_MIN_CREDIT_PCT:
+            note = (f"⚪ IC skipped — best {dlt}Δ/${settings.EOD_IC_WING_DOLLARS:.0f} wing only "
+                    f"${ic['total_credit_usd']:.0f} ({ic['credit_pct_of_wing']}% of wing) "
+                    f"< {settings.EOD_IC_MIN_CREDIT_PCT:.0f}% min — not worth the risk")
+            log.info("EOD IC skipped (thin premium): %.1f%% < %.0f%%",
+                     ic["credit_pct_of_wing"], settings.EOD_IC_MIN_CREDIT_PCT)
+            self.state.notes.append(note)
+            if getattr(self, "_is_live_bar", False) and not dedup.already_done("ic_thin_skip", date_key):
+                dedup.mark_done("ic_thin_skip", date_key)
+                try:
+                    tg.ping_eod_iron_condor(
+                        f"🦅 IRON CONDOR · SPX · SKIPPED (premium too thin)\n"
+                        f"best {dlt}Δ / ${settings.EOD_IC_WING_DOLLARS:.0f} wing = ${ic['total_credit_usd']:.0f} "
+                        f"({ic['credit_pct_of_wing']}% of wing) < {settings.EOD_IC_MIN_CREDIT_PCT:.0f}% min.\n"
+                        f"Low IV → 0DTE IC not worth the wing risk today.")
+                except Exception as e:
+                    log.warning("ic thin-skip ping failed: %s", e)
+            return True  # handled (deliberate skip)
+
+        mult = 100
+        call_leg = StrikeSuggestion(
+            instrument="SPX", side="sell_call_cs", mode="iron_condor",
+            short_strike=ic["short_call"], long_strike=ic["long_call"],
+            wing_width=ic["call_wing"], multiplier=mult, short_delta=ic["short_call_delta"],
+            estimated_credit_dollars=ic["call_credit_usd"],
+            max_loss_dollars=ic["call_wing"] * mult - ic["call_credit_usd"],
+        )
+        put_leg = StrikeSuggestion(
+            instrument="SPX", side="sell_put_cs", mode="iron_condor",
+            short_strike=ic["short_put"], long_strike=ic["long_put"],
+            wing_width=ic["put_wing"], multiplier=mult, short_delta=ic["short_put_delta"],
+            estimated_credit_dollars=ic["put_credit_usd"],
+            max_loss_dollars=ic["put_wing"] * mult - ic["put_credit_usd"],
+        )
+        spot = ic["spot"]
+        call_pct = (ic["short_call"] / spot - 1) * 100 if spot else 0.0
+        put_pct = (1 - ic["short_put"] / spot) * 100 if spot else 0.0
+        already_today = any(b.build_id.startswith(f"ic_{date_key}")
+                            for b in self.state.iron_condor_history)
+        try:
+            hh, mm = settings.EOD_IC_BUILD_ET.split(":")
+            target_min = int(hh) * 60 + int(mm)
+        except (ValueError, AttributeError):
+            target_min = 10 * 60 + 15
+        in_auto = abs((et_now.hour * 60 + et_now.minute) - target_min) <= 10
+        trigger = "auto" if (in_auto and not already_today) else "icnow"
+
+        new_ic = IronCondorBuilder(
+            build_id=f"ic_{et_now.strftime('%Y-%m-%d_%H%M')}", built_at=et_now.isoformat(),
+            trigger=trigger, available=True, expiry=ic["expiry"], underlying_price=bar.close,
+            proj_high=ph, proj_low=pl, call_leg=call_leg, put_leg=put_leg,
+            total_credit_dollars=ic["total_credit_usd"], total_max_loss_dollars=ic["max_loss_usd"],
+            bpr_estimate_dollars=ic["max_loss_usd"], skew_direction="neutral",
+            call_pct_otm=round(call_pct, 3), put_pct_otm=round(put_pct, 3),
+            notes=[f"trigger={trigger}; CBOE real-{dlt}Δ ${settings.EOD_IC_WING_DOLLARS:.0f}-wing; "
+                   f"credit {ic['credit_pct_of_wing']}% of wing; deploy ~13:00 ET"],
+        )
+        self.state.iron_condor = new_ic
+        self.state.iron_condor_history.append(new_ic)
+        if len(self.state.iron_condor_history) > 30:
+            self.state.iron_condor_history = self.state.iron_condor_history[-30:]
+        log.info("EOD IC (CBOE %dΔ): SC %s/%s SP %s/%s credit=$%.0f (%.0f%% of wing) maxloss=$%.0f",
+                 dlt, ic["short_call"], ic["long_call"], ic["short_put"], ic["long_put"],
+                 ic["total_credit_usd"], ic["credit_pct_of_wing"], ic["max_loss_usd"])
+        if getattr(self, "_is_live_bar", False):
+            try:
+                tg.ping_iron_condor(
+                    expiry=ic["expiry"], underlying_price=bar.close, instrument="SPX",
+                    short_call=ic["short_call"], long_call=ic["long_call"],
+                    short_put=ic["short_put"], long_put=ic["long_put"],
+                    total_credit=ic["total_credit_usd"], max_loss=ic["max_loss_usd"],
+                    bpr_estimate=ic["max_loss_usd"], pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
+                    skew_direction="neutral", obs_drift_pct=self.state.regime.obs_drift_pct or 0.0,
+                    call_pct_otm=call_pct, put_pct_otm=put_pct,
+                )
+            except Exception as e:
+                log.warning("ping_iron_condor (CBOE) failed: %s", e)
+        return True
+
     async def _build_eod_iron_condor(self, bar: Bar):
         """Build the IC pair (call leg + put leg) using the melded picker:
         geometric (X% OTM, what backtest validated) as floor, delta-targeted
@@ -1255,6 +1361,16 @@ class Orchestrator:
         except Exception as e:
             log.warning("adaptive OTM check failed (using static default): %s", e)
             adaptive_pct_otm = settings.IC_DEFAULT_PCT_OTM
+
+        # ── CBOE real-delta IC (fixes the geometric-pennies bug) ──
+        # Places shorts at a real delta off the live CBOE chain with wider SPX wings
+        # and shows the actual credit; SKIPS when premium is too thin. Falls through
+        # to the legacy geometric picker only if CBOE is unavailable.
+        if settings.EOD_IC_USE_CBOE:
+            handled = await self._build_ic_from_cboe(bar, ph, pl)
+            if handled:
+                return
+            log.info("CBOE IC unavailable — falling back to geometric picker")
 
         instr = settings.IC_INSTRUMENT or "XSP"
         instr_price_scale = 0.1 if instr in ("XSP", "SPY") else 1.0

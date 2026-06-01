@@ -145,6 +145,10 @@ class Settings:
     EOD_IC_SHORT_DELTA: float = _f("EOD_IC_SHORT_DELTA", 0.16)    # short-leg delta target
     EOD_IC_WING_DOLLARS: float = _f("EOD_IC_WING_DOLLARS", 25.0)  # SPX wing width ($)
     EOD_IC_MIN_CREDIT_PCT: float = _f("EOD_IC_MIN_CREDIT_PCT", 10.0)  # min credit as % of wing → else skip
+    # IC trade management (shown in the alert): take profit at TP_PCT% of credit
+    # captured; stop loss at SL_MULT× the credit (or a short-strike touch).
+    EOD_IC_TP_PCT: float = _f("EOD_IC_TP_PCT", 50.0)             # close at 50% of credit captured
+    EOD_IC_SL_MULT: float = _f("EOD_IC_SL_MULT", 2.0)           # stop at 2× credit loss
 
     # IC auto-build time (ET, "HH:MM"). Default 09:45 = right after observation
     # window completes. Henry Schwartz's CBOE article suggests 12:30 ET for

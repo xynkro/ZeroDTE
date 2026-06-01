@@ -234,9 +234,14 @@ def ping_signal(
     if sizing_note:
         lines.append(f"size: {sizing_note}")
     if strategy == "directional_spread":
-        # Theta-harvest plan: hold for decay, no ladder, stop if spread ~2×, T-30m close
-        tp_txt = f"TP {tp_pct:.0f}% credit" if tp_pct is not None else "TP (theta harvest)"
-        lines.append(f"plan: {tp_txt} · no ladder · stop if spread 2× · T-30m close")
+        # Theta-harvest plan with concrete $ levels: TP = buy back at (100−tp_pct)% of
+        # credit; SL = ~1× credit loss (spread doubles); time-stop 30m before close.
+        if tp_pct is not None and estimated_credit:
+            tp_bb = estimated_credit * (1 - tp_pct / 100.0)
+            lines.append(f"plan: TP {tp_pct:.0f}% (buy back ~${tp_bb:.0f}) · "
+                         f"SL ~−${estimated_credit:.0f} (spread 2×) · T-30m close")
+        else:
+            lines.append("plan: TP (theta harvest) · no ladder · stop if spread 2× · T-30m close")
     elif tp_target is not None or stop_target is not None:
         plan = []
         if tp_target is not None:
@@ -366,6 +371,11 @@ def ping_iron_condor(
     obs_drift_pct: float | None = None,
     call_pct_otm: float | None = None,
     put_pct_otm: float | None = None,
+    # Trade management — concrete TP/SL levels
+    tp_dollars: float | None = None,    # buy-back price to take profit
+    sl_dollars: float | None = None,    # loss-stop $ amount
+    tp_pct: float | None = None,        # % of credit captured at TP (label)
+    sl_mult: float | None = None,       # SL as multiple of credit (label)
 ) -> dict | None:
     """Fire once when end-of-day IC is built (~12:30 ET / 00:30 SGT).
 
@@ -373,9 +383,11 @@ def ping_iron_condor(
     affecting newly-created forum topics is resolved. The 🦅 emoji + once-
     a-day cadence make it visually distinct from wave 🔴/🟢 signals.
     """
-    # Pretty expiry: 20260508 → 2026-05-08
+    # Pretty expiry: 20260508 → 2026-05-08 ; CBOE OCC 260601 (YYMMDD) → 2026-06-01
     if len(expiry) == 8 and expiry.isdigit():
         exp_pretty = f"{expiry[:4]}-{expiry[4:6]}-{expiry[6:]}"
+    elif len(expiry) == 6 and expiry.isdigit():
+        exp_pretty = f"20{expiry[:2]}-{expiry[2:4]}-{expiry[4:]}"
     else:
         exp_pretty = expiry
 
@@ -409,6 +421,13 @@ def ping_iron_condor(
         lines.append(" · ".join(money))
     else:
         lines.append("credit: chain unavailable (geometric strikes)")
+    # Management plan — concrete TP / SL (only when we have a real credit)
+    if tp_dollars is not None:
+        cap = f"{tp_pct:.0f}% of credit" if tp_pct else "target"
+        lines.append(f"🎯 TP: buy back ~${tp_dollars:.0f} (capture {cap})")
+    if sl_dollars is not None:
+        mult = f"{sl_mult:.0f}× credit" if sl_mult else "stop"
+        lines.append(f"🛑 SL: −${sl_dollars:.0f} ({mult}) or a short-strike touch (${short_put:.0f} / ${short_call:.0f})")
     if pwa_url:
         lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_iron_condor()

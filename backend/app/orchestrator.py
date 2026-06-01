@@ -1290,6 +1290,11 @@ class Orchestrator:
         log.info("EOD IC (CBOE %dΔ): SC %s/%s SP %s/%s credit=$%.0f (%.0f%% of wing) maxloss=$%.0f",
                  dlt, ic["short_call"], ic["long_call"], ic["short_put"], ic["long_put"],
                  ic["total_credit_usd"], ic["credit_pct_of_wing"], ic["max_loss_usd"])
+        # Trade management: TP = buy back at (100−TP_PCT)% of credit (capture TP_PCT%);
+        # SL = SL_MULT× credit loss, capped at the wing max loss.
+        credit_usd = ic["total_credit_usd"]
+        tp_dollars = round(credit_usd * (1 - settings.EOD_IC_TP_PCT / 100.0))
+        sl_dollars = round(min(credit_usd * settings.EOD_IC_SL_MULT, ic["max_loss_usd"]))
         if getattr(self, "_is_live_bar", False):
             try:
                 tg.ping_iron_condor(
@@ -1300,6 +1305,8 @@ class Orchestrator:
                     bpr_estimate=ic["max_loss_usd"], pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
                     skew_direction="neutral", obs_drift_pct=self.state.regime.obs_drift_pct or 0.0,
                     call_pct_otm=call_pct, put_pct_otm=put_pct,
+                    tp_dollars=tp_dollars, sl_dollars=sl_dollars,
+                    tp_pct=settings.EOD_IC_TP_PCT, sl_mult=settings.EOD_IC_SL_MULT,
                 )
             except Exception as e:
                 log.warning("ping_iron_condor (CBOE) failed: %s", e)

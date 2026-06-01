@@ -104,26 +104,17 @@ class AlpacaTrader:
             short_sym = self._occ_symbol(underlying, expiry_fmt, side, short_strike)
             long_sym = self._occ_symbol(underlying, expiry_fmt, side, long_strike)
 
-            # Multi-leg order
+            # Multi-leg (mleg) order. Alpaca rejects a top-level `symbol` and per-leg
+            # `qty`/`type` on mleg orders ("symbol is not allowed for mleg order").
+            # Top-level qty = number of spreads; legs use ratio_qty + position_intent.
             order = {
-                "symbol": underlying,
                 "qty": str(qty),
                 "type": "market",        # market for immediate fill
                 "time_in_force": "day",
                 "order_class": "mleg",   # multi-leg
                 "legs": [
-                    {
-                        "symbol": short_sym,
-                        "side": "sell",
-                        "qty": str(qty),
-                        "type": "market",
-                    },
-                    {
-                        "symbol": long_sym,
-                        "side": "buy",
-                        "qty": str(qty),
-                        "type": "market",
-                    },
+                    {"symbol": short_sym, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_open"},
+                    {"symbol": long_sym, "ratio_qty": "1", "side": "buy", "position_intent": "buy_to_open"},
                 ],
             }
 
@@ -185,16 +176,15 @@ class AlpacaTrader:
             pl = self._occ_symbol(underlying, expiry_fmt, "put", put_long)
 
             order = {
-                "symbol": underlying,
                 "qty": str(qty),
                 "type": "market",
                 "time_in_force": "day",
                 "order_class": "mleg",
                 "legs": [
-                    {"symbol": cs, "side": "sell", "qty": str(qty), "type": "market"},
-                    {"symbol": cl, "side": "buy",  "qty": str(qty), "type": "market"},
-                    {"symbol": ps, "side": "sell", "qty": str(qty), "type": "market"},
-                    {"symbol": pl, "side": "buy",  "qty": str(qty), "type": "market"},
+                    {"symbol": cs, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_open"},
+                    {"symbol": cl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
+                    {"symbol": ps, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_open"},
+                    {"symbol": pl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
                 ],
             }
 
@@ -239,15 +229,15 @@ class AlpacaTrader:
             short_sym = self._occ_symbol(underlying, expiry_fmt, side, short_strike)
             long_sym = self._occ_symbol(underlying, expiry_fmt, side, long_strike)
 
+            # Reverse the spread to close: buy back the short, sell the long.
             order = {
-                "symbol": underlying,
                 "qty": str(qty),
                 "type": "market",
                 "time_in_force": "day",
                 "order_class": "mleg",
                 "legs": [
-                    {"symbol": short_sym, "side": "buy", "qty": str(qty), "type": "market"},
-                    {"symbol": long_sym, "side": "sell", "qty": str(qty), "type": "market"},
+                    {"symbol": short_sym, "ratio_qty": "1", "side": "buy", "position_intent": "buy_to_close"},
+                    {"symbol": long_sym, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_close"},
                 ],
             }
 

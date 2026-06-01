@@ -175,6 +175,19 @@ class Orchestrator:
         if settings.GEX_ENABLED:
             self._gex_task = asyncio.create_task(self._gex_refresh_loop())
 
+        # Alpaca trader for ORDER execution — initialize up-front when PAPER_BROKER=
+        # alpaca, independent of which DATA feed wins below. Previously it was only
+        # created on the Alpaca/IBKR feed paths, so yfinance/idle sessions left it
+        # None and every trade got broker_status=None (no order ever attempted).
+        if settings.PAPER_BROKER == "alpaca" and settings.ALPACA_API_KEY:
+            try:
+                from .alpaca_trader import AlpacaTrader
+                self.alpaca_trader = AlpacaTrader()
+                self.state.alpaca_ready = True
+                log.info("Alpaca trader initialized up-front (PAPER_BROKER=alpaca)")
+            except Exception as e:
+                log.warning("Alpaca trader init failed: %s", e)
+
         # ── Feed priority: Alpaca → IBKR → yfinance → idle ──
         import os
 

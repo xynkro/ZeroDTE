@@ -69,6 +69,15 @@ class Settings:
     # (paper + broker). Cleared by POST /api/trading/resume or a restart. In-memory only.
     TRADING_HALTED: bool = False
 
+    # ── Dealer-gamma (GEX) regime — collected for sizing context (see gex.py) ──
+    # Phase 1: fetch + display + STAMP regime on each trade for post-hoc analysis.
+    # Sizing stays OFF until negative-GEX days are shown to actually hurt our trades.
+    GEX_ENABLED: bool = _b("GEX_ENABLED", True)
+    GEX_SIZING_ENABLED: bool = _b("GEX_SIZING_ENABLED", False)   # let negative GEX cut size
+    GEX_SYMBOL: str = os.getenv("GEX_SYMBOL", "_SPX")            # CBOE symbol (_SPX | SPY)
+    GEX_REFRESH_MIN: int = _i("GEX_REFRESH_MIN", 30)            # refresh cadence (min)
+    GEX_NEG_SIZE_FACTOR: float = _f("GEX_NEG_SIZE_FACTOR", 0.5)  # contracts × this on negative GEX
+
     # Position sizing (per-trade)
     ACCOUNT_SIZE_USD: float = _f("ACCOUNT_SIZE_USD", 7500.0)   # paper acct ~ live
     RISK_PER_TRADE_PCT: float = _f("RISK_PER_TRADE_PCT", 1.0)  # %, e.g. 1.0 = 1% per trade

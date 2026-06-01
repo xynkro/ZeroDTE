@@ -79,6 +79,9 @@ class Orchestrator:
         self._last_bar_wall: datetime | None = None
         self._feed_stale_alerted: bool = False
         self._staleness_task = None
+        # Dealer-gamma (GEX) regime cache + refresh task.
+        self._gex = None
+        self._gex_task = None
         # Cache last fetched chain per instrument to avoid hammering IBKR
         self._last_chain_ts: dict[str, datetime] = {}
         self._last_chain: dict[str, dict] = {}
@@ -168,6 +171,9 @@ class Orchestrator:
         self._eod_safety_task = asyncio.create_task(self._eod_safety_loop())
         # Feed-staleness alarm (detects a frozen feed during RTH)
         self._staleness_task = asyncio.create_task(self._feed_staleness_watchdog())
+        # Dealer-gamma (GEX) regime refresh — context for sizing/analysis
+        if settings.GEX_ENABLED:
+            self._gex_task = asyncio.create_task(self._gex_refresh_loop())
 
         # ── Feed priority: Alpaca → IBKR → yfinance → idle ──
         import os
@@ -291,6 +297,12 @@ class Orchestrator:
             self._staleness_task.cancel()
             try:
                 await self._staleness_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._gex_task:
+            self._gex_task.cancel()
+            try:
+                await self._gex_task
             except (asyncio.CancelledError, Exception):
                 pass
         if self.bot_poller:
@@ -448,6 +460,38 @@ class Orchestrator:
                 break
             except Exception as e:
                 log.warning("staleness watchdog error: %s", e)
+
+    async def _gex_refresh_loop(self):
+        """Fetch dealer-gamma (GEX) regime from CBOE on a slow cadence during the
+        premarket→close window. Stores self._gex + self.state.gex for display and
+        for stamping onto trades at entry. Pure context — does not gate entries here
+        (sizing is applied at entry only when GEX_SIZING_ENABLED). Never throws."""
+        from .gex import fetch_gex
+        first = True
+        while True:
+            try:
+                now = datetime.now(ET)
+                mins = now.hour * 60 + now.minute
+                # Fetch window: 07:00–16:30 ET on weekdays (premarket + RTH).
+                in_window = now.weekday() < 5 and (7 * 60) <= mins <= (16 * 60 + 30)
+                if in_window or first:
+                    res = await fetch_gex(settings.GEX_SYMBOL)
+                    if res.ok:
+                        self._gex = res
+                        self.state.gex = {
+                            "regime": res.regime, "net_ratio": res.net_ratio,
+                            "net_gex_b": res.net_gex_b, "spot": res.spot,
+                            "call_wall": res.call_wall, "put_wall": res.put_wall,
+                            "summary": res.summary(), "asof": res.asof,
+                        }
+                        log.info("GEX refresh: %s", res.summary())
+                    first = False
+                await asyncio.sleep(max(60, settings.GEX_REFRESH_MIN * 60))
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                log.warning("GEX refresh error: %s", e)
+                await asyncio.sleep(300)
 
     async def handle_bar(self, bar: Bar):
         # Feed liveness — record receipt time; clear any stale alert now data flows.
@@ -1784,6 +1828,18 @@ class Orchestrator:
                                                      realized_std=realized_std)
             pt.proj_high_at_signal = self.state.regime.proj_high
             pt.proj_low_at_signal = self.state.regime.proj_low
+            # Stamp dealer-gamma regime (collected for regime→outcome analysis). Sizing
+            # only changes when GEX_SIZING_ENABLED — negative GEX = vol-amplified day =
+            # worse for short-premium, so cut size; otherwise this is pure logging.
+            if self._gex is not None and getattr(self._gex, "ok", False):
+                pt.gex_regime = self._gex.regime
+                pt.gex_net_ratio = self._gex.net_ratio
+                if settings.GEX_SIZING_ENABLED and self._gex.regime == "negative" and pt.contracts > 1:
+                    new_ct = max(1, int(pt.contracts * settings.GEX_NEG_SIZE_FACTOR))
+                    if new_ct != pt.contracts:
+                        log.info("GEX negative regime → trim size %dct → %dct", pt.contracts, new_ct)
+                        pt.contracts = new_ct
+                        sizing_note += f" | GEX neg ×{settings.GEX_NEG_SIZE_FACTOR}"
             self.paper_trades.append(pt)
             log.info("Paper trade #%d opened [DIRECTIONAL]: %s SPX short=%.2f long=%.2f "
                      "credit=$%.0f wing=$%.0f size=%dct (%s)",

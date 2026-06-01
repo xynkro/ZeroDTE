@@ -126,6 +126,10 @@ class PaperTrade(BaseModel):
     # Per-5m realized vol fixed at entry; check_exit reprices the spread each bar
     # with shrinking time-to-expiry instead of the underlying-move proxy.
     bs_realized_std: float | None = None
+    # Dealer-gamma regime at entry (collected for post-hoc regime→outcome analysis;
+    # does NOT change sizing unless GEX_SIZING_ENABLED). See gex.py.
+    gex_regime: str | None = None        # "positive" | "negative" | "neutral"
+    gex_net_ratio: float | None = None   # net/gross gamma balance, [-1, +1]
 
 
 class IronCondorBuilder(BaseModel):
@@ -171,3 +175,5 @@ class DashboardState(BaseModel):
     # /icnow), so EOD can score each one separately.
     iron_condor: IronCondorBuilder = IronCondorBuilder()
     iron_condor_history: list[IronCondorBuilder] = []
+    # Current dealer-gamma (GEX) snapshot — regime/walls for the dashboard. See gex.py.
+    gex: dict | None = None

@@ -136,6 +136,24 @@ async def get_state():
     return orch.state.model_dump()
 
 
+@app.get("/api/gex")
+async def get_gex(refresh: bool = False):
+    """Current dealer-gamma (GEX) regime snapshot. ?refresh=true forces a live CBOE fetch."""
+    if refresh:
+        from .gex import fetch_gex
+        res = await fetch_gex(settings.GEX_SYMBOL)
+        if res.ok:
+            orch._gex = res
+            orch.state.gex = {
+                "regime": res.regime, "net_ratio": res.net_ratio, "net_gex_b": res.net_gex_b,
+                "spot": res.spot, "call_wall": res.call_wall, "put_wall": res.put_wall,
+                "summary": res.summary(), "asof": res.asof,
+            }
+        else:
+            return {"ok": False, "error": res.error}
+    return orch.state.gex or {"regime": "unknown", "summary": "GEX not yet fetched"}
+
+
 @app.get("/api/bars")
 async def get_bars(limit: int = 120):
     """Recent SPX 5m bars for the dashboard chart with overlays.

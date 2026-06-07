@@ -9,9 +9,9 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="ZeroDTE" />
-<link rel="manifest" href="/manifest.webmanifest" />
-<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-<link rel="icon" type="image/png" href="/icon-192.png" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="icon-192.png" />
 <style>
   :root {
     --bg: #0b0d12; --panel: #131722; --panel2: #1c2033; --panel3: #242838;
@@ -789,9 +789,17 @@
     ? `${_wsProto}://${location.host}/ws`
     : `${_wsProto}://${location.hostname || 'localhost'}:8765/ws`;
 
+  // ── Static snapshot mode ───────────────────────────────────────────────
+  // When served from GitHub Pages there is no backend to reach, so the
+  // dashboard runs read-only off a monitor.json snapshot the backend
+  // periodically force-pushes to the `data` branch (public-safe: strategy
+  // trades + aggregates only — no keys, no personal positions).
+  const STATIC_MODE  = /\.github\.io$/i.test(location.hostname);
+  const SNAPSHOT_URL = 'https://raw.githubusercontent.com/xynkro/ZeroDTE/data/monitor.json';
+
   // Register the service worker — enables install-to-home-screen as a real PWA (HTTPS).
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   }
 
   let MODE = 'wave';   // 'wave' | 'ic' | 'both'
@@ -1864,6 +1872,7 @@
   }
 
   function connect() {
+    if (STATIC_MODE) return;   // no backend on GitHub Pages — snapshot mode
     setConn('', 'connecting…');
     const ws = new WebSocket(WS_URL);
     ws.onopen = () => setConn('ok', 'connected');
@@ -1885,6 +1894,7 @@
   async function refreshMonitor() {
     if (_monitorDebounce) return;
     _monitorDebounce = setTimeout(() => { _monitorDebounce = null; }, 2000);
+    if (STATIC_MODE) return refreshMonitorStatic();
     try {
       const [stats, trades, alpaca] = await Promise.all([
         fetch(`${API_BASE}/api/monitor/stats`).then(r => r.json()),
@@ -1899,6 +1909,45 @@
       renderTradeLog(trades.filter(t => t.strategy === 'directional_spread'));
       renderAlpacaInfo(alpaca);
     } catch (e) { console.error('monitor fetch error', e); }
+  }
+
+  // Read-only render from the published snapshot (GitHub Pages, no backend).
+  async function refreshMonitorStatic() {
+    try {
+      const snap = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      const stats  = snap.stats  || {};
+      const trades = snap.trades || [];
+      renderMonitorStats(stats);
+      renderEquityCurve(stats.equity_curve || []);
+      renderDailyPnl(stats.daily || []);
+      renderSignalRate(stats.daily || []);
+      renderOpenPositions(stats.open_trades || []);
+      renderTradeLog(trades.filter(t => (t.strategy || 'directional_spread') === 'directional_spread'));
+      renderAlpacaInfo(snap.alpaca || null);
+      renderSnapshotBanner(snap.generated_at, false);
+    } catch (e) {
+      console.error('snapshot fetch error', e);
+      renderSnapshotBanner(null, true);
+    }
+  }
+
+  function renderSnapshotBanner(ts, failed) {
+    let el = document.getElementById('snapshot-banner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'snapshot-banner';
+      el.style.cssText = 'background:var(--panel2);border:1px solid var(--border);border-radius:6px;'
+        + 'padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--muted);';
+      const host = document.getElementById('view-monitor');
+      if (host) host.insertBefore(el, host.firstChild);
+    }
+    if (failed) {
+      el.innerHTML = '⚠️ No snapshot yet — the backend publishes one every few minutes during market hours.';
+      return;
+    }
+    const when = ts ? new Date(ts).toLocaleString() : 'unknown';
+    el.innerHTML = `📸 <strong>Read-only snapshot</strong> · updated ${when} · live trading runs on the backend`;
   }
 
   function renderMonitorStats(s) {
@@ -2054,8 +2103,20 @@
     btn.disabled = false; btn.textContent = 'Kill All Orders';
   }
 
-  fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
-  connect();
+  if (STATIC_MODE) {
+    // GitHub Pages: read-only snapshot. Hide live-only tabs + kill switch,
+    // land on the Monitor, and refresh the snapshot once a minute.
+    ['tab-live', 'tab-backtest', 'tab-macro'].forEach(id => {
+      const b = document.getElementById(id); if (b) b.style.display = 'none';
+    });
+    const killBtn = document.getElementById('kill-btn');
+    if (killBtn) killBtn.style.display = 'none';
+    setView('monitor');
+    setInterval(refreshMonitor, 60000);
+  } else {
+    fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
+    connect();
+  }
 </script>
 
 </body>

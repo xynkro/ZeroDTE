@@ -3,8 +3,10 @@
 // but NEVER cache /api or /ws — live data must always hit the network (no stale
 // trades/quotes). This also satisfies the installability criteria (HTTPS + SW
 // with a fetch handler + manifest).
-const CACHE = 'zerodte-shell-v1';
-const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+const CACHE = 'zerodte-shell-v2';
+// Relative so the shell caches correctly whether served from the backend root
+// (:8765/) or a GitHub Pages project subpath (/ZeroDTE/).
+const SHELL = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
@@ -33,6 +35,6 @@ self.addEventListener('fetch', (e) => {
         caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
         return resp;
       })
-      .catch(() => caches.match(e.request).then((m) => m || caches.match('/')))
+      .catch(() => caches.match(e.request).then((m) => m || caches.match('./')))
   );
 });

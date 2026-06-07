@@ -16,6 +16,8 @@ from typing import Literal
 
 import httpx
 
+from . import telegram_prefs as prefs
+
 
 log = logging.getLogger(__name__)
 ParseMode = Literal["none", "MarkdownV2", "HTML"]
@@ -63,6 +65,7 @@ def send(
     chat_id: str | int | None = None,
     message_thread_id: int | None = None,
     override_mute: bool = False,
+    reply_markup: dict | None = None,
 ) -> dict | None:
     """Send a Telegram message. Returns API response or None on missing config.
 
@@ -99,6 +102,8 @@ def send(
         payload["parse_mode"] = parse_mode
     if message_thread_id and message_thread_id > 0:
         payload["message_thread_id"] = int(message_thread_id)
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -187,6 +192,41 @@ def _route_iron_condor() -> tuple[str | None, int | None]:
         return group, None
 
 
+def _emit(
+    lines: list[str],
+    msg_type: str,
+    pwa_url: str | None,
+    chat_id: str | int | None,
+    thread_id: int | None,
+    parse_mode: ParseMode = "none",
+) -> dict | None:
+    """Apply user prefs (push toggle, prefix/footer, dashboard link) then send.
+
+    This is the single choke point every alert flows through so customization is
+    consistent. Defaults reproduce prior behaviour exactly (all types on, link as
+    a plain text line, no prefix/footer).
+    """
+    if not prefs.type_enabled(msg_type):
+        log.info("Telegram '%s' disabled by prefs — not sent", msg_type)
+        return None
+    p = prefs.get()
+    body = list(lines)
+    reply_markup = None
+    if p.get("link", {}).get("enabled", True) and pwa_url:
+        if p["link"].get("style") == "button":
+            reply_markup = {"inline_keyboard": [[{"text": "📱 Open dashboard", "url": pwa_url}]]}
+        else:
+            body.append(f"📱 {pwa_url}")
+    prefix = (p.get("prefix") or "").strip()
+    footer = (p.get("footer") or "").strip()
+    if prefix:
+        body.insert(0, prefix)
+    if footer:
+        body.append(footer)
+    return send("\n".join(body), parse_mode=parse_mode,
+                chat_id=chat_id, message_thread_id=thread_id, reply_markup=reply_markup)
+
+
 # ── 0DTE-specific alert formatters ──────────────────────────────────────────
 
 def ping_signal(
@@ -244,7 +284,8 @@ def ping_signal(
     ]
     # Confluence breakdown — the boss's ACTUAL 4 scored quality factors (faithful).
     # Order/labels mirror orchestrator's _QUALITY_FACTORS so Telegram == backend.
-    if confluence_factors:
+    _detail = prefs.get().get("detail", {})
+    if confluence_factors and _detail.get("factors", True):
         cf = confluence_factors
         rsi_on = bool(cf.get("rsi_overbought") or cf.get("rsi_oversold"))
         mark = lambda b: "✓" if b else "✗"
@@ -255,10 +296,11 @@ def ping_signal(
     # Broker result note (Telegram == execution): why a signal did/didn't execute.
     if exec_note:
         lines.append(("⛔ " if not executed else "ℹ️ ") + exec_note)
-    # Sizing + management plan
-    if sizing_note:
+    # Sizing + management plan (both gated by the per-alert detail prefs)
+    if sizing_note and _detail.get("sizing", True):
         lines.append(f"size: {sizing_note}")
-    if strategy == "directional_spread":
+    _show_plan = _detail.get("plan", True)
+    if _show_plan and strategy == "directional_spread":
         # Theta-harvest plan with concrete $ levels: TP = buy back at (100−tp_pct)% of
         # credit; SL = ~1× credit loss (spread doubles); time-stop 30m before close.
         if tp_pct is not None and estimated_credit:
@@ -267,18 +309,15 @@ def ping_signal(
                          f"SL ~−${estimated_credit:.0f} (spread 2×) · T-30m close")
         else:
             lines.append("plan: TP (theta harvest) · no ladder · stop if spread 2× · T-30m close")
-    elif tp_target is not None or stop_target is not None:
+    elif _show_plan and (tp_target is not None or stop_target is not None):
         plan = []
         if tp_target is not None:
             plan.append(f"TP ${tp_target:.2f}")
         if stop_target is not None:
             plan.append(f"STOP ${stop_target:.0f} (short strike)")
         lines.append("plan: " + " · ".join(plan))
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "entry", pwa_url, chat_id, thread_id)
 
 
 def ping_signal_exit(
@@ -334,11 +373,8 @@ def ping_signal_exit(
         f"reason: {exit_reason}",
         f"est P&L (paper): {pnl_str}",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "exit", pwa_url, chat_id, thread_id)
 
 
 def ping_macro_blackout(
@@ -354,11 +390,8 @@ def ping_macro_blackout(
         f"⏸️ DON'T TRADE · {event}",
         f"event {when} — stand aside on new 0DTE entries until released",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_macro()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "macro_blackout", pwa_url, chat_id, thread_id)
 
 
 def ping_macro_news(
@@ -375,8 +408,7 @@ def ping_macro_news(
     if url:
         lines.append(url)
     chat_id, thread_id = _route_macro()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "macro_news", None, chat_id, thread_id)
 
 
 def ping_iron_condor(
@@ -453,11 +485,8 @@ def ping_iron_condor(
     if sl_dollars is not None:
         mult = f"{sl_mult:.0f}× credit" if sl_mult else "stop"
         lines.append(f"🛑 SL: −${sl_dollars:.0f} ({mult}) or a short-strike touch (${short_put:.0f} / ${short_call:.0f})")
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_iron_condor()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "iron_condor", pwa_url, chat_id, thread_id)
 
 
 def ping_ic_stop(
@@ -486,11 +515,8 @@ def ping_ic_stop(
         f"buyback cost ${current_spread_cost:.0f} ≥ credit collected ${original_credit:.0f}",
         f"action: CLOSE THE {threatened} WING NOW (cap at ~breakeven)",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_iron_condor()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "ic_stop", pwa_url, chat_id, thread_id)
 
 
 def ping_daily_loss_limit(
@@ -506,11 +532,8 @@ def ping_daily_loss_limit(
         f"NO NEW ENTRIES until tomorrow's session",
         f"existing positions continue managed",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "daily_loss_limit", pwa_url, chat_id, thread_id)
 
 
 def ping_feed_stale(
@@ -525,11 +548,8 @@ def ping_feed_stale(
         f"feed: {feed} (frozen — open positions NOT being managed)",
         f"action: check Alpaca / restart the backend",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "feed_stale", pwa_url, chat_id, thread_id)
 
 
 def ping_iv_gate_skip(
@@ -543,11 +563,8 @@ def ping_iv_gate_skip(
         f"VIX1D ${vix_value:.1f} > threshold ${threshold:.1f}",
         f"breach risk too high for premium-selling. No IC today.",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_iron_condor()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "iv_gate_skip", pwa_url, chat_id, thread_id)
 
 
 def ping_session_open(
@@ -565,11 +582,8 @@ def ping_session_open(
     ]
     if proj_high and proj_low:
         lines.append(f"projected H ${proj_high:.0f} / L ${proj_low:.0f}")
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "session_open", pwa_url, chat_id, thread_id)
 
 
 def ping_morning_alive(
@@ -589,11 +603,8 @@ def ping_morning_alive(
         f"SPX ${underlying_price:.2f} · feed: {feed_type}",
         f"watching for signals + IC build...",
     ]
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "morning_alive", pwa_url, chat_id, thread_id)
 
 
 def ping_midday_status(
@@ -627,25 +638,20 @@ def ping_midday_status(
     if reason_no_signals:
         lines.append(f"why quiet: {reason_no_signals}")
     lines.append("still watching — will alert if conditions align")
-    if pwa_url:
-        lines.append(f"📱 {pwa_url}")
     chat_id, thread_id = _route_zero_dte()
-    return send("\n".join(lines), parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit(lines, "midday_status", pwa_url, chat_id, thread_id)
 
 
 def ping_eod_wave(message: str) -> dict | None:
     """End-of-day Wave summary → Wave Zero DTE Signals topic."""
     chat_id, thread_id = _route_zero_dte()
-    return send(message, parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit([message], "eod_wave", None, chat_id, thread_id)
 
 
 def ping_eod_iron_condor(message: str) -> dict | None:
     """End-of-day IC summary → Iron Condor Zero DTE Signals topic."""
     chat_id, thread_id = _route_iron_condor()
-    return send(message, parse_mode="none",
-                chat_id=chat_id, message_thread_id=thread_id)
+    return _emit([message], "eod_iron_condor", None, chat_id, thread_id)
 
 
 def ping_test() -> dict | None:

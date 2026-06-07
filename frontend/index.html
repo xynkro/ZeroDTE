@@ -257,11 +257,60 @@
   <div class="conn-status">
     <button id="notif-btn" onclick="enableNotifications()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">🔔 Enable alerts</button>
     <button id="sound-btn" onclick="toggleSound()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 11px;">🔊</button>
+    <button id="tg-settings-btn" onclick="openTgSettings()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">⚙︎ Telegram</button>
     <span class="dot" id="conn-dot"></span>
     <span id="conn-text">connecting…</span>
     <span id="trading-mode" class="badge"></span>
   </div>
 </header>
+
+<!-- ── Telegram message settings (backend-served only; hidden on Pages) ── -->
+<div id="tg-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; overflow:auto; padding:24px; box-sizing:border-box;">
+  <div style="background:var(--panel); border:1px solid var(--border); border-radius:10px; max-width:560px; width:100%; margin:20px auto; padding:18px 20px; box-sizing:border-box;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <h2 style="margin:0; font-size:16px;">⚙︎ Telegram message settings</h2>
+      <button onclick="closeTgSettings()" style="background:transparent; border:none; color:var(--muted); font-size:18px; cursor:pointer;">✕</button>
+    </div>
+    <p style="color:var(--muted); font-size:11px; margin:0 0 14px;">Applies to every alert the bot sends. Saved on the backend — takes effect on the next ping.</p>
+
+    <div style="margin-bottom:14px;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Push these alerts</div>
+      <div id="tg-types" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 16px;"></div>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <label style="font-size:12px; font-weight:600; display:block; margin-bottom:3px;">Prefix <span style="color:var(--muted);font-weight:400;">— top of every alert</span></label>
+      <input id="tg-prefix" type="text" placeholder="(none)" style="width:100%; box-sizing:border-box; background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:5px; font-size:12px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px; font-weight:600; display:block; margin-bottom:3px;">Footer <span style="color:var(--muted);font-weight:400;">— bottom of every alert</span></label>
+      <input id="tg-footer" type="text" placeholder="(none)" style="width:100%; box-sizing:border-box; background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:5px; font-size:12px;">
+    </div>
+
+    <div style="margin-bottom:12px; display:flex; gap:18px; align-items:center; flex-wrap:wrap;">
+      <label style="font-size:12px;"><input type="checkbox" id="tg-link-enabled"> Dashboard link</label>
+      <label style="font-size:12px;">style:
+        <select id="tg-link-style" style="background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:5px; font-size:12px;">
+          <option value="plain">plain URL</option>
+          <option value="button">tappable button</option>
+        </select>
+      </label>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Entry detail lines</div>
+      <label style="font-size:12px; margin-right:16px;"><input type="checkbox" id="tg-detail-factors"> factors</label>
+      <label style="font-size:12px; margin-right:16px;"><input type="checkbox" id="tg-detail-plan"> plan</label>
+      <label style="font-size:12px;"><input type="checkbox" id="tg-detail-sizing"> sizing</label>
+    </div>
+
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button onclick="saveTgSettings()" style="background:var(--green); border:none; color:#062; font-weight:700; padding:7px 16px; border-radius:5px; cursor:pointer; font-size:12px;">Save</button>
+      <button onclick="testTelegram()" style="background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:7px 12px; border-radius:5px; cursor:pointer; font-size:12px;">Send test</button>
+      <span id="tg-save-status" style="font-size:11px; color:var(--muted);"></span>
+    </div>
+  </div>
+</div>
 
 <nav class="tab-bar">
   <button id="tab-live" class="active" onclick="setView('live')">Live</button>
@@ -927,6 +976,62 @@
     }
   }
   window.testTelegram = testTelegram;
+
+  // ── Telegram message settings (backend-served dashboard only) ───────────
+  function openTgSettings() {
+    document.getElementById('tg-modal').style.display = 'block';
+    const status = document.getElementById('tg-save-status');
+    status.textContent = 'loading…'; status.style.color = 'var(--muted)';
+    fetch(`${API_BASE}/api/telegram/prefs`).then(r => r.json()).then(d => {
+      const p = d.prefs || {};
+      const types = p.types || {};
+      document.getElementById('tg-types').innerHTML = (d.message_types || []).map(t =>
+        `<label style="font-size:12px;"><input type="checkbox" class="tg-type" data-key="${t.key}" ${types[t.key] !== false ? 'checked' : ''}> ${t.label}</label>`
+      ).join('');
+      document.getElementById('tg-prefix').value = p.prefix || '';
+      document.getElementById('tg-footer').value = p.footer || '';
+      document.getElementById('tg-link-enabled').checked = (p.link || {}).enabled !== false;
+      document.getElementById('tg-link-style').value = (p.link || {}).style || 'plain';
+      const det = p.detail || {};
+      document.getElementById('tg-detail-factors').checked = det.factors !== false;
+      document.getElementById('tg-detail-plan').checked = det.plan !== false;
+      document.getElementById('tg-detail-sizing').checked = det.sizing !== false;
+      status.textContent = '';
+    }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+  }
+  window.openTgSettings = openTgSettings;
+
+  function closeTgSettings() { document.getElementById('tg-modal').style.display = 'none'; }
+  window.closeTgSettings = closeTgSettings;
+
+  async function saveTgSettings() {
+    const status = document.getElementById('tg-save-status');
+    status.textContent = 'saving…'; status.style.color = 'var(--muted)';
+    const types = {};
+    document.querySelectorAll('.tg-type').forEach(cb => { types[cb.dataset.key] = cb.checked; });
+    const body = {
+      types,
+      prefix: document.getElementById('tg-prefix').value,
+      footer: document.getElementById('tg-footer').value,
+      link: {
+        enabled: document.getElementById('tg-link-enabled').checked,
+        style: document.getElementById('tg-link-style').value,
+      },
+      detail: {
+        factors: document.getElementById('tg-detail-factors').checked,
+        plan: document.getElementById('tg-detail-plan').checked,
+        sizing: document.getElementById('tg-detail-sizing').checked,
+      },
+    };
+    try {
+      const r = await fetch(`${API_BASE}/api/telegram/prefs`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      }).then(r => r.json());
+      status.textContent = r.ok ? '✓ saved — applies on next alert' : 'save failed';
+      status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+    } catch (e) { status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)'; }
+  }
+  window.saveTgSettings = saveTgSettings;
 
   function setView(v) {
     VIEW = v;
@@ -2108,7 +2213,7 @@
   if (STATIC_MODE) {
     // GitHub Pages: read-only snapshot. Hide live-only tabs + kill switch,
     // land on the Monitor, and refresh the snapshot once a minute.
-    ['tab-live', 'tab-backtest', 'tab-macro'].forEach(id => {
+    ['tab-live', 'tab-backtest', 'tab-macro', 'tg-settings-btn'].forEach(id => {
       const b = document.getElementById(id); if (b) b.style.display = 'none';
     });
     const killBtn = document.getElementById('kill-btn');

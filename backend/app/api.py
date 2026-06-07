@@ -6,7 +6,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -307,6 +307,25 @@ async def telegram_test():
     if res is None:
         return {"ok": False, "error": "TELEGRAM_BOT_TOKEN missing or send failed (check backend log)"}
     return res
+
+
+@app.get("/api/telegram/prefs")
+async def get_telegram_prefs():
+    """Current Telegram message preferences + the message-type registry the
+    dashboard settings panel renders its push-toggle list from."""
+    from . import telegram_prefs as tp
+    return {"prefs": tp.get(), "message_types": tp.MESSAGE_TYPES}
+
+
+@app.post("/api/telegram/prefs")
+async def set_telegram_prefs(payload: dict = Body(default={})):
+    """Update Telegram message preferences (deep-merged over current), persist to
+    backend/data/telegram_prefs.json, and apply on the next ping. Body is a
+    partial prefs object, e.g. {"types": {"morning_alive": false}} or
+    {"footer": "manage actively", "link": {"style": "button"}}."""
+    from . import telegram_prefs as tp
+    saved = tp.save(payload or {})
+    return {"ok": True, "prefs": saved}
 
 
 @app.get("/api/macro/news")

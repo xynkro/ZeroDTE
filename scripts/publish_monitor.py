@@ -58,6 +58,7 @@ def build_snapshot() -> dict:
     stats = _get("/api/monitor/stats", {})
     trades_raw = _get("/api/paper_trades", [])
     alpaca_raw = _get("/api/alpaca/status", {}) or {}
+    tg_raw = _get("/api/telegram/prefs", {}) or {}
     ds = [t for t in trades_raw if t.get("strategy") == "directional_spread"]
     trades = [{k: t.get(k) for k in TRADE_FIELDS} for t in ds]
     alpaca = {
@@ -71,6 +72,10 @@ def build_snapshot() -> dict:
         "stats": stats,
         "trades": trades,
         "alpaca": alpaca,
+        # Current Telegram prefs + the type registry, so the phone PWA can render
+        # and pre-fill the settings panel with no backend connection.
+        "telegram_prefs": tg_raw.get("prefs", {}),
+        "telegram_types": tg_raw.get("message_types", []),
     }
 
 

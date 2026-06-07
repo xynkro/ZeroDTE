@@ -271,7 +271,8 @@
       <h2 style="margin:0; font-size:16px;">⚙︎ Telegram message settings</h2>
       <button onclick="closeTgSettings()" style="background:transparent; border:none; color:var(--muted); font-size:18px; cursor:pointer;">✕</button>
     </div>
-    <p style="color:var(--muted); font-size:11px; margin:0 0 14px;">Applies to every alert the bot sends. Saved on the backend — takes effect on the next ping.</p>
+    <p style="color:var(--muted); font-size:11px; margin:0 0 6px;">Applies to every alert the bot sends.</p>
+    <p id="tg-mode-note" style="display:none; color:var(--blue); font-size:11px; margin:0 0 14px; background:var(--panel2); border:1px solid var(--border); border-radius:5px; padding:6px 8px;">📡 Phone mode — saves go through GitHub; your backend applies them within ~1 min. First save asks for a GitHub token (stored only on this device).</p>
 
     <div style="margin-bottom:14px;">
       <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Push these alerts</div>
@@ -963,6 +964,13 @@
   }
 
   async function testTelegram() {
+    if (STATIC_MODE) {
+      try {
+        const ok = await tgControlCommand('test_telegram');
+        alert(ok ? 'Test queued via GitHub — your backend sends it within ~1 min.' : 'Cancelled (no token).');
+      } catch (e) { alert('Queue failed: ' + e.message); }
+      return;
+    }
     try {
       const r = await fetch(`${API_BASE}/api/telegram/test`);
       const d = await r.json();
@@ -977,61 +985,139 @@
   }
   window.testTelegram = testTelegram;
 
-  // ── Telegram message settings (backend-served dashboard only) ───────────
-  function openTgSettings() {
-    document.getElementById('tg-modal').style.display = 'block';
-    const status = document.getElementById('tg-save-status');
-    status.textContent = 'loading…'; status.style.color = 'var(--muted)';
-    fetch(`${API_BASE}/api/telegram/prefs`).then(r => r.json()).then(d => {
-      const p = d.prefs || {};
-      const types = p.types || {};
-      document.getElementById('tg-types').innerHTML = (d.message_types || []).map(t =>
-        `<label style="font-size:12px;"><input type="checkbox" class="tg-type" data-key="${t.key}" ${types[t.key] !== false ? 'checked' : ''}> ${t.label}</label>`
-      ).join('');
-      document.getElementById('tg-prefix').value = p.prefix || '';
-      document.getElementById('tg-footer').value = p.footer || '';
-      document.getElementById('tg-link-enabled').checked = (p.link || {}).enabled !== false;
-      document.getElementById('tg-link-style').value = (p.link || {}).style || 'plain';
-      const det = p.detail || {};
-      document.getElementById('tg-detail-factors').checked = det.factors !== false;
-      document.getElementById('tg-detail-plan').checked = det.plan !== false;
-      document.getElementById('tg-detail-sizing').checked = det.sizing !== false;
-      status.textContent = '';
-    }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+  // ── Telegram message settings ───────────────────────────────────────────
+  // Backend-served: POST straight to the API. Pages (phone): write to the
+  // GitOps `control` branch via GitHub; the backend polls + applies (~1 min).
+  const GH_REPO_API = 'https://api.github.com/repos/xynkro/ZeroDTE';
+
+  function populateTgModal(prefs, types) {
+    const tmap = prefs.types || {};
+    document.getElementById('tg-types').innerHTML = (types || []).map(t =>
+      `<label style="font-size:12px;"><input type="checkbox" class="tg-type" data-key="${t.key}" ${tmap[t.key] !== false ? 'checked' : ''}> ${t.label}</label>`
+    ).join('');
+    document.getElementById('tg-prefix').value = prefs.prefix || '';
+    document.getElementById('tg-footer').value = prefs.footer || '';
+    document.getElementById('tg-link-enabled').checked = (prefs.link || {}).enabled !== false;
+    document.getElementById('tg-link-style').value = (prefs.link || {}).style || 'plain';
+    const det = prefs.detail || {};
+    document.getElementById('tg-detail-factors').checked = det.factors !== false;
+    document.getElementById('tg-detail-plan').checked = det.plan !== false;
+    document.getElementById('tg-detail-sizing').checked = det.sizing !== false;
   }
-  window.openTgSettings = openTgSettings;
 
-  function closeTgSettings() { document.getElementById('tg-modal').style.display = 'none'; }
-  window.closeTgSettings = closeTgSettings;
-
-  async function saveTgSettings() {
-    const status = document.getElementById('tg-save-status');
-    status.textContent = 'saving…'; status.style.color = 'var(--muted)';
+  function collectTgPrefs() {
     const types = {};
     document.querySelectorAll('.tg-type').forEach(cb => { types[cb.dataset.key] = cb.checked; });
-    const body = {
+    return {
       types,
       prefix: document.getElementById('tg-prefix').value,
       footer: document.getElementById('tg-footer').value,
-      link: {
-        enabled: document.getElementById('tg-link-enabled').checked,
-        style: document.getElementById('tg-link-style').value,
-      },
+      link: { enabled: document.getElementById('tg-link-enabled').checked, style: document.getElementById('tg-link-style').value },
       detail: {
         factors: document.getElementById('tg-detail-factors').checked,
         plan: document.getElementById('tg-detail-plan').checked,
         sizing: document.getElementById('tg-detail-sizing').checked,
       },
     };
+  }
+
+  function openTgSettings() {
+    document.getElementById('tg-modal').style.display = 'block';
+    const status = document.getElementById('tg-save-status');
+    const note = document.getElementById('tg-mode-note');
+    status.textContent = 'loading…'; status.style.color = 'var(--muted)';
+    if (STATIC_MODE) {
+      if (note) note.style.display = 'block';
+      fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()).then(snap => {
+        populateTgModal(snap.telegram_prefs || {}, snap.telegram_types || []);
+        status.textContent = '';
+      }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+    } else {
+      if (note) note.style.display = 'none';
+      fetch(`${API_BASE}/api/telegram/prefs`).then(r => r.json()).then(d => {
+        populateTgModal(d.prefs || {}, d.message_types || []);
+        status.textContent = '';
+      }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+    }
+  }
+  window.openTgSettings = openTgSettings;
+
+  function closeTgSettings() { document.getElementById('tg-modal').style.display = 'none'; }
+  window.closeTgSettings = closeTgSettings;
+
+  // ── GitHub control-branch helpers (phone PWA write path) ────────────────
+  function ghToken(force) {
+    let t = localStorage.getItem('zerodte_gh_token');
+    if (!t || force) {
+      t = prompt('Paste a GitHub fine-grained token\n(repo: xynkro/ZeroDTE · Contents: Read and write).\nStored only on this device.\n\nCreate one at github.com/settings/tokens?type=beta');
+      if (t) { t = t.trim(); localStorage.setItem('zerodte_gh_token', t); }
+    }
+    return t;
+  }
+  const _b64enc = s => btoa(unescape(encodeURIComponent(s)));
+  const _b64dec = s => decodeURIComponent(escape(atob((s || '').replace(/\n/g, ''))));
+
+  async function ghGetControl(token) {
+    const r = await fetch(`${GH_REPO_API}/contents/control.json?ref=control&t=${Date.now()}`, {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' }, cache: 'no-store',
+    });
+    if (r.status === 404) return { sha: null, json: { v: 0 } };
+    if (!r.ok) { const e = new Error('GET HTTP ' + r.status); e.status = r.status; throw e; }
+    const d = await r.json();
+    let json = { v: 0 };
+    try { json = JSON.parse(_b64dec(d.content)); } catch (e) {}
+    return { sha: d.sha, json };
+  }
+  async function ghPutControl(token, sha, obj, message) {
+    const body = { message, branch: 'control', content: _b64enc(JSON.stringify(obj, null, 2)) };
+    if (sha) body.sha = sha;
+    const r = await fetch(`${GH_REPO_API}/contents/control.json`, {
+      method: 'PUT',
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const txt = await r.text(); const e = new Error('PUT HTTP ' + r.status + ' ' + txt.slice(0, 120)); e.status = r.status; throw e; }
+    return r.json();
+  }
+
+  async function saveTgSettings() {
+    const status = document.getElementById('tg-save-status');
+    const prefs = collectTgPrefs();
+    if (!STATIC_MODE) {
+      status.textContent = 'saving…'; status.style.color = 'var(--muted)';
+      try {
+        const r = await fetch(`${API_BASE}/api/telegram/prefs`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs),
+        }).then(r => r.json());
+        status.textContent = r.ok ? '✓ saved — applies on next alert' : 'save failed';
+        status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+      } catch (e) { status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)'; }
+      return;
+    }
+    const token = ghToken(false);
+    if (!token) { status.textContent = 'cancelled (no token)'; status.style.color = 'var(--muted)'; return; }
+    status.textContent = 'saving via GitHub…'; status.style.color = 'var(--muted)';
     try {
-      const r = await fetch(`${API_BASE}/api/telegram/prefs`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      }).then(r => r.json());
-      status.textContent = r.ok ? '✓ saved — applies on next alert' : 'save failed';
-      status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
-    } catch (e) { status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)'; }
+      const cur = await ghGetControl(token);
+      const obj = Object.assign({}, cur.json, { v: (cur.json.v || 0) + 1, telegram_prefs: prefs });
+      await ghPutControl(token, cur.sha, obj, 'control: telegram prefs v' + obj.v);
+      status.textContent = '✓ saved — backend applies within ~1 min';
+      status.style.color = 'var(--green)';
+    } catch (e) {
+      status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)';
+      if (e.status === 401 || e.status === 403) { localStorage.removeItem('zerodte_gh_token'); status.textContent += ' — token cleared, retry'; }
+    }
   }
   window.saveTgSettings = saveTgSettings;
+
+  async function tgControlCommand(command) {
+    const token = ghToken(false);
+    if (!token) return false;
+    const cur = await ghGetControl(token);
+    const obj = Object.assign({}, cur.json, { command, command_nonce: 'n' + Date.now() });
+    await ghPutControl(token, cur.sha, obj, 'control: ' + command);
+    return true;
+  }
 
   function setView(v) {
     VIEW = v;
@@ -2213,7 +2299,9 @@
   if (STATIC_MODE) {
     // GitHub Pages: read-only snapshot. Hide live-only tabs + kill switch,
     // land on the Monitor, and refresh the snapshot once a minute.
-    ['tab-live', 'tab-backtest', 'tab-macro', 'tg-settings-btn'].forEach(id => {
+    // Live-only tabs are hidden on Pages, but the ⚙︎ Telegram gear STAYS —
+    // it writes settings through the GitOps control branch (see saveTgSettings).
+    ['tab-live', 'tab-backtest', 'tab-macro'].forEach(id => {
       const b = document.getElementById(id); if (b) b.style.display = 'none';
     });
     const killBtn = document.getElementById('kill-btn');

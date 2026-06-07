@@ -40,6 +40,10 @@ async def lifespan(app: FastAPI):
     # Startup
     log.info("Starting orchestrator...")
     asyncio.create_task(orch.start())
+    # GitOps control channel — apply settings the phone PWA writes to the
+    # `control` branch (the backend is never exposed; GitHub is the message bus).
+    from . import control_poll
+    asyncio.create_task(control_poll.run())
     yield
     # Shutdown
     await orch.stop()

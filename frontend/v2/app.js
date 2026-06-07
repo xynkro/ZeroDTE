@@ -381,28 +381,27 @@ function KillButton() {
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
-function ConnPill({ res, mode, generatedAt }) {
-  if (mode === 'static') {
-    const when = generatedAt ? new Date(generatedAt).toLocaleString() : '—';
-    return html`<span class="pill"><span class="dot"></span>snapshot · ${when}</span>`;
-  }
-  const map = { loading: ['', 'connecting…'], refreshing: ['live', 'live'], ready: ['live', 'live'], error: ['err', 'backend offline'] };
-  const [d, label] = map[res.status] || ['', ''];
-  return html`<span class="pill"><span class=${clsx('dot', d)}></span>${label}</span>`;
-}
+const VIEWS = [['monitor', 'Monitor'], ['backtest', 'Backtest'], ['macro', 'Macro']];
 
-function Topbar({ res, data, onSettings }) {
+const Nav = ({ view, setView }) => html`
+  <nav class="nav" aria-label="Views">
+    ${VIEWS.map(([k, label]) => html`<button key=${k} class=${view === k ? 'on' : ''}
+      aria-current=${view === k ? 'page' : null} onClick=${() => setView(k)}>${label}</button>`)}
+  </nav>`;
+
+const ModePill = () => STATIC
+  ? html`<span class="pill"><span class="dot"></span>snapshot</span>`
+  : html`<span class="pill"><span class="dot live"></span>live</span>`;
+
+function Topbar({ view, setView, onSettings }) {
   return html`
     <header class="topbar">
-      <div class="brand">
-        <span class="logo">Zero<b>DTE</b></span>
-        <span class="tag">terminal</span>
-      </div>
+      <div class="brand"><span class="logo">Zero<b>DTE</b></span><span class="tag">terminal</span></div>
       <div class="spacer"></div>
-      <${ConnPill} res=${res} mode=${data?.mode || (STATIC ? 'static' : 'live')} generatedAt=${data?.generatedAt} />
+      <${Nav} view=${view} setView=${setView} />
+      <${ModePill} />
       ${!STATIC && html`<${KillButton} />`}
       <button class="btn ghost icon-btn" onClick=${onSettings} aria-label="Telegram settings" title="Telegram settings">⚙</button>
-      <button class="btn ghost icon-btn" onClick=${res.reload} aria-label="Refresh" title="Refresh">↻</button>
     </header>`;
 }
 
@@ -437,30 +436,133 @@ function MonitorSkeleton() {
 function MonitorView() {
   const res = useResource(loadMonitor, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || res.data?.stats?.total) : null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
+  if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not reach the backend. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
+  const d = res.data;
+  return html`
+    <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
+      ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
+      <div data-stagger><${StatsRow} s=${d.stats || {}} /></div>
+      <div class="grid cols-2">
+        <${DebriefCard} d=${d.debrief} />
+        <${Card} title="Equity Curve" accent="var(--blue)"><${Sparkline} curve=${(d.stats || {}).equity_curve || []} /></${Card}>
+      </div>
+      <${Card} title="Trade Log" accent="var(--violet)"
+        actions=${d.alpaca && html`<${Badge} kind=${d.alpaca.enabled ? 'ok' : 'neutral'}>${d.alpaca.enabled ? 'broker active' : 'broker off'}</${Badge}>`}>
+        <${TradeTable} trades=${d.trades} />
+      </${Card}>
+    </div>`;
+}
 
+// ── Macro view (live-only — needs the backend feed) ─────────────────────────
+const liveOnly = (glyph, title) => html`<div style="margin-top:16px"><${Card} title=${title}>
+  <${EmptyState} glyph=${glyph} title=${title + ' is live-only'}
+    hint="Open the backend dashboard (Mac / Tailscale) — this needs the live feed, not the phone snapshot." /></${Card}></div>`;
+
+function MacroView() {
+  if (STATIC) return liveOnly('\u{1F4F0}', 'Macro');
+  const load = useCallback(async () => {
+    const [n, c] = await Promise.all([
+      fetch(`${API}/api/macro/news`).then(r => r.json()).then(x => x.news || []),
+      fetch(`${API}/api/macro/calendar`).then(r => r.json()).then(x => x.calendar || []),
+    ]);
+    return { news: n, calendar: c };
+  }, []);
+  const res = useResource(load, 120000);
+  if (res.status === 'loading') return html`<div class="grid cols-2" style="margin-top:16px">
+    ${[0, 1].map(i => html`<div class="card" key=${i}><div class="card-b">${Array.from({ length: 6 }).map((_, j) => html`<div key=${j} style="margin:10px 0"><${Skeleton} w=${`${85 - j * 6}%`} h=13 /></div>`)}</div></div>`)}</div>`;
+  if (res.status === 'error') return html`<div style="margin-top:16px"><${ErrorState} message=${res.error} onRetry=${res.reload} /></div>`;
+  const { news = [], calendar = [] } = res.data || {};
+  return html`<div class="grid cols-2" style="margin-top:16px">
+    <${Card} title="Market News" accent="var(--blue)">
+      ${!news.length ? html`<${EmptyState} glyph="\u{1F4F0}" title="No recent headlines." />`
+        : news.slice(0, 30).map((n, i) => html`<div class="news-item" key=${i}>
+            <div class="news-meta"><span>${n.datetime ? new Date(n.datetime).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span><span>${n.source || ''}</span></div>
+            <div class="news-head">${n.url ? html`<a href=${n.url} target="_blank" rel="noopener noreferrer">${n.headline}</a>` : n.headline}</div>
+            ${n.summary && html`<div class="news-sum">${n.summary.slice(0, 220)}</div>`}
+          </div>`)}
+    </${Card}>
+    <${Card} title="Economic Calendar" accent="var(--amber)">
+      ${!calendar.length ? html`<${EmptyState} glyph="\u{1F5D3}" title="No upcoming US events." />`
+        : html`<div><div class="cal-h"><span>When</span><span>Impact</span><span>Event</span><span class="r">Est</span><span class="r">Prev</span></div>
+          ${calendar.slice(0, 40).map((e, i) => html`<div class=${clsx('cal-row', e.impact || 'low')} key=${i}>
+            <span class="muted">${(e.time || '').slice(5, 16)}</span>
+            <span class="imp">${e.impact || 'low'}</span>
+            <span>${e.event}</span>
+            <span class="num r">${e.estimate ?? '—'}</span>
+            <span class="num r">${e.prev ?? '—'}</span>
+          </div>`)}</div>`}
+    </${Card}>
+  </div>`;
+}
+
+// ── Backtest view (live-only — needs the backend + historical data) ─────────
+function BacktestView() {
+  if (STATIC) return liveOnly('\u{1F9EA}', 'Backtest');
+  const [p, setP] = useState({ target_delta: 30, final_tp_target: 90, use_dynamic_stops: false, data_window: '3y' });
+  const [res, setRes] = useState({ status: 'idle', data: null, error: null });
+  const run = async () => {
+    setRes({ status: 'loading', data: null, error: null });
+    try {
+      const q = new URLSearchParams({ target_delta: p.target_delta, final_tp_target: p.final_tp_target, use_dynamic_stops: p.use_dynamic_stops, data_window: p.data_window });
+      const d = await fetch(`${API}/api/backtest/honest?${q}`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      if (d.error) throw new Error(d.error);
+      setRes({ status: 'ready', data: d, error: null });
+    } catch (e) { setRes({ status: 'error', data: null, error: e.message }); }
+  };
+  useEffect(() => { run(); }, []);
+  const upd = (k, v) => setP(prev => ({ ...prev, [k]: v }));
+  const s = res.data?.summary || {};
+  let cum = 0; const curve = (res.data?.trades || []).map(t => ({ cum: (cum += t.pnl || 0) }));
+  return html`<div class="grid" style="margin-top:16px">
+    <${Card} title="Honest backtest — Black-Scholes (the validated engine)" accent="var(--green)">
+      <div class="bt-form">
+        <div class="field"><label>Short Δ</label><input class="inp num" type="number" value=${p.target_delta} onInput=${e => upd('target_delta', +e.target.value)} /></div>
+        <div class="field"><label>TP %</label><input class="inp num" type="number" value=${p.final_tp_target} onInput=${e => upd('final_tp_target', +e.target.value)} /></div>
+        <div class="field"><label>Stop ladder</label><${Toggle} label=${p.use_dynamic_stops ? 'on' : 'off'} checked=${p.use_dynamic_stops} onChange=${v => upd('use_dynamic_stops', v)} /></div>
+        <div class="field"><label>Window</label>
+          <select class="inp" value=${p.data_window} onChange=${e => upd('data_window', e.target.value)}>
+            <option value="60d">60 days</option><option value="1y">1 year</option><option value="3y">3 years</option>
+          </select></div>
+        <button class="btn primary" onClick=${run} disabled=${res.status === 'loading'}>${res.status === 'loading' ? 'Running…' : 'Run'}</button>
+      </div>
+    </${Card}>
+    ${res.status === 'loading' && html`<${Card}><div class="bt-stats">${Array.from({ length: 4 }).map((_, i) => html`<div class="stat" key=${i}><${Skeleton} w="55%" h=10 /><div style="height:8px"></div><${Skeleton} w="80%" h=20 /></div>`)}</div></${Card}>`}
+    ${res.status === 'error' && html`<${ErrorState} message=${res.error} onRetry=${run} />`}
+    ${res.status === 'ready' && html`
+      <${Card} title="Result" accent=${(s.total_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}>
+        <div class="bt-stats">
+          <${StatTile} k="Total P&L" value=${s.total_pnl || 0} tone=${(s.total_pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'} hl=${true} format=${v => signMoney(v)} />
+          <${StatTile} k="Win Rate" value=${s.win_rate_pct || 0} format=${v => v.toFixed(1) + '%'} />
+          <${StatTile} k="Trades" value=${s.n_trades || 0} format=${v => v.toFixed(0)} />
+          <${StatTile} k="Max Drawdown" value=${s.max_drawdown || 0} tone="var(--red)" format=${v => money(v)} />
+        </div>
+        <div style="margin-top:16px"><${Sparkline} curve=${curve} /></div>
+      </${Card}>
+      <${Card} title="By year" accent="var(--blue)">
+        <table class="tbl"><thead><tr><th>Year</th><th class="r">Trades</th><th class="r">P&L</th><th class="r">Win %</th></tr></thead>
+          <tbody>${(res.data.yearly || []).map(y => html`<tr key=${y.year}>
+            <td>${y.year}</td><td class="r">${y.n}</td>
+            <td class=${clsx('r', (y.pnl || 0) >= 0 ? 'pos' : 'neg')} style="font-weight:600">${signMoney(y.pnl)}</td>
+            <td class="r">${(y.wr || 0).toFixed(0)}%</td></tr>`)}</tbody></table>
+      </${Card}>`}
+  </div>`;
+}
+
+// ── App ─────────────────────────────────────────────────────────────────────
+function App() {
+  const [view, setView] = useState('monitor');
+  const [settingsOpen, setSettingsOpen] = useState(false);
   return html`
     <div class="app">
       ${settingsOpen && html`<${SettingsSheet} onClose=${() => setSettingsOpen(false)} />`}
-      <${Topbar} res=${res} data=${res.data} onSettings=${() => setSettingsOpen(true)} />
-      ${res.status === 'loading' && html`<${MonitorSkeleton} />`}
-      ${res.status === 'error' && html`<div style="margin-top:24px"><${ErrorState} message=${'Could not reach the backend. ' + (res.error || '')} onRetry=${res.reload} /></div>`}
-      ${res.data && html`
-        <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
-          ${res.data.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong> — live trading runs on the backend.</span></div>`}
-          <div data-stagger><${StatsRow} s=${res.data.stats || {}} /></div>
-          <div class="grid cols-2">
-            <${DebriefCard} d=${res.data.debrief} />
-            <${Card} title="Equity Curve" accent="var(--blue)"><${Sparkline} curve=${(res.data.stats || {}).equity_curve || []} /></${Card}>
-          </div>
-          <${Card} title="Trade Log" accent="var(--violet)"
-            actions=${res.data.alpaca && html`<${Badge} kind=${res.data.alpaca.enabled ? 'ok' : 'neutral'}>${res.data.alpaca.enabled ? 'broker active' : 'broker off'}</${Badge}>`}>
-            <${TradeTable} trades=${res.data.trades} />
-          </${Card}>
-        </div>`}
+      <${Topbar} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
+      ${view === 'monitor' && html`<${MonitorView} />`}
+      ${view === 'backtest' && html`<${BacktestView} />`}
+      ${view === 'macro' && html`<${MacroView} />`}
     </div>`;
 }
 
 const root = document.getElementById('app');
 root.removeAttribute('aria-busy');
-render(html`<${MonitorView} />`, root);
+render(html`<${App} />`, root);

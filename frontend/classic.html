@@ -1,0 +1,2372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>ZeroDTE Dashboard</title>
+<meta name="theme-color" content="#0b0d12" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="ZeroDTE" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="apple-touch-icon.png" />
+<link rel="icon" type="image/png" href="icon-192.png" />
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #131722; --panel2: #1c2033; --panel3: #242838;
+    --text: #e6e9f0; --muted: #7d8499; --dim: #555b6e;
+    --green: #26a69a; --red: #ef5350; --orange: #ff9800; --blue: #5b6cff; --yellow: #ffd54f;
+    --border: #2a2e3e;
+
+    /* Motion design tokens (Emil-eng polish) */
+    --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-snappy:     cubic-bezier(0.32, 0.72, 0, 1);
+    --ease-natural:    cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Universal button press feedback — instant tactile signal that the UI heard the click. */
+  button { transition: transform 160ms var(--ease-out-strong), opacity 150ms var(--ease-out-strong); }
+  button:active:not(:disabled) { transform: scale(0.97); }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--blue); }
+  @media (prefers-reduced-motion: reduce) {
+    button:active:not(:disabled) { transform: none; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui;
+         background: var(--bg); color: var(--text); font-size: 14px; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border);
+           display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+  header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .conn-status { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--green); }
+  .dot.err { background: var(--red); }
+  .mode-toggle { display: inline-flex; background: var(--panel2); border-radius: 6px; padding: 2px; }
+  .mode-toggle button { background: transparent; border: 0; color: var(--muted); padding: 4px 10px;
+                        font-size: 12px; cursor: pointer; border-radius: 4px; }
+  .mode-toggle button.active { background: var(--blue); color: white; }
+
+  main { padding: 14px 16px; max-width: 1600px; margin: 0 auto;
+         display: grid; grid-template-columns: 320px 1fr 360px; gap: 14px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .panel h2 { margin: 0 0 10px 0; font-size: 11px; text-transform: uppercase; letter-spacing: 1.2px;
+              color: var(--muted); }
+  .price-big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .price-sub { font-size: 11px; color: var(--muted); margin-top: -4px; }
+
+  .regime-banner {
+    transition: background-color 200ms var(--ease-out-strong), color 200ms var(--ease-out-strong);
+  }
+  .regime-banner { padding: 8px; border-radius: 6px; text-align: center; font-weight: 600;
+                   letter-spacing: 1px; font-size: 11px; margin: 8px 0; }
+  .regime-banner.non_volatile { background: rgba(38, 166, 154, 0.15); color: var(--green); }
+  .regime-banner.volatile     { background: rgba(255, 152, 0, 0.15); color: var(--orange); }
+  .regime-banner.pre_obs      { background: rgba(125, 132, 153, 0.15); color: var(--muted); }
+
+  .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid var(--border);
+         font-size: 13px; }
+  .row:last-child { border-bottom: none; }
+  .row .k { color: var(--muted); }
+  .row .v { font-variant-numeric: tabular-nums; }
+
+  .signal {
+    /* Enter animation — uses @starting-style where supported (modern browsers).
+       Falls back to instant render on older browsers, no jank. */
+    transition: opacity 250ms var(--ease-out-strong), transform 250ms var(--ease-out-strong);
+    opacity: 1; transform: translateY(0);
+  }
+  @starting-style {
+    .signal { opacity: 0; transform: translateY(8px); }
+  }
+  /* Hover lift only on real pointer devices (avoids touch false-trigger) */
+  @media (hover: hover) and (pointer: fine) {
+    .signal:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.25); }
+  }
+  .signal { margin-top: 10px; padding: 10px; border-radius: 6px;
+            background: var(--panel2); border-left: 4px solid var(--blue); }
+  .signal.sell_call_cs { border-left-color: var(--red); }
+  .signal.sell_put_cs  { border-left-color: var(--green); }
+  .signal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .signal-side { font-weight: 600; font-size: 13px; }
+  .signal-side.sell_call_cs { color: var(--red); }
+  .signal-side.sell_put_cs  { color: var(--green); }
+  .signal-time { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .signal-meta { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+
+  .strike-table { width: 100%; font-size: 11px; border-collapse: collapse; margin-top: 6px; }
+  .strike-table th { text-align: left; color: var(--dim); font-weight: 500; padding: 4px 4px;
+                     text-transform: uppercase; font-size: 9.5px; letter-spacing: 0.6px;
+                     border-bottom: 1px solid var(--border); }
+  .strike-table td { padding: 4px 4px; font-variant-numeric: tabular-nums;
+                     border-bottom: 1px solid var(--border); }
+  .strike-table .instr { font-weight: 600; color: var(--blue); }
+  .strike-table .roi-good { color: var(--green); font-weight: 600; }
+  .strike-table .roi-meh  { color: var(--orange); }
+  .strike-table .roi-bad  { color: var(--red); }
+  .strike-table .credit { color: var(--green); }
+  .strike-table .warn { color: var(--yellow); font-size: 9px; display: block; margin-top: 1px; }
+
+  .strikes-section-label { font-size: 10px; color: var(--muted); text-transform: uppercase;
+                           letter-spacing: 1px; margin: 8px 0 2px 0; }
+
+  .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 12px; }
+
+  .ic-card { background: linear-gradient(180deg, rgba(91,108,255,0.08) 0%, transparent 100%);
+             border: 1px solid var(--blue); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .ic-card h3 { margin: 0 0 6px 0; font-size: 13px; color: var(--blue); }
+  .ic-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0; }
+  .ic-summary div { background: var(--panel2); padding: 4px; border-radius: 4px;
+                    text-align: center; font-size: 10px; }
+  .ic-summary .label { color: var(--muted); display: block; }
+  .ic-summary .value { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+
+  .badge { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 3px;
+           background: var(--panel2); color: var(--muted); margin-left: 4px; }
+  .badge.ok { background: rgba(38,166,154,0.2); color: var(--green); }
+  .badge.warn { background: rgba(255,152,0,0.2); color: var(--orange); }
+  .badge.live { background: rgba(91,108,255,0.2); color: var(--blue); }
+
+  .notes { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+
+  /* Time clocks */
+  .clocks { display: flex; gap: 14px; align-items: center; font-size: 12px; }
+  .clock { display: flex; flex-direction: column; align-items: center; line-height: 1.1; }
+  .clock .t { font-variant-numeric: tabular-nums; font-weight: 600; font-size: 14px; color: var(--text); }
+  .clock .l { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+  .clock.session-open .t { color: var(--green); }
+  .clock.session-soon .t { color: var(--orange); }
+  .session-pill { font-size: 10px; padding: 2px 8px; border-radius: 10px; }
+  .session-pill.open  { background: rgba(38,166,154,0.2); color: var(--green); }
+  .session-pill.closed { background: rgba(125,132,153,0.2); color: var(--muted); }
+  .session-pill.opening { background: rgba(255,152,0,0.2); color: var(--orange); }
+
+  /* Tab navigation */
+  .tab-bar { display: flex; gap: 4px; padding: 0 16px; background: var(--panel);
+             border-bottom: 1px solid var(--border); align-items: center; }
+  .tab-bar button { background: transparent; border: 0; color: var(--muted); padding: 10px 16px;
+                    font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent;
+                    margin-bottom: -1px; }
+  .tab-bar button.active { color: var(--text); border-bottom-color: var(--blue); }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Macro alert banner */
+  .macro-banner { padding: 8px 14px; font-size: 13px; display: flex; gap: 14px;
+                   align-items: center; border-radius: 6px; margin: 8px 0; }
+  .macro-banner.info { background: rgba(91,108,255,0.1); border: 1px solid rgba(91,108,255,0.4); color: var(--blue); }
+  .macro-banner.warn { background: rgba(255,152,0,0.12); border: 1px solid var(--orange); color: var(--orange); }
+  .macro-banner.blackout { background: rgba(239,83,80,0.18); border: 1px solid var(--red); color: var(--red);
+    animation: pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: 0.85; transform: scale(1.005); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .macro-banner.blackout { animation: none; }
+  }
+  /* Smooth color transitions on gate values (VIX/blackout/trades-today) */
+  .row .v { transition: color 180ms var(--ease-out-strong); }
+  .macro-banner .icon { font-size: 18px; }
+  .macro-banner .countdown { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* Macro tab */
+  .news-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .news-item:last-child { border-bottom: none; }
+  .news-item .time { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+  .news-item .source { color: var(--blue); font-weight: 600; font-size: 10px; }
+  .news-item .headline { color: var(--text); margin: 2px 0; line-height: 1.4; }
+  .news-item.hot { background: rgba(255, 213, 79, 0.05); padding-left: 8px; border-left: 2px solid var(--yellow); }
+  .news-item.hot .headline { font-weight: 600; }
+  .cal-row { padding: 6px 8px; display: grid; grid-template-columns: 90px 50px 1fr 80px 80px 80px;
+             gap: 8px; align-items: center; font-size: 11px; border-bottom: 1px solid var(--border); }
+  .cal-row.high   { background: rgba(239,83,80,0.06); border-left: 3px solid var(--red); }
+  .cal-row.medium { background: rgba(255,152,0,0.04); border-left: 3px solid var(--orange); }
+  .cal-row.low    { border-left: 3px solid var(--dim); }
+  .cal-row .time-col { font-variant-numeric: tabular-nums; color: var(--muted); }
+  .cal-row .impact { text-transform: uppercase; font-size: 9px; font-weight: 600; }
+  .cal-row.high .impact   { color: var(--red); }
+  .cal-row.medium .impact { color: var(--orange); }
+  .cal-row.low .impact    { color: var(--muted); }
+  .cal-row .num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* Backtest panel */
+  .bt-controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .bt-controls label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+  .bt-controls input, .bt-controls select { background: var(--panel2); border: 1px solid var(--border);
+       color: var(--text); padding: 5px 8px; border-radius: 4px; font-size: 13px;
+       font-variant-numeric: tabular-nums; }
+  .bt-controls button { background: var(--blue); border: 0; color: white; padding: 8px 16px;
+       border-radius: 5px; font-size: 13px; cursor: pointer; font-weight: 600; align-self: flex-end; }
+  .bt-controls button:hover { opacity: 0.9; }
+
+  .bt-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 8px; margin-bottom: 14px; }
+  .bt-summary .stat { background: var(--panel2); padding: 10px; border-radius: 6px; }
+  .bt-summary .stat .label { font-size: 10px; color: var(--muted); text-transform: uppercase;
+                              letter-spacing: 0.8px; }
+  .bt-summary .stat .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .bt-summary .stat.good .value { color: var(--green); }
+  .bt-summary .stat.bad .value { color: var(--red); }
+  .bt-summary .stat.neutral .value { color: var(--text); }
+
+  .bt-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+  .bt-table th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px;
+                 background: var(--panel2); position: sticky; top: 0; }
+  .bt-table td { padding: 5px 8px; border-bottom: 1px solid var(--border);
+                 font-variant-numeric: tabular-nums; }
+  .bt-table tr.win  td.outcome { color: var(--green); font-weight: 600; }
+  .bt-table tr.lose td.outcome { color: var(--red); }
+  .bt-table tr.skip td.outcome { color: var(--muted); }
+  .bt-table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; }
+
+  .equity-curve { width: 100%; height: 200px; background: var(--panel2); border-radius: 6px;
+                  margin: 12px 0; }
+
+  .bt-warning { background: rgba(255, 152, 0, 0.1); border: 1px solid var(--orange);
+                color: var(--orange); padding: 10px 12px; border-radius: 6px; font-size: 12px;
+                margin-bottom: 12px; }
+
+  /* Chart styles removed 2026-05-10 — see comment in HTML body. */
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ZeroDTE Dashboard <span class="badge live" id="version-badge">v0.3</span></h1>
+
+  <div class="clocks">
+    <div class="clock" id="clock-local">
+      <div class="t" id="clock-local-t">--:--:--</div>
+      <div class="l" id="clock-local-l">LOCAL</div>
+    </div>
+    <div class="clock" id="clock-et">
+      <div class="t" id="clock-et-t">--:--:--</div>
+      <div class="l">NEW YORK</div>
+    </div>
+    <div class="session-pill closed" id="session-pill">MARKET STATUS</div>
+  </div>
+
+  <div class="mode-toggle">
+    <button id="mode-wave" class="active" onclick="setMode('wave')">Wave 25Δ</button>
+    <button id="mode-ic" onclick="setMode('ic')">IC 8Δ</button>
+    <button id="mode-both" onclick="setMode('both')">Both</button>
+  </div>
+  <div class="conn-status">
+    <button id="notif-btn" onclick="enableNotifications()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">🔔 Enable alerts</button>
+    <button id="sound-btn" onclick="toggleSound()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 8px; border-radius: 5px; cursor: pointer; font-size: 11px;">🔊</button>
+    <button id="tg-settings-btn" onclick="openTgSettings()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 5px; cursor: pointer; font-size: 11px;">⚙︎ Telegram</button>
+    <span class="dot" id="conn-dot"></span>
+    <span id="conn-text">connecting…</span>
+    <span id="trading-mode" class="badge"></span>
+  </div>
+</header>
+
+<!-- ── Telegram message settings (backend-served only; hidden on Pages) ── -->
+<div id="tg-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:1000; overflow:auto; padding:24px; box-sizing:border-box;">
+  <div style="background:var(--panel); border:1px solid var(--border); border-radius:10px; max-width:560px; width:100%; margin:20px auto; padding:18px 20px; box-sizing:border-box;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+      <h2 style="margin:0; font-size:16px;">⚙︎ Telegram message settings</h2>
+      <button onclick="closeTgSettings()" style="background:transparent; border:none; color:var(--muted); font-size:18px; cursor:pointer;">✕</button>
+    </div>
+    <p style="color:var(--muted); font-size:11px; margin:0 0 6px;">Applies to every alert the bot sends.</p>
+    <p id="tg-mode-note" style="display:none; color:var(--blue); font-size:11px; margin:0 0 14px; background:var(--panel2); border:1px solid var(--border); border-radius:5px; padding:6px 8px;">📡 Phone mode — saves go through GitHub; your backend applies them within ~1 min. First save asks for a GitHub token (stored only on this device).</p>
+
+    <div style="margin-bottom:14px;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Push these alerts</div>
+      <div id="tg-types" style="display:grid; grid-template-columns:1fr 1fr; gap:5px 16px;"></div>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      <label style="font-size:12px; font-weight:600; display:block; margin-bottom:3px;">Prefix <span style="color:var(--muted);font-weight:400;">— top of every alert</span></label>
+      <input id="tg-prefix" type="text" placeholder="(none)" style="width:100%; box-sizing:border-box; background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:5px; font-size:12px;">
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:12px; font-weight:600; display:block; margin-bottom:3px;">Footer <span style="color:var(--muted);font-weight:400;">— bottom of every alert</span></label>
+      <input id="tg-footer" type="text" placeholder="(none)" style="width:100%; box-sizing:border-box; background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:5px; font-size:12px;">
+    </div>
+
+    <div style="margin-bottom:12px; display:flex; gap:18px; align-items:center; flex-wrap:wrap;">
+      <label style="font-size:12px;"><input type="checkbox" id="tg-link-enabled"> Dashboard link</label>
+      <label style="font-size:12px;">style:
+        <select id="tg-link-style" style="background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:3px 6px; border-radius:5px; font-size:12px;">
+          <option value="plain">plain URL</option>
+          <option value="button">tappable button</option>
+        </select>
+      </label>
+    </div>
+
+    <div style="margin-bottom:16px;">
+      <div style="font-weight:600; font-size:12px; margin-bottom:6px;">Entry detail lines</div>
+      <label style="font-size:12px; margin-right:16px;"><input type="checkbox" id="tg-detail-factors"> factors</label>
+      <label style="font-size:12px; margin-right:16px;"><input type="checkbox" id="tg-detail-plan"> plan</label>
+      <label style="font-size:12px;"><input type="checkbox" id="tg-detail-sizing"> sizing</label>
+    </div>
+
+    <div style="display:flex; gap:8px; align-items:center;">
+      <button onclick="saveTgSettings()" style="background:var(--green); border:none; color:#062; font-weight:700; padding:7px 16px; border-radius:5px; cursor:pointer; font-size:12px;">Save</button>
+      <button onclick="testTelegram()" style="background:var(--panel2); border:1px solid var(--border); color:var(--text); padding:7px 12px; border-radius:5px; cursor:pointer; font-size:12px;">Send test</button>
+      <span id="tg-save-status" style="font-size:11px; color:var(--muted);"></span>
+    </div>
+  </div>
+</div>
+
+<nav class="tab-bar">
+  <button id="tab-live" class="active" onclick="setView('live')">Live</button>
+  <button id="tab-backtest" onclick="setView('backtest')">Backtest</button>
+  <button id="tab-macro" onclick="setView('macro')">Macro <span class="badge" id="macro-badge" style="display:none;"></span></button>
+  <button id="tab-monitor" onclick="setView('monitor')">Monitor</button>
+</nav>
+
+<div id="view-live" class="view active">
+<div id="macro-alert-bar" style="padding: 0 16px; max-width: 1600px; margin: 0 auto;"></div>
+<main>
+
+  <!-- TOP: live SPX chart with our predictor overlays -->
+  <!-- Chart removed 2026-05-10: dashboard's lwc chart could never reach parity
+       with the Pine indicator on TradingView (different data source, different
+       indicators, different signal logic). Word signals (Latest Signals panel
+       below) are the canonical source of truth. For visual chart, open Pine in
+       TradingView directly — that's the gospel. -->
+
+  <!-- LEFT: live state -->
+  <section class="panel">
+    <h2>Live State</h2>
+    <div class="price-big" id="price">—</div>
+    <div class="price-sub" id="price-sub">—</div>
+    <div class="row"><span class="k">Bar time</span><span class="v" id="bar-time">—</span></div>
+    <div class="row"><span class="k">Feed</span><span class="v" id="backend-status">—</span></div>
+
+    <h2 style="margin-top: 14px;">Today's Regime</h2>
+    <div class="regime-banner" id="regime">PRE-OBSERVATION</div>
+    <div class="row"><span class="k">Obs window high</span><span class="v" id="obs-high">—</span></div>
+    <div class="row"><span class="k">Obs window low</span><span class="v" id="obs-low">—</span></div>
+    <div class="row"><span class="k">Projected day HIGH</span><span class="v" id="proj-high">—</span></div>
+    <div class="row"><span class="k">Projected day LOW</span><span class="v" id="proj-low">—</span></div>
+
+    <h2 style="margin-top: 14px;">Indicators (live)</h2>
+    <div class="row"><span class="k">RSI(14)</span><span class="v" id="ind-rsi">—</span></div>
+    <div class="row"><span class="k">Stoch %K/%D</span><span class="v" id="ind-stoch">—</span></div>
+    <div class="row"><span class="k">WVF</span><span class="v" id="ind-wvf">—</span></div>
+    <div class="row"><span class="k">ATR</span><span class="v" id="ind-atr">—</span></div>
+    <div class="row" title="Pullback strategy: live signals are SUPPRESSED counter-trend. In UPTREND we only allow sell-put (bullish bet). In DOWNTREND we only allow sell-call (bearish bet). FLAT = both sides allowed."><span class="k">Trend (5m EMA10/30)</span><span class="v" id="ind-trend">—</span></div>
+    <div class="row" style="font-size: 10px; color: var(--muted);"><span></span><span id="ind-filter-status">trend filter: …</span></div>
+
+    <!-- ═══════════ PHASE 1+3 GATE STATUS ═══════════ -->
+    <h2 style="margin-top: 14px;" title="Phase 1 gates filter every wave signal. All four must pass before a trade fires.">🛡️ Wave Gates (Phase 1+3)</h2>
+    <div class="row" title="VIX bucket gate. ≥22 VIX = stand aside (canonical 0DTE rule per CBOE/0-dte.com)."><span class="k">VIX bucket</span><span class="v" id="gate-vix">—</span></div>
+    <div class="row" title="Macro blackout (FOMC, CPI, NFP). Fed-decision events get ±30min buffer; others ±15min."><span class="k">Macro blackout</span><span class="v" id="gate-blackout">—</span></div>
+    <div class="row" title="Trades-today counter. Cap = MAX_TRADES_PER_DAY (default 3). Forces selectivity."><span class="k">Trades today</span><span class="v" id="gate-trades">—</span></div>
+    <div class="row" title="Mid-session vol re-gate. If 30min realized range > 2× expected, lock out new entries."><span class="k">Mid-session vol</span><span class="v" id="gate-midvol">—</span></div>
+    <div class="row" title="Live confluence preview. Score = sum of 5 variable factors. ≥3/5 needed to fire."><span class="k">Confluence (live)</span><span class="v" id="gate-conf">—</span></div>
+    <div id="gate-banner" style="margin-top: 6px; padding: 6px; border-radius: 4px; font-size: 11px; display: none;"></div>
+
+    <h2 style="margin-top: 14px;">Tonight's Strategy <span style="font-size: 10px; color: var(--green);">(Phase 4 canonical)</span></h2>
+    <div style="font-size: 11px; line-height: 1.5; color: var(--muted); padding: 6px 0;">
+      <strong style="color: var(--text);">Wave: 5m Stoch reversal + 6-factor confluence + 6 hard gates</strong><br>
+      Backtested 12mo / 360 sessions (Phase 4):<br>
+      &nbsp;• <span style="color: var(--green);">100% WR · 354 trades · +$11,004 / yr / contract</span><br>
+      &nbsp;• <span style="color: var(--green);">$622/day @ 10 contracts on active trading days (62% of $1k/day target)</span><br>
+      &nbsp;• Aligned with canonical 0DTE (TradingBlock + CBOE + 0-dte.com)<br><br>
+      <strong style="color: var(--text);">Strikes:</strong> 1.5% OTM (~10-15Δ short, conservative)<br>
+      <strong style="color: var(--text);">STOP:</strong> only on bar CLOSE through strike (not intra-bar wick)<br>
+      <strong style="color: var(--text);">TIME:</strong> close 30 min before EOD (15:30 ET)<br>
+      <strong style="color: var(--text);">Cap:</strong> 3 trades/day max<br><br>
+      <strong style="color: var(--text);">Confluence (need ≥3/6):</strong><br>
+      &nbsp;1. RSI directional (>65 CALL / <35 PUT)<br>
+      &nbsp;2. WVF spike (volatility confirmation)<br>
+      &nbsp;3. Macro clear (no FOMC/CPI blackout)<br>
+      &nbsp;4. VIX bucket OK (<22 stand-aside threshold)<br>
+      &nbsp;5. Near EMA10 (within 0.30%, fresh setup)<br>
+      &nbsp;6. <strong>Prime window (10:30-13:00 ET)</strong> — Phase 4<br><br>
+      <strong style="color: var(--text);">Hard gates (must pass all):</strong> confluence ≥3/6, blackout off,
+      trades-today < 3, VIX < 22, mid-session vol ok, <strong>VWAP aligned</strong><br><br>
+      <strong style="color: var(--text);">Workflow tonight:</strong><br>
+      1. Telegram ping → unlock phone<br>
+      2. Dashboard's 🛡️ Wave Gates panel shows live status of every gate<br>
+      3. Manually place spread in TWS (paper at 1ct first, then scale)<br>
+      4. Close at 75% of credit kept OR STOP-on-close OR TIME (15:30 ET)
+    </div>
+    <button onclick="testTelegram()" style="margin-top: 8px; background: var(--panel2); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; font-size: 11px; cursor: pointer; border-radius: 4px;">📱 Send test Telegram ping</button>
+  </section>
+
+  <!-- MIDDLE: signals -->
+  <section class="panel">
+    <h2>Latest Signals (showing <span id="mode-label">Wave 25Δ</span>)</h2>
+    <div id="signals" class="empty">Waiting for next signal…</div>
+  </section>
+
+  <!-- RIGHT: end-of-day IC builder + paper trades -->
+  <section>
+    <div id="ic-card-wrapper"></div>
+
+    <section class="panel">
+      <h2>Paper Trades (assessment mode)</h2>
+      <div id="paper-trades" class="empty">No paper trades yet.</div>
+      <div class="notes" id="notes"></div>
+    </section>
+  </section>
+
+</main>
+</div>
+
+<!-- ===== MACRO VIEW ===== -->
+<div id="view-macro" class="view">
+<main style="grid-template-columns: 1fr 1fr;">
+
+  <section class="panel">
+    <h2>📅 US Economic Calendar (next 14 days)</h2>
+    <div id="cal-banner"></div>
+    <div style="max-height: 700px; overflow-y: auto; margin-top: 8px;">
+      <div class="cal-row" style="background: var(--panel2); font-weight: 600; color: var(--muted); border-left: 3px solid transparent;">
+        <span>Time (ET)</span><span>Impact</span><span>Event</span>
+        <span class="num">Estimate</span><span class="num">Prev</span><span class="num">Actual</span>
+      </div>
+      <div id="cal-list"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>📰 Market News (Finnhub, last 24h)</h2>
+    <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px;">
+      <span style="color: var(--yellow);">●</span> Hot keywords: fed, fomc, cpi, war, tariff, etc.
+      Click headline to open source.
+    </div>
+    <div id="news-list" style="max-height: 700px; overflow-y: auto;"></div>
+  </section>
+
+</main>
+</div>
+
+<!-- ===== BACKTEST VIEW ===== -->
+<div id="view-backtest" class="view">
+<main style="grid-template-columns: 1fr;">
+  <section class="panel">
+    <div style="display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: -12px -12px 12px; padding: 0 12px;">
+      <button id="bt-tab-ic" class="active" onclick="setBtTab('ic')"
+              style="background: transparent; border: 0; color: var(--text); padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid var(--blue); margin-bottom: -1px;">Iron Condor</button>
+      <button id="bt-tab-wave" onclick="setBtTab('wave')"
+              style="background: transparent; border: 0; color: var(--muted); padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;">Wave Trading</button>
+      <button id="bt-tab-matrix" onclick="setBtTab('matrix')"
+              style="background: transparent; border: 0; color: var(--muted); padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;">Matrix (TF × Strategy)</button>
+      <button id="bt-tab-explain" onclick="setBtTab('explain')"
+              style="background: transparent; border: 0; color: var(--muted); padding: 10px 16px; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;">How it works</button>
+    </div>
+
+  <div id="bt-view-ic">
+    <h2>Iron Condor Backtest — 60-day SPX 5min historical</h2>
+    <div class="bt-warning">
+      <strong>How this backtest works:</strong> the <strong>bound-hold rate</strong> (= would the IC have profited if held to close?)
+      is computed exactly from historical SPX H/L. The <strong>credit assumption</strong> simulates what your fills would
+      look like at a given strike selection. Use the presets below to model canonical setups.
+    </div>
+
+    <div class="bt-controls" style="margin-bottom: 6px;">
+      <strong style="font-size: 11px; color: var(--muted); text-transform: uppercase;">Strategy Presets:</strong>
+      <button onclick="applyPreset('canonical_16d')" style="background: var(--blue);">Tastytrade Canonical (1.0% OTM, 16Δ)</button>
+      <button onclick="applyPreset('conservative_10d')" style="background: var(--panel2); color: var(--text);">Conservative (1.5% OTM, 10Δ)</button>
+      <button onclick="applyPreset('far_otm_5d')" style="background: var(--panel2); color: var(--text);">Far-OTM (2.0% OTM, 5Δ)</button>
+      <button onclick="applyPreset('aggressive_25d')" style="background: var(--panel2); color: var(--text);">Aggressive (0.5% OTM, 25Δ)</button>
+      <button onclick="applyPreset('projected_hl')" style="background: var(--panel2); color: var(--text);">Projected H/L (our indicator)</button>
+    </div>
+
+    <div class="bt-controls">
+      <label>Instrument
+        <select id="bt-instr">
+          <option value="XSP" selected>XSP (1/10 SPX)</option>
+          <option value="SPX">SPX</option>
+          <option value="SPY">SPY</option>
+        </select>
+      </label>
+      <label>Strike placement
+        <select id="bt-placement" onchange="onPlacementChange()">
+          <option value="distance_pct" selected>% OTM from price (tastytrade-style)</option>
+          <option value="projected">At projected H/L (our indicator)</option>
+        </select>
+      </label>
+      <label id="bt-distance-label">Distance % OTM
+        <input id="bt-distance" type="number" step="0.1" min="0.1" max="5.0" value="1.0" />
+      </label>
+      <label>Credit % per side (of wing)
+        <input id="bt-credit" type="number" step="1" min="1" max="50" value="20" />
+      </label>
+      <label>SPX wing width (pts)
+        <input id="bt-wing" type="number" step="1" min="1" max="50" value="5" />
+      </label>
+      <label>Skip volatile days
+        <select id="bt-skipvol">
+          <option value="true" selected>Yes</option>
+          <option value="false">No</option>
+        </select>
+      </label>
+      <button onclick="runBacktest()">Run backtest</button>
+    </div>
+
+    <div id="bt-preset-explainer" style="font-size: 11px; color: var(--muted); margin-bottom: 10px;">
+      Selected: <strong id="bt-preset-name">Tastytrade Canonical 1.0% OTM</strong> — short strikes ~1.0% OTM (~16Δ), ~20% credit per side.
+      Tastytrade's canonical 1/3-wing IC. Expected WR ~70%, breakeven ~60%.
+    </div>
+
+    <div id="bt-loading" class="empty" style="display:none;">Running backtest…</div>
+    <div id="bt-results" style="display:none;">
+      <div class="bt-summary" id="bt-summary"></div>
+      <svg class="equity-curve" id="bt-equity"></svg>
+
+      <h2 style="margin-top: 16px;">Per-session detail — strikes you would have placed</h2>
+      <div class="bt-table-wrap">
+        <table class="bt-table">
+          <thead><tr>
+            <th>Date</th><th>Regime</th><th>Obs Mid</th>
+            <th>Short PUT</th><th>Short CALL</th>
+            <th>Actual Low</th><th>Actual High</th>
+            <th>Distance to PUT</th><th>Distance to CALL</th>
+            <th>Outcome</th><th class="num">P&L</th><th class="num">Cum</th>
+          </tr></thead>
+          <tbody id="bt-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- WAVE SUB-TAB -->
+  <div id="bt-view-wave" style="display: none;">
+    <h2>Wave-Trading Backtest — multiple intraday signals per day</h2>
+    <div class="bt-warning">
+      <strong>Wave model:</strong> each indicator signal (Stoch reversal cross with 6-bar cooldown) =
+      one credit spread. Exit on first of: short strike breached (max loss), price moves favorably enough
+      (managed close at profit_target % of credit), or EOD (expire OTM = max profit).
+      <br><br>
+      <strong>Honest caveat:</strong> option premium decay is approximated via underlying SPX price moves
+      since historical 0DTE chain data isn't available. The "favorable move %" parameter controls
+      how much SPX has to move in your favor before we book the managed close.
+    </div>
+
+    <div class="bt-controls" style="margin-bottom: 6px;">
+      <strong style="font-size: 11px; color: var(--muted); text-transform: uppercase;">Wave Presets:</strong>
+      <button onclick="applyWavePreset('classic_25d')" style="background: var(--blue);">Classic 25Δ (0.5% OTM)</button>
+      <button onclick="applyWavePreset('aggressive_atm')" style="background: var(--panel2); color: var(--text);">Aggressive 0.3% OTM (35Δ)</button>
+      <button onclick="applyWavePreset('safer_20d')" style="background: var(--panel2); color: var(--text);">Safer 20Δ (0.7% OTM)</button>
+      <button onclick="applyWavePreset('wide_16d')" style="background: var(--panel2); color: var(--text);">Wide 16Δ (1.0% OTM)</button>
+    </div>
+
+    <div class="bt-controls">
+      <label>Instrument
+        <select id="wv-instr">
+          <option value="XSP" selected>XSP (1/10 SPX)</option>
+          <option value="SPX">SPX</option>
+          <option value="SPY">SPY</option>
+        </select>
+      </label>
+      <label>Distance % OTM (Phase 3 canonical: 1.5%)
+        <input id="wv-distance" type="number" step="0.1" min="0.1" max="3.0" value="1.5" />
+      </label>
+      <label>Credit % per side (single-side, fixed bug)
+        <input id="wv-credit" type="number" step="1" min="1" max="50" value="12" />
+      </label>
+      <label>Wing width (SPX pts)
+        <input id="wv-wing" type="number" step="1" min="1" max="50" value="5" />
+      </label>
+      <label>Profit target % (kept of credit)
+        <input id="wv-target" type="number" step="5" min="10" max="100" value="75" />
+      </label>
+      <label>Favorable move % (managed-close trigger)
+        <input id="wv-fav" type="number" step="0.05" min="0.1" max="2.0" value="0.3" />
+      </label>
+      <label>Skip volatile days
+        <select id="wv-skipvol">
+          <option value="true" selected>Yes</option>
+          <option value="false">No</option>
+        </select>
+      </label>
+      <button onclick="runWaveBacktest()">Run wave backtest</button>
+    </div>
+
+    <div id="wv-preset-explainer" style="font-size: 11px; color: var(--muted); margin-bottom: 10px;">
+      Selected: <strong id="wv-preset-name">Classic Wave 25Δ</strong> — 0.5% OTM short strike, 25% credit per side, manage at 25% of credit when SPX moves 0.3% favorably.
+    </div>
+
+    <div id="wv-loading" class="empty" style="display:none;">Running wave backtest…</div>
+    <div id="wv-results" style="display:none;">
+      <div class="bt-summary" id="wv-summary"></div>
+      <svg class="equity-curve" id="wv-equity"></svg>
+
+      <h2 style="margin-top: 16px;">Daily P&L (60 days)</h2>
+      <div class="bt-table-wrap" style="max-height: 220px;">
+        <table class="bt-table">
+          <thead><tr><th>Date</th><th class="num">Trades</th><th class="num">P&L</th></tr></thead>
+          <tbody id="wv-daily-tbody"></tbody>
+        </table>
+      </div>
+
+      <h2 style="margin-top: 16px;">All trades (most recent 50)</h2>
+      <div class="bt-table-wrap">
+        <table class="bt-table">
+          <thead><tr>
+            <th>Entry time</th><th>Side</th><th>Entry</th><th>Short</th>
+            <th>Exit time</th><th>Bars</th><th>Outcome</th><th class="num">P&L</th><th class="num">Cum</th>
+          </tr></thead>
+          <tbody id="wv-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- MATRIX SUB-TAB — multi-timeframe × multi-strategy honesty test -->
+  <div id="bt-view-matrix" style="display: none;">
+    <h2>Multi-Timeframe × Multi-Strategy Matrix</h2>
+    <div class="bt-warning" style="border-left-color: var(--orange);">
+      <strong>Why this exists:</strong> the original backtest was <strong>frame-locked to 5m bars</strong>
+      and <strong>strategy-monocultured</strong> (one signal logic, multiple wing widths called "different strategies").
+      This matrix actually tests <strong>3 strategy variants × 5 timeframes = 15 combos</strong> on the same 60-day data.
+      <br><br>
+      <strong>Strategy variants:</strong>
+      <br>• <code>MeanRev</code> — original Stoch reversal cross at extremes, no trend filter (= our deployed indicator)
+      <br>• <code>Pullback</code> — adds EMA10/30 trend filter (lesson from Davin's 10/200MA Pullback on SPY).
+        Sell-call only allowed in flat/down trend; sell-put only allowed in flat/up trend.
+      <br>• <code>PullbackPlus</code> — Pullback + RSI agreement (>60 for sell-call, &lt;40 for sell-put) + WVF spike. Most selective.
+      <br><br>
+      <strong style="color: var(--orange);">Regime caveat (still real):</strong>
+      our 60-day data window has <strong id="mtx-regime-summary">…loading…</strong> — so high WRs reflect this regime ONLY,
+      not Operation Midnight Hammer-style blow-up days.
+    </div>
+
+    <div class="bt-controls">
+      <label>Instrument
+        <select id="mtx-instr">
+          <option value="XSP" selected>XSP</option>
+          <option value="SPX">SPX</option>
+          <option value="SPY">SPY</option>
+        </select>
+      </label>
+      <label>Distance % OTM
+        <input id="mtx-distance" type="number" step="0.1" min="0.1" max="3.0" value="1.0" />
+      </label>
+      <label>Credit % per side
+        <input id="mtx-credit" type="number" step="1" min="1" max="50" value="12" />
+      </label>
+      <label>Profit target % (of credit)
+        <input id="mtx-target" type="number" step="5" min="10" max="100" value="25" />
+      </label>
+      <label>Favorable move % (managed-close)
+        <input id="mtx-fav" type="number" step="0.05" min="0.1" max="2.0" value="0.3" />
+        <span style="font-size: 9px; color: var(--muted);">Set 99 to disable management (worst-case binary)</span>
+      </label>
+      <button onclick="runMatrix()">Run matrix</button>
+    </div>
+
+    <div id="mtx-loading" class="empty" style="display:none;">Running 15 backtests…</div>
+
+    <div id="mtx-results" style="display:none;">
+      <h3 style="margin-top: 16px;">Regime profile (the 60-day window we tested on)</h3>
+      <div class="bt-summary" id="mtx-regime"></div>
+
+      <h3 style="margin-top: 16px;">Matrix — rows are timeframes, columns are strategies</h3>
+      <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px;">
+        Each cell shows: <strong>WR%</strong> over <strong>signal_count</strong> trades, with total $ P&L.
+        Cell is <span style="color: var(--green); font-weight: 600;">green</span> if WR ≥ breakeven,
+        <span style="color: var(--red); font-weight: 600;">red</span> if below.
+        Lower signal counts in rightmost columns = more selective = fewer trades to grind out.
+      </div>
+      <div class="bt-table-wrap">
+        <table class="bt-table" id="mtx-table">
+          <thead><tr>
+            <th>Timeframe</th>
+            <th>MeanRev<br><span style="font-weight: 400; color: var(--muted); font-size: 10px;">no filter — original</span></th>
+            <th>Pullback<br><span style="font-weight: 400; color: var(--muted); font-size: 10px;">EMA10/30 trend filter</span></th>
+            <th>PullbackPlus<br><span style="font-weight: 400; color: var(--muted); font-size: 10px;">+RSI +WVF</span></th>
+          </tr></thead>
+          <tbody id="mtx-tbody"></tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-top: 16px;">Reading the results</h3>
+      <div style="font-size: 13px; line-height: 1.6;">
+        <p><strong>Breakeven WR =</strong> max_loss ÷ (max_loss + total_credit). Below the matrix, we show what your
+        breakeven WR is at the chosen credit/distance combo. <strong>Any cell with WR ≥ breakeven is profitable.</strong></p>
+        <p><strong>Strategy comparison:</strong> if Pullback ≥ MeanRev WR with FEWER trades, the trend filter is adding
+        value — it skips the bad signals (selling calls into a rip, selling puts into a flush). In a benign regime
+        (like our test window), the difference is small. In a trending regime, it's large.</p>
+        <p><strong>Timeframe comparison:</strong> 5m fires the most signals but each has the smallest expected move.
+        15m / 30m fire fewer, cleaner signals. 60m may be too sparse to grind out P&L.</p>
+        <p><strong>Tail-event blind spot:</strong> our 60-day data has no 4%+ days. A real Operation Midnight Hammer
+        day would put EVERY strategy red. The matrix can't show that without out-of-sample crash data.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- EXPLAINER SUB-TAB -->
+  <div id="bt-view-explain" style="display: none;">
+    <h2>How these backtests work</h2>
+    <div style="font-size: 13px; line-height: 1.6;">
+      <h3 style="color: var(--blue);">Iron Condor (1 trade per day)</h3>
+      <p><strong>Data the backtest can see at decision time:</strong> only the first 15 minutes of price action
+      after 09:30 ET (the observation window) plus prior-day ATR. <strong>No lookahead.</strong></p>
+      <ol>
+        <li><strong>09:30-09:45 ET</strong> — record observation high/low</li>
+        <li><strong>09:45 ET</strong> — classify regime (volatile vs non-volatile based on obs_range / D1 ATR)</li>
+        <li><strong>09:45 ET</strong> — place IC strikes:<br>
+          • <em>"Projected H/L" mode</em>: short strikes at our indicator's projected day high/low (volatility-based forecast from obs window)<br>
+          • <em>"Distance %" mode</em>: short strikes at obs midpoint ± N% (matches tastytrade-style "1% OTM" placements)</li>
+        <li><strong>09:45 → 16:00 ET</strong> — walk forward bar-by-bar:<br>
+          • If any bar's high ≥ short_call OR low ≤ short_put → BREACH = max loss (close at strike)<br>
+          • If neither at 16:00 ET → BOTH HELD = max profit (let expire OTM)</li>
+      </ol>
+      <p>Credit is approximated as <code>credit_pct × wing</code> (since historical 0DTE chain data isn't available).
+      The bound-hold rate is exact.</p>
+
+      <h3 style="color: var(--blue); margin-top: 24px;">Wave Trading (multiple trades per day)</h3>
+      <p><strong>Data at entry:</strong> only the indicator state (RSI, Stoch %K/%D, WVF) at the signal bar.
+      <strong>No lookahead.</strong></p>
+      <ol>
+        <li><strong>Signal fires</strong> when Stoch %K crosses %D from above 60 (sell-call) or below 40 (sell-put), 6-bar cooldown between same-direction signals — matches Pine v0.5 deployed indicator</li>
+        <li><strong>Place spread at signal bar's close:</strong> short strike at entry_price ± distance_pct%, long strike at short ± wing_width</li>
+        <li><strong>Walk forward bar-by-bar in the same session:</strong>
+          <br>• If short strike breached → BREACH = max loss (close at strike)
+          <br>• If price moves favorably by favorable_move_pct → MANAGED = take profit_target_pct of credit
+          <br>• If neither at 16:00 ET → EXPIRE OTM = max profit (let expire)
+        </li>
+      </ol>
+      <p><strong>Honest simplification:</strong> the "favorable_move_pct" parameter approximates option premium decay
+      via underlying SPX moves. Real wave trading watches the spread's mid-price for the 25-30% target.
+      Without historical 0DTE option chain data, this is the cleanest proxy.</p>
+
+      <h3 style="color: var(--blue); margin-top: 24px;">Lookahead audit (no cheating)</h3>
+      <table class="bt-table" style="width: auto; margin-top: 6px;">
+        <thead><tr><th>Decision</th><th>Data used (at decision time)</th></tr></thead>
+        <tbody>
+        <tr><td>Regime classification (volatile/not)</td><td>Obs_range (09:30-09:45) ÷ prior-day ATR. ✓</td></tr>
+        <tr><td>Projected day high/low</td><td>Obs window range × multiplier. ✓</td></tr>
+        <tr><td>Strike placement</td><td>Obs window data only. ✓</td></tr>
+        <tr><td>Wave signal entry</td><td>RSI/Stoch state AT the signal bar. ✓</td></tr>
+        <tr><td>Trade outcome</td><td>Walk-forward simulation through subsequent bars. (Correct simulation.)</td></tr>
+        </tbody>
+      </table>
+      <p style="margin-top: 12px;">There's <strong>no future data</strong> influencing entry/exit decisions.
+      The backtest walks forward through bars exactly like a live system would receive them.</p>
+
+      <h3 style="color: var(--blue); margin-top: 24px;">What the backtest CAN'T model accurately</h3>
+      <ul>
+        <li><strong>Live option premiums</strong> — uses fixed credit_pct% assumption rather than actual chain prices</li>
+        <li><strong>Slippage / fill quality</strong> — real spreads fill at mid ± a few cents</li>
+        <li><strong>Pin risk</strong> — last hour of 0DTE has unique gamma dynamics</li>
+        <li><strong>Margin / BPR changes</strong> — real account-level constraints</li>
+        <li><strong>Behavioral discipline</strong> — backtest closes at 25% target mechanically; you might hold longer or close earlier</li>
+        <li><strong>Macro events</strong> — Trump-style headlines that move SPX 1%+ in 2 minutes are in the data but our predictor doesn't read news</li>
+      </ul>
+      <p>Treat backtest results as "directionally indicative" not "guaranteed P&L". Validate live with paper trading first.</p>
+    </div>
+  </div>
+
+  </section>
+</main>
+</div>
+
+<!-- ===== MONITOR VIEW ===== -->
+<div id="view-monitor" class="view">
+<main style="grid-template-columns: 1fr;">
+  <section class="panel">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+      <h2 style="margin: 0;">Directional Spread — Paper Trading Monitor</h2>
+      <button onclick="refreshMonitor()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">Refresh</button>
+    </div>
+
+    <!-- Session debrief (auto post-mortem of the latest session) -->
+    <div id="debrief-panel" style="margin-bottom: 16px;"></div>
+
+    <!-- Stats grid -->
+    <div id="monitor-stats" class="bt-summary"></div>
+
+    <!-- Equity curve -->
+    <div style="margin: 16px 0;">
+      <h2>Equity Curve</h2>
+      <div style="background: var(--panel2); border-radius: 6px; padding: 12px;">
+        <svg id="equity-svg" width="100%" height="200" style="display: block;"></svg>
+      </div>
+    </div>
+
+    <!-- Daily P&L + Signal rate side by side -->
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px;">
+      <div>
+        <h2>Daily P&L</h2>
+        <div id="daily-pnl" style="background: var(--panel2); border-radius: 6px; padding: 8px; max-height: 300px; overflow-y: auto; font-size: 12px;"></div>
+      </div>
+      <div>
+        <h2>Signal Rate (trades/day)</h2>
+        <div id="signal-rate" style="background: var(--panel2); border-radius: 6px; padding: 8px; max-height: 300px; overflow-y: auto; font-size: 12px;"></div>
+      </div>
+    </div>
+
+    <!-- Open positions -->
+    <div style="margin-bottom: 16px;">
+      <h2>Open Positions</h2>
+      <div id="monitor-open" class="empty">No open positions.</div>
+    </div>
+
+    <!-- Trade log -->
+    <h2>Trade Log</h2>
+    <div class="bt-table-wrap" style="max-height: 500px;">
+      <table class="bt-table" style="width: 100%;">
+        <thead><tr>
+          <th>#</th><th>Entry</th><th>Exit</th><th>Side</th>
+          <th>Short</th><th>Long</th><th>Outcome</th><th style="text-align:right;">P&L</th>
+          <th>Peak%</th><th>Broker</th>
+        </tr></thead>
+        <tbody id="monitor-trades"></tbody>
+      </table>
+    </div>
+
+    <!-- Alpaca status + kill switch -->
+    <div id="alpaca-controls" style="margin-top: 16px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;">
+      <div id="alpaca-info" style="font-size: 12px; color: var(--muted);"></div>
+      <button id="kill-btn" onclick="alpacaKill()"
+              style="background: var(--red); color: white; border: 0; padding: 8px 16px; border-radius: 5px; cursor: pointer; font-weight: 600; font-size: 13px; white-space: nowrap;">
+        Kill All Orders
+      </button>
+    </div>
+    <div id="kill-status" style="font-size: 11px; color: var(--muted); margin-top: 4px;"></div>
+  </section>
+</main>
+</div>
+
+<script>
+  // Same-origin when the backend itself served this page — either directly on
+  // :8765, or proxied by `tailscale serve` over HTTPS (port 443, no explicit port).
+  // Falls back to :8765 for a separate dev server (e.g. Vite on :5179).
+  const _httpish = location.protocol === 'http:' || location.protocol === 'https:';
+  const _sameOrigin = _httpish && (location.port === '8765' || location.port === '');
+  const API_BASE = _sameOrigin ? location.origin : `http://${location.hostname || 'localhost'}:8765`;
+  const _wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const WS_URL   = _sameOrigin
+    ? `${_wsProto}://${location.host}/ws`
+    : `${_wsProto}://${location.hostname || 'localhost'}:8765/ws`;
+
+  // ── Static snapshot mode ───────────────────────────────────────────────
+  // When served from GitHub Pages there is no backend to reach, so the
+  // dashboard runs read-only off a monitor.json snapshot the backend
+  // periodically force-pushes to the `data` branch (public-safe: strategy
+  // trades + aggregates only — no keys, no personal positions).
+  const STATIC_MODE  = /\.github\.io$/i.test(location.hostname);
+  const SNAPSHOT_URL = 'https://raw.githubusercontent.com/xynkro/ZeroDTE/data/monitor.json';
+
+  // Register the service worker — enables install-to-home-screen as a real PWA (HTTPS).
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+
+  let MODE = 'wave';   // 'wave' | 'ic' | 'both'
+  let TF   = '5';      // tradingview interval
+  let VIEW = 'live';   // 'live' | 'backtest' | 'macro'
+
+  // ── Notifications + audio ──────────────────────────────────────────────
+  // Track last-seen signal triggered_at so we only notify on NEW signals
+  let lastSeenSignalKey = '';
+  let soundEnabled = localStorage.getItem('zerodte_sound') !== 'off';
+
+  function updateSoundButton() {
+    const btn = document.getElementById('sound-btn');
+    if (!btn) return;
+    btn.textContent = soundEnabled ? '🔊' : '🔇';
+    btn.title = soundEnabled ? 'Sound on (click to mute)' : 'Sound off (click to unmute)';
+  }
+  function toggleSound() {
+    soundEnabled = !soundEnabled;
+    localStorage.setItem('zerodte_sound', soundEnabled ? 'on' : 'off');
+    updateSoundButton();
+    if (soundEnabled) playBeep('test');
+  }
+
+  async function enableNotifications() {
+    const btn = document.getElementById('notif-btn');
+    if (!('Notification' in window)) {
+      btn.textContent = '🔕 unsupported';
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      btn.textContent = '🔔 alerts on';
+      btn.style.color = 'var(--green)';
+      new Notification('ZeroDTE alerts active', { body: 'You\'ll be notified on signal fire.' });
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      btn.textContent = '🔕 blocked — fix in browser';
+      btn.style.color = 'var(--red)';
+      return;
+    }
+    const p = await Notification.requestPermission();
+    if (p === 'granted') {
+      btn.textContent = '🔔 alerts on';
+      btn.style.color = 'var(--green)';
+      new Notification('ZeroDTE alerts enabled', { body: 'You\'ll be notified on signal fire.' });
+    } else {
+      btn.textContent = '🔕 denied';
+      btn.style.color = 'var(--red)';
+    }
+  }
+
+  // Reflect current permission on load
+  function refreshNotifBtnState() {
+    const btn = document.getElementById('notif-btn');
+    if (!btn || !('Notification' in window)) return;
+    if (Notification.permission === 'granted') {
+      btn.textContent = '🔔 alerts on';
+      btn.style.color = 'var(--green)';
+    } else if (Notification.permission === 'denied') {
+      btn.textContent = '🔕 alerts blocked';
+      btn.style.color = 'var(--red)';
+    }
+  }
+
+  // Audio beep via Web Audio API — different tones for call vs put
+  let audioCtx = null;
+  function playBeep(side) {
+    if (!soundEnabled) return;
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = audioCtx;
+      const now = ctx.currentTime;
+      // Two-tone: low→high for sell-put (bullish), high→low for sell-call (bearish)
+      const tones = side === 'sell_put_cs' ? [440, 880] :
+                    side === 'sell_call_cs' ? [880, 440] : [600, 600];
+      tones.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.value = 0.0;
+        osc.connect(gain).connect(ctx.destination);
+        gain.gain.setValueAtTime(0.0, now + i * 0.18);
+        gain.gain.linearRampToValueAtTime(0.3, now + i * 0.18 + 0.02);
+        gain.gain.linearRampToValueAtTime(0.0, now + i * 0.18 + 0.15);
+        osc.start(now + i * 0.18);
+        osc.stop(now + i * 0.18 + 0.18);
+      });
+    } catch (e) { console.warn('audio fail', e); }
+  }
+
+  function fireSignalNotification(sig) {
+    const sideText = sig.side === 'sell_call_cs' ? 'SELL CALL CS' : 'SELL PUT CS';
+    const wave = (sig.wave_strikes || [])[0];
+    const xspStrikes = (sig.wave_strikes || []).find(s => s.instrument === 'XSP') ||
+                       (sig.suggested_strikes || []).find(s => s.instrument === 'XSP');
+    const detail = xspStrikes
+      ? `XSP ${xspStrikes.short_strike}/${xspStrikes.long_strike} · ROI ${xspStrikes.roi_pct ? xspStrikes.roi_pct.toFixed(0) + '%' : '—'}`
+      : `@ ${sig.underlying_price?.toFixed(2) || '—'}`;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        const n = new Notification(`🎯 ${sideText}`, {
+          body: detail,
+          tag: 'zerodte-signal',
+          requireInteraction: false,
+        });
+        setTimeout(() => n.close(), 8000);
+      } catch (e) { console.warn('notif fail', e); }
+    }
+    playBeep(sig.side);
+  }
+
+  async function testTelegram() {
+    if (STATIC_MODE) {
+      try {
+        const ok = await tgControlCommand('test_telegram');
+        alert(ok ? 'Test queued via GitHub — your backend sends it within ~1 min.' : 'Cancelled (no token).');
+      } catch (e) { alert('Queue failed: ' + e.message); }
+      return;
+    }
+    try {
+      const r = await fetch(`${API_BASE}/api/telegram/test`);
+      const d = await r.json();
+      if (d.ok) {
+        alert('📱 Telegram test sent (msg #' + d.message_id + ') — check your phone');
+      } else {
+        alert('Telegram failed: ' + (d.error || 'unknown error') + '\n\nCheck backend log for details.');
+      }
+    } catch (e) {
+      alert('Telegram test failed: ' + e.message);
+    }
+  }
+  window.testTelegram = testTelegram;
+
+  // ── Telegram message settings ───────────────────────────────────────────
+  // Backend-served: POST straight to the API. Pages (phone): write to the
+  // GitOps `control` branch via GitHub; the backend polls + applies (~1 min).
+  const GH_REPO_API = 'https://api.github.com/repos/xynkro/ZeroDTE';
+
+  function populateTgModal(prefs, types) {
+    const tmap = prefs.types || {};
+    document.getElementById('tg-types').innerHTML = (types || []).map(t =>
+      `<label style="font-size:12px;"><input type="checkbox" class="tg-type" data-key="${t.key}" ${tmap[t.key] !== false ? 'checked' : ''}> ${t.label}</label>`
+    ).join('');
+    document.getElementById('tg-prefix').value = prefs.prefix || '';
+    document.getElementById('tg-footer').value = prefs.footer || '';
+    document.getElementById('tg-link-enabled').checked = (prefs.link || {}).enabled !== false;
+    document.getElementById('tg-link-style').value = (prefs.link || {}).style || 'plain';
+    const det = prefs.detail || {};
+    document.getElementById('tg-detail-factors').checked = det.factors !== false;
+    document.getElementById('tg-detail-plan').checked = det.plan !== false;
+    document.getElementById('tg-detail-sizing').checked = det.sizing !== false;
+  }
+
+  function collectTgPrefs() {
+    const types = {};
+    document.querySelectorAll('.tg-type').forEach(cb => { types[cb.dataset.key] = cb.checked; });
+    return {
+      types,
+      prefix: document.getElementById('tg-prefix').value,
+      footer: document.getElementById('tg-footer').value,
+      link: { enabled: document.getElementById('tg-link-enabled').checked, style: document.getElementById('tg-link-style').value },
+      detail: {
+        factors: document.getElementById('tg-detail-factors').checked,
+        plan: document.getElementById('tg-detail-plan').checked,
+        sizing: document.getElementById('tg-detail-sizing').checked,
+      },
+    };
+  }
+
+  function openTgSettings() {
+    document.getElementById('tg-modal').style.display = 'block';
+    const status = document.getElementById('tg-save-status');
+    const note = document.getElementById('tg-mode-note');
+    status.textContent = 'loading…'; status.style.color = 'var(--muted)';
+    if (STATIC_MODE) {
+      if (note) note.style.display = 'block';
+      fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()).then(snap => {
+        populateTgModal(snap.telegram_prefs || {}, snap.telegram_types || []);
+        status.textContent = '';
+      }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+    } else {
+      if (note) note.style.display = 'none';
+      fetch(`${API_BASE}/api/telegram/prefs`).then(r => r.json()).then(d => {
+        populateTgModal(d.prefs || {}, d.message_types || []);
+        status.textContent = '';
+      }).catch(e => { status.textContent = 'load failed: ' + e.message; status.style.color = 'var(--red)'; });
+    }
+  }
+  window.openTgSettings = openTgSettings;
+
+  function closeTgSettings() { document.getElementById('tg-modal').style.display = 'none'; }
+  window.closeTgSettings = closeTgSettings;
+
+  // ── GitHub control-branch helpers (phone PWA write path) ────────────────
+  function ghToken(force) {
+    let t = localStorage.getItem('zerodte_gh_token');
+    if (!t || force) {
+      t = prompt('Paste a GitHub fine-grained token\n(repo: xynkro/ZeroDTE · Contents: Read and write).\nStored only on this device.\n\nCreate one at github.com/settings/tokens?type=beta');
+      if (t) { t = t.trim(); localStorage.setItem('zerodte_gh_token', t); }
+    }
+    return t;
+  }
+  const _b64enc = s => btoa(unescape(encodeURIComponent(s)));
+  const _b64dec = s => decodeURIComponent(escape(atob((s || '').replace(/\n/g, ''))));
+
+  async function ghGetControl(token) {
+    const r = await fetch(`${GH_REPO_API}/contents/control.json?ref=control&t=${Date.now()}`, {
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json' }, cache: 'no-store',
+    });
+    if (r.status === 404) return { sha: null, json: { v: 0 } };
+    if (!r.ok) { const e = new Error('GET HTTP ' + r.status); e.status = r.status; throw e; }
+    const d = await r.json();
+    let json = { v: 0 };
+    try { json = JSON.parse(_b64dec(d.content)); } catch (e) {}
+    return { sha: d.sha, json };
+  }
+  async function ghPutControl(token, sha, obj, message) {
+    const body = { message, branch: 'control', content: _b64enc(JSON.stringify(obj, null, 2)) };
+    if (sha) body.sha = sha;
+    const r = await fetch(`${GH_REPO_API}/contents/control.json`, {
+      method: 'PUT',
+      headers: { 'Authorization': 'token ' + token, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const txt = await r.text(); const e = new Error('PUT HTTP ' + r.status + ' ' + txt.slice(0, 120)); e.status = r.status; throw e; }
+    return r.json();
+  }
+
+  async function saveTgSettings() {
+    const status = document.getElementById('tg-save-status');
+    const prefs = collectTgPrefs();
+    if (!STATIC_MODE) {
+      status.textContent = 'saving…'; status.style.color = 'var(--muted)';
+      try {
+        const r = await fetch(`${API_BASE}/api/telegram/prefs`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ZeroDTE-Token': window.__ZDT || '' }, body: JSON.stringify(prefs),
+        }).then(r => r.json());
+        status.textContent = r.ok ? '✓ saved — applies on next alert' : 'save failed';
+        status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
+      } catch (e) { status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)'; }
+      return;
+    }
+    const token = ghToken(false);
+    if (!token) { status.textContent = 'cancelled (no token)'; status.style.color = 'var(--muted)'; return; }
+    status.textContent = 'saving via GitHub…'; status.style.color = 'var(--muted)';
+    try {
+      const cur = await ghGetControl(token);
+      const obj = Object.assign({}, cur.json, { v: (cur.json.v || 0) + 1, telegram_prefs: prefs });
+      await ghPutControl(token, cur.sha, obj, 'control: telegram prefs v' + obj.v);
+      status.textContent = '✓ saved — backend applies within ~1 min';
+      status.style.color = 'var(--green)';
+    } catch (e) {
+      status.textContent = 'save failed: ' + e.message; status.style.color = 'var(--red)';
+      if (e.status === 401 || e.status === 403) { localStorage.removeItem('zerodte_gh_token'); status.textContent += ' — token cleared, retry'; }
+    }
+  }
+  window.saveTgSettings = saveTgSettings;
+
+  async function tgControlCommand(command) {
+    const token = ghToken(false);
+    if (!token) return false;
+    const cur = await ghGetControl(token);
+    const obj = Object.assign({}, cur.json, { command, command_nonce: 'n' + Date.now() });
+    await ghPutControl(token, cur.sha, obj, 'control: ' + command);
+    return true;
+  }
+
+  function setView(v) {
+    VIEW = v;
+    ['live','backtest','macro','monitor'].forEach(x => {
+      document.getElementById('tab-' + x).classList.toggle('active', x === v);
+      document.getElementById('view-' + x).classList.toggle('active', x === v);
+    });
+    if (v === 'backtest' && !window.__bt_run_once) {
+      window.__bt_run_once = true;
+      runBacktest();
+    }
+    if (v === 'macro') refreshMacro();
+    if (v === 'monitor') refreshMonitor();
+  }
+
+  // ── Macro tab ────────────────────────────────────────────────────────
+  async function refreshMacro() {
+    try {
+      const [news, cal] = await Promise.all([
+        fetch(`${API_BASE}/api/macro/news`).then(r => r.json()),
+        fetch(`${API_BASE}/api/macro/calendar`).then(r => r.json()),
+      ]);
+      renderNewsList(news.news || []);
+      renderCalendar(cal.calendar || []);
+    } catch (e) {
+      console.error('macro fetch error', e);
+    }
+  }
+
+  function renderNewsList(items) {
+    const el = document.getElementById('news-list');
+    if (!items.length) {
+      el.innerHTML = '<div class="empty">No news items.</div>';
+      return;
+    }
+    el.innerHTML = items.map(n => {
+      const t = new Date(n.datetime);
+      const timeStr = t.toLocaleString('en-SG', { hour12: false });
+      const cls = n.hot ? 'hot' : '';
+      return `
+        <div class="news-item ${cls}">
+          <div><span class="time">${timeStr}</span> · <span class="source">${n.source}</span></div>
+          <div class="headline"><a href="${n.url}" target="_blank" style="color: inherit; text-decoration: none;">${n.headline}</a></div>
+          ${n.summary ? `<div style="color: var(--muted); font-size: 11px; margin-top: 2px;">${n.summary}</div>` : ''}
+        </div>`;
+    }).join('');
+  }
+
+  function renderCalendar(events) {
+    const el = document.getElementById('cal-list');
+    if (!events.length) {
+      el.innerHTML = '<div class="empty">No calendar events.</div>';
+      return;
+    }
+    el.innerHTML = events.map(e => {
+      // Time string is UTC "YYYY-MM-DD HH:MM:SS"; convert to ET for display
+      let timeET = e.time;
+      try {
+        const utc = new Date(e.time + 'Z');
+        timeET = utc.toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false,
+                                                month: 'short', day: '2-digit',
+                                                hour: '2-digit', minute: '2-digit' });
+      } catch {}
+      const fmt = (v) => v != null ? Number(v).toFixed(2) : '—';
+      return `
+        <div class="cal-row ${e.impact || 'low'}">
+          <span class="time-col">${timeET}</span>
+          <span class="impact">${e.impact || 'low'}</span>
+          <span>${e.event}${e.unit ? ` (${e.unit})` : ''}</span>
+          <span class="num">${fmt(e.estimate)}</span>
+          <span class="num">${fmt(e.prev)}</span>
+          <span class="num">${fmt(e.actual)}</span>
+        </div>`;
+    }).join('');
+  }
+
+  // ═══════════ Phase 1+3 Gate Status Panel ═══════════
+  // Mirrors Pine's status table — shows live state of every wave-entry gate.
+  // Backend already publishes everything in DashboardState; this just surfaces it.
+  function renderGatePanel(s) {
+    const ind = s.indicators || {};
+    const today = (s.last_signals || []).filter(sig => {
+      const today_iso = new Date().toISOString().slice(0, 10);
+      return sig.triggered_at && sig.triggered_at.startsWith(today_iso);
+    }).length;
+
+    // VIX bucket — read from latest signal's confluence dict if available, or
+    // from the orchestrator's regime/notes
+    const lastSig = (s.last_signals || []).slice(-1)[0];
+    const vixOk = lastSig ? !!lastSig.confluence?.vix_bucket_ok : null;
+    const vixEl = document.getElementById('gate-vix');
+    if (vixEl) {
+      // Try to extract VIX from notes or just show pass/fail
+      const note = (s.notes || []).find(n => /VIX[\s:]/i.test(n)) || '';
+      const m = note.match(/VIX\s*=?\s*(\d+\.?\d*)/i);
+      const vixVal = m ? parseFloat(m[1]) : null;
+      if (vixOk === null && vixVal === null) {
+        vixEl.innerHTML = '<span style="color: var(--muted);">awaiting</span>';
+      } else if (vixOk === false || (vixVal !== null && vixVal >= 22)) {
+        vixEl.innerHTML = `<span style="color: var(--red); font-weight: 600;">🔴 STAND-ASIDE${vixVal ? ' · VIX ' + vixVal.toFixed(1) : ''}</span>`;
+      } else {
+        vixEl.innerHTML = `<span style="color: var(--green);">✓ OK${vixVal ? ' · VIX ' + vixVal.toFixed(1) : ''}</span>`;
+      }
+    }
+
+    // Macro blackout
+    const blackoutEl = document.getElementById('gate-blackout');
+    if (blackoutEl) {
+      const inBlackout = (s.macro_alerts || []).some(a => a.level === 'blackout');
+      const nextEvt = (s.macro_alerts || []).find(a => a.minutes_until && a.minutes_until > 0);
+      if (inBlackout) {
+        blackoutEl.innerHTML = '<span style="color: var(--red); font-weight: 600;">🚨 BLOCKED</span>';
+      } else if (nextEvt && nextEvt.minutes_until < 60) {
+        blackoutEl.innerHTML = `<span style="color: var(--orange);">⚠ ${nextEvt.event} in ${nextEvt.minutes_until}m</span>`;
+      } else {
+        blackoutEl.innerHTML = '<span style="color: var(--green);">✓ clear</span>';
+      }
+    }
+
+    // Trades today (vs cap)
+    const tradesEl = document.getElementById('gate-trades');
+    if (tradesEl) {
+      const cap = 3; // matches MAX_TRADES_PER_DAY default
+      const ratio = today / cap;
+      const color = ratio >= 1 ? 'var(--red)' : ratio >= 0.66 ? 'var(--orange)' : 'var(--green)';
+      tradesEl.innerHTML = `<span style="color: ${color}; font-weight: 600;">${today}/${cap}${ratio >= 1 ? ' · CAP HIT' : ''}</span>`;
+    }
+
+    // Mid-session vol (placeholder — backend doesn't yet expose this; infer from notes)
+    const midVolEl = document.getElementById('gate-midvol');
+    if (midVolEl) {
+      const midVolNote = (s.notes || []).find(n => /mid-session/i.test(n)) || '';
+      if (midVolNote) {
+        midVolEl.innerHTML = '<span style="color: var(--red);">🔴 LOCKED</span>';
+      } else {
+        midVolEl.innerHTML = '<span style="color: var(--green);">✓ ok</span>';
+      }
+    }
+
+    // Live confluence preview (from latest signal if present)
+    const confEl = document.getElementById('gate-conf');
+    if (confEl) {
+      if (lastSig && lastSig.confluence_score !== undefined) {
+        const score = lastSig.confluence_score;
+        const max = Object.keys(lastSig.confluence || {}).length || 5;
+        const color = score >= 4 ? 'var(--green)' : score >= 3 ? 'var(--orange)' : 'var(--red)';
+        const lastSide = lastSig.side === 'sell_call_cs' ? 'CALL' : 'PUT';
+        confEl.innerHTML = `<span style="color: ${color}; font-weight: 600;">${score}/${max} (last ${lastSide})</span>`;
+      } else {
+        confEl.innerHTML = '<span style="color: var(--muted);">awaiting first signal</span>';
+      }
+    }
+
+    // Stand-aside banner — show if ANY gate is blocking
+    const banner = document.getElementById('gate-banner');
+    if (banner) {
+      const inBlackout = (s.macro_alerts || []).some(a => a.level === 'blackout');
+      const capHit = today >= 3;
+      const note = (s.notes || []).find(n => /STAND-ASIDE|skipped|blackout|locked/i.test(n));
+      const blocking = inBlackout || capHit || !!note;
+      if (blocking) {
+        const reasons = [];
+        if (inBlackout) reasons.push('macro blackout');
+        if (capHit) reasons.push('daily cap reached');
+        if (note) reasons.push(note.slice(0, 60));
+        banner.style.display = 'block';
+        banner.style.background = 'rgba(239,83,80,0.15)';
+        banner.style.border = '1px solid var(--red)';
+        banner.style.color = 'var(--red)';
+        banner.textContent = '⛔ STAND-ASIDE — ' + reasons.join('; ');
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+  }
+
+  function renderMacroAlertBar(alerts) {
+    const wrap = document.getElementById('macro-alert-bar');
+    const badge = document.getElementById('macro-badge');
+    if (!alerts || !alerts.length) {
+      wrap.innerHTML = '';
+      if (badge) badge.style.display = 'none';
+      return;
+    }
+    wrap.innerHTML = alerts.map(a => {
+      const icon = a.level === 'blackout' ? '🚨' : a.level === 'warn' ? '⚠️' : 'ℹ️';
+      const cls = a.level === 'blackout' ? 'blackout' : a.level === 'warn' ? 'warn' : 'info';
+      const mins = a.minutes_until ?? '?';
+      const countdown = mins < 60 ? `${mins}m` : `${Math.floor(mins/60)}h ${mins%60}m`;
+      return `
+        <div class="macro-banner ${cls}">
+          <span class="icon">${icon}</span>
+          <span><strong>${a.event}</strong> (${a.country}) — ${a.impact} impact</span>
+          <span class="countdown">${countdown}</span>
+          <span>${a.msg}</span>
+        </div>`;
+    }).join('');
+    // Show badge in tab
+    const blackout = alerts.some(a => a.level === 'blackout');
+    if (badge) {
+      badge.style.display = '';
+      badge.className = 'badge ' + (blackout ? 'warn' : '');
+      badge.textContent = blackout ? '🚨 BLACKOUT' : `${alerts[0].minutes_until}m`;
+    }
+  }
+
+  // ── Backtest tab ────────────────────────────────────────────────────────
+  // Each preset: placement + distance_pct + credit_pct based on real tastytrade canonical
+  const BT_PRESETS = {
+    canonical_16d: {
+      placement: 'distance_pct', distance: 1.0, credit: 20,
+      name: 'Tastytrade Canonical (1.0% OTM, 16Δ)',
+      desc: 'Short strikes ~16Δ at 1.0% OTM. Tastytrade canonical 1/3-wing IC. Expected WR ~70%, BE ~60%. Backtest: +$2.5k/60d.',
+    },
+    conservative_10d: {
+      placement: 'distance_pct', distance: 1.5, credit: 12,
+      name: 'Conservative (1.5% OTM, 10Δ)',
+      desc: 'Short strikes ~10Δ at 1.5% OTM. Lower credit, higher WR. Backtest: +$3.4k/60d (best edge in our data).',
+    },
+    far_otm_5d: {
+      placement: 'distance_pct', distance: 2.0, credit: 7,
+      name: 'Far-OTM (2.0% OTM, 5Δ)',
+      desc: 'Very far OTM, ~5Δ. Tiny credit but ~98% WR. Backtest: +$2.6k/60d.',
+    },
+    aggressive_25d: {
+      placement: 'distance_pct', distance: 0.5, credit: 35,
+      name: 'Aggressive (0.5% OTM, 25Δ)',
+      desc: 'Short strikes near ATM. Big credit but poor WR (~29%). Negative EV in our window. Wave-trading territory, not IC.',
+    },
+    projected_hl: {
+      placement: 'projected', distance: 0, credit: 16,
+      name: 'Projected H/L (our indicator)',
+      desc: 'Strikes at our projected day high/low. Effectively close-to-ATM strikes (~50Δ proxy). Negative EV (-19pp).',
+    },
+  };
+
+  function applyPreset(key) {
+    const p = BT_PRESETS[key];
+    if (!p) return;
+    document.getElementById('bt-placement').value = p.placement;
+    document.getElementById('bt-distance').value = p.distance;
+    document.getElementById('bt-credit').value = p.credit;
+    document.getElementById('bt-preset-name').textContent = p.name;
+    document.getElementById('bt-preset-explainer').innerHTML =
+      `Selected: <strong>${p.name}</strong> — ${p.desc}`;
+    onPlacementChange();
+    runBacktest();
+  }
+
+  function onPlacementChange() {
+    const placement = document.getElementById('bt-placement').value;
+    document.getElementById('bt-distance-label').style.display =
+      placement === 'distance_pct' ? '' : 'none';
+  }
+
+  // Backtest sub-tabs: ic / wave / matrix / explain
+  function setBtTab(t) {
+    ['ic','wave','matrix','explain'].forEach(x => {
+      const tab = document.getElementById('bt-tab-' + x);
+      const view = document.getElementById('bt-view-' + x);
+      const active = (x === t);
+      tab.style.color = active ? 'var(--text)' : 'var(--muted)';
+      tab.style.borderBottomColor = active ? 'var(--blue)' : 'transparent';
+      view.style.display = active ? '' : 'none';
+    });
+    if (t === 'wave' && !window.__wv_run_once) {
+      window.__wv_run_once = true;
+      runWaveBacktest();
+    }
+    if (t === 'matrix' && !window.__mtx_run_once) {
+      window.__mtx_run_once = true;
+      runMatrix();
+    }
+  }
+
+  // ─── MATRIX: multi-TF × multi-strategy honesty test ───
+  async function runMatrix() {
+    const params = new URLSearchParams({
+      instrument: document.getElementById('mtx-instr').value,
+      strike_distance_pct: document.getElementById('mtx-distance').value,
+      credit_pct_per_side: document.getElementById('mtx-credit').value,
+      profit_target_pct: document.getElementById('mtx-target').value,
+      favorable_move_pct: document.getElementById('mtx-fav').value,
+    });
+    document.getElementById('mtx-loading').style.display = 'block';
+    document.getElementById('mtx-results').style.display = 'none';
+    try {
+      const [matrixR, regimeR] = await Promise.all([
+        fetch(`${API_BASE}/api/backtest/matrix?${params}`).then(r => r.json()),
+        fetch(`${API_BASE}/api/backtest/regime`).then(r => r.json()),
+      ]);
+      renderMatrix(matrixR, regimeR);
+    } catch (e) {
+      document.getElementById('mtx-loading').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function renderMatrix(d, regime) {
+    document.getElementById('mtx-loading').style.display = 'none';
+    document.getElementById('mtx-results').style.display = 'block';
+    if (d.error) {
+      document.getElementById('mtx-tbody').innerHTML =
+        `<tr><td colspan="4" style="color:var(--red);">${d.error}</td></tr>`;
+      return;
+    }
+    // Compute breakeven WR
+    const distance = parseFloat(document.getElementById('mtx-distance').value);
+    const credit = parseFloat(document.getElementById('mtx-credit').value);
+    const wing_pct_dollar = 100; // wing × 100 = max wing $
+    const credit_total_pct = (credit * 2);  // % of wing
+    const max_loss_pct = (100 - credit_total_pct);
+    const breakeven = max_loss_pct / (max_loss_pct + credit_total_pct) * 100;
+
+    // Regime summary
+    if (regime && !regime.error) {
+      const summaryEl = document.getElementById('mtx-regime-summary');
+      summaryEl.textContent = `${regime.window_start} to ${regime.window_end}, total move ${regime.total_move_pct >= 0 ? '+' : ''}${regime.total_move_pct}%, biggest single-day ${regime.biggest_5_moves[0].move_pct}%`;
+
+      const reg = document.getElementById('mtx-regime');
+      reg.innerHTML = `
+        <div class="stat"><div>Window</div><div class="value" style="font-size: 13px;">${regime.window_start} → ${regime.window_end}</div></div>
+        <div class="stat"><div>Sessions</div><div class="value">${regime.n_sessions}</div></div>
+        <div class="stat"><div>Total move</div><div class="value" style="color: ${regime.total_move_pct > 0 ? 'var(--green)' : 'var(--red)'};">${regime.total_move_pct >= 0 ? '+' : ''}${regime.total_move_pct}%</div></div>
+        <div class="stat"><div>H/L range</div><div class="value">${regime.high_low_range_pct}%</div></div>
+        <div class="stat"><div>Up / Dn / Flat days</div><div class="value" style="font-size: 13px;">${regime.up_days} / ${regime.down_days} / ${regime.flat_days}</div></div>
+        <div class="stat"><div>Median daily range</div><div class="value">${regime.median_daily_range_pct}%</div></div>
+        <div class="stat"><div>Biggest single-day</div><div class="value" style="color: var(--orange);">${regime.biggest_5_moves[0].move_pct}%</div></div>
+        <div class="stat"><div>Breakeven WR</div><div class="value" style="color: var(--orange);">${breakeven.toFixed(1)}%</div></div>
+      `;
+    }
+
+    // Build matrix: rows by TF, columns by strategy
+    const tfs = [...new Set(d.matrix.map(r => r.timeframe_min))].sort((a,b) => a - b);
+    const strategies = ['MeanRev', 'Pullback', 'PullbackPlus'];
+    const tbody = document.getElementById('mtx-tbody');
+    tbody.innerHTML = '';
+    tfs.forEach(tf => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td style="font-weight: 600;">${tf}m</td>`;
+      strategies.forEach(strat => {
+        const cell = d.matrix.find(r => r.timeframe_min === tf && r.strategy === strat);
+        if (!cell || cell.n_signals === 0) {
+          tr.innerHTML += `<td style="color: var(--dim);">— no signals —</td>`;
+        } else {
+          const above_be = cell.win_rate_pct >= breakeven;
+          const color = above_be ? 'var(--green)' : 'var(--red)';
+          tr.innerHTML += `<td>
+            <div style="color: ${color}; font-weight: 600; font-size: 14px;">${cell.win_rate_pct.toFixed(1)}%</div>
+            <div style="font-size: 10px; color: var(--muted);">${cell.n_signals} sigs · $${cell.total_pnl.toLocaleString()} · ${cell.n_breach} breach</div>
+          </td>`;
+        }
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  // Wave-trading backtest — PHASE 3 CANONICAL DEFAULTS (post 2026-05-09 audit)
+  // Bug fix: dashboard previously DOUBLED the credit for wave (modeled IC). Now corrected.
+  // Defaults align with TradingBlock + CBOE + 0-dte.com canonical 0DTE.
+  const WV_PRESETS = {
+    canonical_phase3: { distance: 1.5, credit: 12, target: 75, fav: 0.3, name: '🟢 Phase 3 Canonical (1.5% OTM, 10Δ)', desc: 'Default. 1.5% OTM short strike (~10-15Δ), STOP only on bar close, 30min TIME buffer. TradingBlock + CBOE canonical. Backtest: 99.3% WR.' },
+    canonical_16d:   { distance: 1.0, credit: 20, target: 75, fav: 0.3, name: '🟡 Tastytrade 1/3-wing (1.0% OTM, 16Δ)', desc: '1.0% OTM (~16Δ). Tastytrade canonical 1/3-wing rule. Larger credit, slightly more risk.' },
+    far_otm_5d:      { distance: 2.0, credit: 7,  target: 75, fav: 0.3, name: '🟢 Far-OTM (2.0% OTM, 5Δ)', desc: '2.0% OTM (~5Δ). Tiny credit but ~98%+ WR. Very conservative.' },
+    aggressive_25d:  { distance: 0.5, credit: 25, target: 75, fav: 0.3, name: '🔴 Aggressive 25Δ (DEPRECATED)', desc: '0.5% OTM (~25Δ). Was the old default. Negative EV per backtest. Kept for comparison only.' },
+  };
+
+  function applyWavePreset(key) {
+    const p = WV_PRESETS[key];
+    if (!p) return;
+    document.getElementById('wv-distance').value = p.distance;
+    document.getElementById('wv-credit').value = p.credit;
+    document.getElementById('wv-target').value = p.target;
+    document.getElementById('wv-fav').value = p.fav;
+    document.getElementById('wv-preset-name').textContent = p.name;
+    document.getElementById('wv-preset-explainer').innerHTML = `Selected: <strong>${p.name}</strong> — ${p.desc}`;
+    runWaveBacktest();
+  }
+
+  async function runWaveBacktest() {
+    const params = new URLSearchParams({
+      credit_pct: document.getElementById('wv-credit').value,
+      strike_distance_pct: document.getElementById('wv-distance').value,
+      wing: document.getElementById('wv-wing').value,
+      profit_target_pct: document.getElementById('wv-target').value,
+      favorable_move_pct: document.getElementById('wv-fav').value,
+      skip_volatile: document.getElementById('wv-skipvol').value,
+      instrument: document.getElementById('wv-instr').value,
+    });
+    document.getElementById('wv-loading').style.display = 'block';
+    document.getElementById('wv-results').style.display = 'none';
+    try {
+      const r = await fetch(`${API_BASE}/api/backtest/wave?${params}`);
+      const d = await r.json();
+      renderWaveBacktest(d);
+    } catch (e) {
+      document.getElementById('wv-loading').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function renderWaveBacktest(d) {
+    document.getElementById('wv-loading').style.display = 'none';
+    document.getElementById('wv-results').style.display = 'block';
+    if (d.error) {
+      document.getElementById('wv-summary').innerHTML = `<div style="color:var(--red);">${d.error}</div>`;
+      return;
+    }
+    const s = d.summary, p = d.params, trades = d.trades || [];
+    const beWR = 100 * p.max_loss_per_trade / (p.max_loss_per_trade + p.credit_total_per_trade);
+    const edge = s.win_rate_pct - beWR;
+    document.getElementById('wv-summary').innerHTML = `
+      <div class="stat ${edge>=0?'good':'bad'}"><div class="label">Actual WR</div><div class="value">${s.win_rate_pct}%</div></div>
+      <div class="stat neutral"><div class="label">Breakeven WR</div><div class="value">${beWR.toFixed(1)}%</div></div>
+      <div class="stat ${edge>=0?'good':'bad'}"><div class="label">Edge</div><div class="value">${edge>=0?'+':''}${edge.toFixed(1)}pp</div></div>
+      <div class="stat ${s.total_pnl>=0?'good':'bad'}"><div class="label">Total P&L</div><div class="value">$${s.total_pnl.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+      <div class="stat ${s.avg_pnl_per_trade>=0?'good':'bad'}"><div class="label">Avg / trade</div><div class="value">$${s.avg_pnl_per_trade.toFixed(0)}</div></div>
+      <div class="stat neutral"><div class="label">Trades</div><div class="value">${s.n_trades}</div></div>
+      <div class="stat neutral"><div class="label">Wins</div><div class="value">${s.n_wins}</div></div>
+      <div class="stat neutral"><div class="label">Managed</div><div class="value">${s.n_managed}</div></div>
+      <div class="stat neutral"><div class="label">Expire OTM</div><div class="value">${s.n_expire_otm}</div></div>
+      <div class="stat neutral"><div class="label">Breaches</div><div class="value">${s.n_breaches}</div></div>
+      <div class="stat neutral"><div class="label">Credit / trade</div><div class="value">$${p.credit_total_per_trade}</div></div>
+      <div class="stat neutral"><div class="label">Max-loss / trade</div><div class="value">$${p.max_loss_per_trade}</div></div>
+    `;
+    drawEquityCurveSvg('wv-equity', trades.map(t => t.cum_pnl_dollars));
+
+    // Daily P&L table
+    const dailyHtml = (d.daily_pnl || []).map(x => {
+      const cls = x.pnl >= 0 ? 'win' : 'lose';
+      return `<tr class="${cls}"><td>${x.date}</td><td>${x.n_trades}</td>
+              <td class="outcome">$${(x.pnl >= 0 ? '+' : '') + x.pnl.toFixed(0)}</td></tr>`;
+    }).join('');
+    document.getElementById('wv-daily-tbody').innerHTML = dailyHtml || '<tr><td colspan="3" class="empty">No daily data</td></tr>';
+
+    // Recent 50 trades
+    const recentTrades = trades.slice(-50).reverse();
+    document.getElementById('wv-tbody').innerHTML = recentTrades.map(t => {
+      const cls = t.pnl_dollars > 0 ? 'win' : 'lose';
+      const t2 = t.entry_time ? new Date(t.entry_time).toLocaleString('en-SG', { hour12: false }).replace(',', '') : '—';
+      const exitT = t.exit_time ? new Date(t.exit_time).toLocaleTimeString('en-SG', { hour12: false }).slice(0, 5) : '—';
+      return `<tr class="${cls}">
+        <td style="font-size:10px;">${t2}</td>
+        <td class="${t.side === 'sell_call_cs' ? 'roi-bad' : ''}" style="font-size:10px;">${t.side === 'sell_call_cs' ? 'CALL' : 'PUT'}</td>
+        <td>${t.entry_price.toFixed(2)}</td>
+        <td>${t.short_strike.toFixed(2)}</td>
+        <td style="font-size:10px;">${exitT}</td>
+        <td>${t.bars_held}</td>
+        <td class="outcome">${t.outcome.replace(/_/g,' ')}</td>
+        <td>$${(t.pnl_dollars >= 0 ? '+' : '') + t.pnl_dollars.toFixed(0)}</td>
+        <td>$${t.cum_pnl_dollars >= 0 ? '+' : ''}${t.cum_pnl_dollars.toFixed(0)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function drawEquityCurveSvg(elId, cumValues) {
+    const svg = document.getElementById(elId);
+    const W = svg.clientWidth || 800, H = 200, pad = 24;
+    if (!cumValues || !cumValues.length) {
+      svg.innerHTML = `<text x="${W/2}" y="${H/2}" fill="#7d8499" text-anchor="middle">No data</text>`;
+      return;
+    }
+    const yMin = Math.min(0, ...cumValues), yMax = Math.max(0, ...cumValues);
+    const x = i => pad + (W - 2*pad) * (i / Math.max(1, cumValues.length - 1));
+    const y = v => H - pad - (H - 2*pad) * (v - yMin) / Math.max(1, yMax - yMin);
+    const pts = cumValues.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    const lastPos = cumValues[cumValues.length - 1] >= 0;
+    const stroke = lastPos ? '#26a69a' : '#ef5350';
+    const fill = lastPos ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)';
+    const areaPts = `${x(0)},${y(0)} ${pts} ${x(cumValues.length-1)},${y(0)}`;
+    const zeroY = y(0);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.innerHTML = `
+      <line x1="${pad}" y1="${zeroY}" x2="${W - pad}" y2="${zeroY}" stroke="#2a2e3e" stroke-dasharray="2,3" />
+      <polygon points="${areaPts}" fill="${fill}" />
+      <polyline points="${pts}" stroke="${stroke}" fill="none" stroke-width="2" />
+      <text x="${pad}" y="${pad-4}" fill="#7d8499" font-size="10">Cumulative: $${cumValues[cumValues.length-1].toFixed(0)}</text>
+      <text x="${W-pad}" y="${pad-4}" fill="#7d8499" font-size="10" text-anchor="end">${cumValues.length} entries</text>
+    `;
+  }
+
+  async function runBacktest() {
+    const instr = document.getElementById('bt-instr').value;
+    const credit = document.getElementById('bt-credit').value;
+    const wing = document.getElementById('bt-wing').value;
+    const skipvol = document.getElementById('bt-skipvol').value;
+    const placement = document.getElementById('bt-placement').value;
+    const distance = document.getElementById('bt-distance').value;
+    const url = `${API_BASE}/api/backtest/iron_condor?credit_pct=${credit}&wing=${wing}` +
+                `&skip_volatile=${skipvol}&instrument=${instr}` +
+                `&strike_placement=${placement}&strike_distance_pct=${distance}`;
+    document.getElementById('bt-loading').style.display = 'block';
+    document.getElementById('bt-results').style.display = 'none';
+    try {
+      const r = await fetch(url);
+      const d = await r.json();
+      renderBacktest(d);
+    } catch (e) {
+      document.getElementById('bt-loading').textContent = 'Error: ' + e.message;
+    }
+  }
+
+  function renderBacktest(d) {
+    document.getElementById('bt-loading').style.display = 'none';
+    document.getElementById('bt-results').style.display = 'block';
+    if (d.error) {
+      document.getElementById('bt-summary').innerHTML = `<div style="color:var(--red);">${d.error}</div>`;
+      return;
+    }
+    const s = d.summary, p = d.params, outs = d.outcomes;
+    // Breakeven WR = max_loss / (max_loss + credit). Threshold below which the
+    // strategy is structurally negative-EV regardless of how favorable the trade looks.
+    const breakeven_wr = 100 * p.max_loss_per_ic / (p.max_loss_per_ic + p.credit_total_per_ic);
+    const edge = s.win_rate_pct - breakeven_wr;
+    const totalGood = s.total_pnl >= 0;
+    const wrGood = edge >= 0;  // good = beat breakeven WR
+    document.getElementById('bt-summary').innerHTML = `
+      <div class="stat ${wrGood?'good':'bad'}"><div class="label">Actual WR</div><div class="value">${s.win_rate_pct}%</div></div>
+      <div class="stat neutral"><div class="label">Breakeven WR</div><div class="value">${breakeven_wr.toFixed(1)}%</div></div>
+      <div class="stat ${edge>=0?'good':'bad'}"><div class="label">Edge (vs BE)</div><div class="value">${edge>=0?'+':''}${edge.toFixed(1)}pp</div></div>
+      <div class="stat ${totalGood?'good':'bad'}"><div class="label">Total P&L</div><div class="value">$${s.total_pnl.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+      <div class="stat ${s.avg_pnl_per_trade>=0?'good':'bad'}"><div class="label">Avg / trade</div><div class="value">$${s.avg_pnl_per_trade.toFixed(0)}</div></div>
+      <div class="stat neutral"><div class="label">Sessions Traded</div><div class="value">${s.n_sessions_traded}</div></div>
+      <div class="stat neutral"><div class="label">Both Held</div><div class="value">${s.n_both_held}</div></div>
+      <div class="stat neutral"><div class="label">Call Breach</div><div class="value">${s.n_call_wing_breached}</div></div>
+      <div class="stat neutral"><div class="label">Put Breach</div><div class="value">${s.n_put_wing_breached}</div></div>
+      <div class="stat neutral"><div class="label">Credit / IC</div><div class="value">$${p.credit_total_per_ic}</div></div>
+      <div class="stat neutral"><div class="label">Max Loss / IC</div><div class="value">$${p.max_loss_per_ic}</div></div>
+    `;
+    drawEquityCurve(outs.filter(x => x.deployed));
+    document.getElementById('bt-tbody').innerHTML = outs.map(x => {
+      const cls = x.outcome === 'max_profit_both_held' ? 'win' :
+                  x.outcome === 'skip' ? 'skip' : 'lose';
+      const fmt = (n) => n != null ? Number(n).toFixed(2) : '—';
+      const pnl = x.pnl_dollars != null ? `$${(x.pnl_dollars >= 0 ? '+' : '') + x.pnl_dollars.toFixed(0)}` : '—';
+      const cum = x.cum_pnl_dollars != null ? `$${(x.cum_pnl_dollars >= 0 ? '+' : '') + x.cum_pnl_dollars.toFixed(0)}` : '—';
+      // Compute obs midpoint and distance from actual move to short strikes
+      let obsMid = '—', distPut = '—', distCall = '—';
+      let putHeld = '✓', callHeld = '✓';
+      if (x.obs_high != null && x.obs_low != null) {
+        obsMid = ((x.obs_high + x.obs_low) / 2).toFixed(2);
+      }
+      if (x.short_put_strike != null && x.session_low != null) {
+        const d = x.session_low - x.short_put_strike;
+        distPut = (d >= 0 ? '+' : '') + d.toFixed(1);
+        if (!x.low_held) putHeld = `<span style="color:var(--red)">✗</span>`;
+      }
+      if (x.short_call_strike != null && x.session_high != null) {
+        const d = x.short_call_strike - x.session_high;
+        distCall = (d >= 0 ? '+' : '') + d.toFixed(1);
+        if (!x.high_held) callHeld = `<span style="color:var(--red)">✗</span>`;
+      }
+      const distPutClass = (x.low_held === false) ? 'roi-bad' : 'roi-good';
+      const distCallClass = (x.high_held === false) ? 'roi-bad' : 'roi-good';
+      return `<tr class="${cls}">
+        <td>${x.date}</td>
+        <td style="font-size:10px;">${x.regime}</td>
+        <td>${obsMid}</td>
+        <td>${fmt(x.short_put_strike)} ${putHeld}</td>
+        <td>${fmt(x.short_call_strike)} ${callHeld}</td>
+        <td>${fmt(x.session_low)}</td>
+        <td>${fmt(x.session_high)}</td>
+        <td class="${distPutClass}">${distPut}</td>
+        <td class="${distCallClass}">${distCall}</td>
+        <td class="outcome">${(x.outcome || '—').replace(/_/g,' ')}</td>
+        <td>${pnl}</td>
+        <td>${cum}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function drawEquityCurve(traded) {
+    const svg = document.getElementById('bt-equity');
+    const W = svg.clientWidth || 800, H = 200, pad = 24;
+    if (!traded.length) {
+      svg.innerHTML = `<text x="${W/2}" y="${H/2}" fill="#7d8499" text-anchor="middle">No traded sessions</text>`;
+      return;
+    }
+    const cum = traded.map(x => x.cum_pnl_dollars);
+    const yMin = Math.min(0, ...cum), yMax = Math.max(0, ...cum);
+    const x = i => pad + (W - 2*pad) * (i / Math.max(1, traded.length - 1));
+    const y = v => H - pad - (H - 2*pad) * (v - yMin) / Math.max(1, yMax - yMin);
+    const pts = cum.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+    const lastPos = cum[cum.length - 1] >= 0;
+    const stroke = lastPos ? '#26a69a' : '#ef5350';
+    const fill = lastPos ? 'rgba(38,166,154,0.15)' : 'rgba(239,83,80,0.15)';
+    const areaPts = `${x(0)},${y(0)} ${pts} ${x(cum.length-1)},${y(0)}`;
+    const zeroY = y(0);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    svg.innerHTML = `
+      <line x1="${pad}" y1="${zeroY}" x2="${W - pad}" y2="${zeroY}" stroke="#2a2e3e" stroke-dasharray="2,3" />
+      <polygon points="${areaPts}" fill="${fill}" />
+      <polyline points="${pts}" stroke="${stroke}" fill="none" stroke-width="2" />
+      <text x="${pad}" y="${pad-4}" fill="#7d8499" font-size="10">P&L: $${cum[cum.length-1].toFixed(0)}</text>
+      <text x="${W-pad}" y="${pad-4}" fill="#7d8499" font-size="10" text-anchor="end">${traded.length} sessions</text>
+    `;
+  }
+
+  // ── Clock + market session ─────────────────────────────────────────────
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function fmtClock(d) { return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+  function getETParts() {
+    // ET via Intl
+    const f = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York', hour12: false,
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      weekday: 'short',
+    });
+    const parts = f.formatToParts(new Date());
+    const get = t => parts.find(p => p.type === t)?.value;
+    return {
+      h: parseInt(get('hour'), 10),
+      m: parseInt(get('minute'), 10),
+      s: parseInt(get('second'), 10),
+      weekday: get('weekday'),
+    };
+  }
+  function updateClocks() {
+    const local = new Date();
+    document.getElementById('clock-local-t').textContent = fmtClock(local);
+    const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone.split('/').pop().replace('_', ' ');
+    document.getElementById('clock-local-l').textContent = tzName;
+    const et = getETParts();
+    document.getElementById('clock-et-t').textContent = `${pad(et.h)}:${pad(et.m)}:${pad(et.s)}`;
+
+    // Session pill
+    const isWeekday = !['Sat', 'Sun'].includes(et.weekday);
+    const minsET = et.h * 60 + et.m;
+    const openMins = 9 * 60 + 30;       // 09:30 ET
+    const closeMins = 16 * 60;          // 16:00 ET
+    const obsEnd = openMins + 15;       // 09:45 ET
+    const eodIcTrigger = 12 * 60 + 30;  // 12:30 ET
+    const pill = document.getElementById('session-pill');
+    if (!isWeekday) {
+      pill.className = 'session-pill closed';
+      pill.textContent = 'WEEKEND';
+    } else if (minsET < openMins) {
+      const wait = openMins - minsET;
+      pill.className = 'session-pill opening';
+      pill.textContent = `OPEN IN ${Math.floor(wait/60)}h${pad(wait%60)}`;
+    } else if (minsET < obsEnd) {
+      pill.className = 'session-pill opening';
+      pill.textContent = 'OBS WINDOW (regime classifies at 09:45 ET)';
+    } else if (minsET < eodIcTrigger) {
+      pill.className = 'session-pill open';
+      pill.textContent = 'INTRADAY — wave trade';
+    } else if (minsET < closeMins) {
+      pill.className = 'session-pill open';
+      pill.textContent = 'EOD WINDOW — IC deploy';
+    } else {
+      pill.className = 'session-pill closed';
+      pill.textContent = 'CLOSED';
+    }
+  }
+  setInterval(updateClocks, 1000);
+  updateClocks();
+
+  // Lightweight Charts (lwcChart) and TradingView embed removed 2026-05-10.
+  // Chart could never mirror Pine indicator on TradingView — Latest Signals
+  // panel is canonical text-based source of truth. For chart view, open
+  // ZeroDTE Wave v1 in TradingView directly (that's the gospel).
+
+  // Initial notification button state
+  refreshNotifBtnState();
+  updateSoundButton();
+
+  function setMode(m) {
+    MODE = m;
+    ['wave','ic','both'].forEach(x => {
+      document.getElementById('mode-' + x).classList.toggle('active', x === m);
+    });
+    document.getElementById('mode-label').textContent =
+      m === 'wave' ? 'Wave 25Δ' : m === 'ic' ? 'IC 8Δ' : 'Both';
+    if (latestState) renderState(latestState);
+  }
+
+  function fmtPx(n, decimals = 2) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    return Number(n).toFixed(decimals);
+  }
+  function fmtMoney(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    return '$' + Number(n).toFixed(2);
+  }
+  function fmtPct(n) {
+    if (n === null || n === undefined || isNaN(n)) return '—';
+    return Number(n).toFixed(1) + '%';
+  }
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleString('en-SG', { hour12: false }); } catch { return iso; }
+  }
+  function setConn(state, msg) {
+    const dot = document.getElementById('conn-dot');
+    document.getElementById('conn-text').textContent = msg;
+    dot.className = `dot ${state}`;
+  }
+
+  function roiClass(roi) {
+    if (roi === null || roi === undefined) return '';
+    if (roi >= 25) return 'roi-good';
+    if (roi >= 10) return 'roi-meh';
+    return 'roi-bad';
+  }
+
+  function renderStrikeTable(strikes, mode) {
+    if (!strikes || !strikes.length) {
+      return `<div style="color: var(--dim); font-size: 11px;">No strikes available (no chain data).</div>`;
+    }
+    const rows = strikes.map(sp => {
+      const delta = sp.short_delta !== null ? `Δ${sp.short_delta.toFixed(2)}` : '—';
+      const cred = sp.estimated_credit_dollars !== null ? fmtMoney(sp.estimated_credit_dollars) : '—';
+      const maxL = sp.max_loss_dollars !== null ? fmtMoney(sp.max_loss_dollars) : '—';
+      const roi  = sp.roi_pct !== null ? fmtPct(sp.roi_pct) : '—';
+      const pop  = sp.pop_estimate_pct !== null ? sp.pop_estimate_pct.toFixed(0) + '%' : '—';
+      const warns = sp.warnings && sp.warnings.length ?
+        `<span class="warn">⚠ ${sp.warnings.join(', ')}</span>` : '';
+      return `
+        <tr>
+          <td class="instr">${sp.instrument}</td>
+          <td>${sp.short_strike} (${delta})</td>
+          <td>${sp.long_strike}</td>
+          <td class="credit">${cred}</td>
+          <td>${maxL}</td>
+          <td class="${roiClass(sp.roi_pct)}">${roi}</td>
+          <td>${pop}</td>
+          <td>${warns}</td>
+        </tr>`;
+    }).join('');
+    return `
+      <table class="strike-table">
+        <thead><tr><th></th><th>Short</th><th>Long</th><th>Credit</th><th>Max Loss</th><th>ROI</th><th>POP</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function renderSignal(sig) {
+    const sideText = sig.side === 'sell_call_cs' ? 'SELL CALL CS' : 'SELL PUT CS';
+    // Confluence chips — colored by truth
+    const confEntries = Object.entries(sig.confluence || {});
+    const conf = confEntries.map(([k,v]) => {
+      const color = v ? 'var(--green)' : 'var(--muted)';
+      const bg = v ? 'rgba(38,166,154,0.15)' : 'rgba(125,132,153,0.1)';
+      const sign = v ? '✓' : '✗';
+      return `<span style="display:inline-block; padding:1px 6px; margin-right:4px; border-radius:3px; font-size:10px; background:${bg}; color:${color};">${sign} ${k.replace(/_/g,' ')}</span>`;
+    }).join('');
+    const score = sig.confluence_score || 0;
+    const total = confEntries.length;
+    const scoreColor = score >= total - 1 ? 'var(--green)' : score >= 3 ? 'var(--yellow)' : 'var(--orange)';
+    const scoreLabel = `<strong style="color:${scoreColor};">${score}/${total}</strong>`;
+    let sections = '';
+    if (MODE === 'wave' || MODE === 'both') {
+      sections += `<div class="strikes-section-label">Wave 25Δ (active intraday)</div>` +
+                  renderStrikeTable(sig.wave_strikes || [], 'wave');
+    }
+    if (MODE === 'ic' || MODE === 'both') {
+      sections += `<div class="strikes-section-label">Iron Condor 8Δ (overnight option)</div>` +
+                  renderStrikeTable(sig.ic_strikes || [], 'iron_condor');
+    }
+    return `
+      <div class="signal ${sig.side}">
+        <div class="signal-header">
+          <span class="signal-side ${sig.side}">${sideText} <span style="font-weight: 400; font-size: 11px; color: var(--muted);">conf ${scoreLabel}</span></span>
+          <span class="signal-time">${fmtTime(sig.triggered_at)}</span>
+        </div>
+        <div class="signal-meta">@ ${fmtPx(sig.underlying_price)}</div>
+        <div style="margin: 4px 0;">${conf}</div>
+        ${sections}
+      </div>`;
+  }
+
+  function renderICCard(state) {
+    const wrap = document.getElementById('ic-card-wrapper');
+    const ic = state.iron_condor || {};
+    if (!ic.available) {
+      wrap.innerHTML = `<div class="panel" style="margin-bottom: 12px; opacity: 0.5;">
+        <h2>End-of-Day Iron Condor</h2>
+        <div class="empty" style="font-size: 11px;">Built automatically at 12:30 ET (~midnight SGT) on non-volatile days.</div>
+      </div>`;
+      return;
+    }
+    const cl = ic.call_leg, pu = ic.put_leg;
+    const fmt = (sp) => sp ? `${sp.instrument} ${sp.short_strike}/${sp.long_strike}` +
+      (sp.estimated_credit_dollars !== null ? ` · ${fmtMoney(sp.estimated_credit_dollars)}` : '') : '—';
+    wrap.innerHTML = `
+      <div class="ic-card">
+        <h3>Iron Condor — deploy at ~13:00 ET</h3>
+        <div class="signal-meta">expiry ${ic.expiry || '—'} · underlying ${fmtPx(ic.underlying_price)}</div>
+        <div class="ic-summary">
+          <div><span class="label">CALL leg</span><span class="value">${fmt(cl)}</span></div>
+          <div><span class="label">PUT leg</span><span class="value">${fmt(pu)}</span></div>
+          <div><span class="label">Total credit</span><span class="value">${fmtMoney(ic.total_credit_dollars)}</span></div>
+        </div>
+        <div class="ic-summary">
+          <div><span class="label">Max loss</span><span class="value">${fmtMoney(ic.total_max_loss_dollars)}</span></div>
+          <div><span class="label">BPR</span><span class="value">${fmtMoney(ic.bpr_estimate_dollars)}</span></div>
+          <div><span class="label">Proj range</span><span class="value">${fmtPx(ic.proj_low)}-${fmtPx(ic.proj_high)}</span></div>
+        </div>
+        <div class="notes">${(ic.notes || []).join(' · ')}</div>
+      </div>`;
+  }
+
+  let latestState = null;
+  function renderState(s) {
+    latestState = s;
+    document.getElementById('price').textContent = fmtPx(s.quote?.last);
+    const feedLabel = { alpaca: 'Alpaca', ibkr: 'IBKR', yfinance: 'Yahoo' }[s.feed_type] || s.feed_type || '—';
+    document.getElementById('price-sub').textContent = (s.quote?.symbol || '—') + ` (${feedLabel})`;
+    document.getElementById('bar-time').textContent = fmtTime(s.quote?.timestamp);
+    const feedStatus = s.backend_status === 'ok'
+      ? `${feedLabel} ✓` + (s.alpaca_ready ? ' 🔗' : '')
+      : (s.backend_status || '—');
+    document.getElementById('backend-status').textContent = feedStatus;
+
+    const reg = s.regime?.regime || 'pre_obs';
+    const banner = document.getElementById('regime');
+    banner.className = `regime-banner ${reg}`;
+    banner.textContent = ({
+      non_volatile: 'NON-VOLATILE — RANGE TRADE',
+      volatile: 'VOLATILE — STAND ASIDE',
+      pre_obs: 'PRE-OBSERVATION',
+    })[reg];
+    document.getElementById('obs-high').textContent = fmtPx(s.regime?.obs_high);
+    document.getElementById('obs-low').textContent  = fmtPx(s.regime?.obs_low);
+    document.getElementById('proj-high').textContent = fmtPx(s.regime?.proj_high);
+    document.getElementById('proj-low').textContent  = fmtPx(s.regime?.proj_low);
+
+    // Live indicator values with color cues for extremes
+    const rsi = s.indicators?.rsi;
+    const rsiEl = document.getElementById('ind-rsi');
+    if (rsi != null) {
+      rsiEl.textContent = fmtPx(rsi, 1);
+      rsiEl.style.color = rsi > 70 ? 'var(--red)' : rsi < 30 ? 'var(--green)' : 'var(--text)';
+    } else { rsiEl.textContent = '—'; rsiEl.style.color = ''; }
+
+    const sk = s.indicators?.stoch_k, sd = s.indicators?.stoch_d;
+    const stochEl = document.getElementById('ind-stoch');
+    if (sk != null && sd != null) {
+      stochEl.textContent = `${sk.toFixed(1)} / ${sd.toFixed(1)}`;
+      stochEl.style.color = sk > 80 ? 'var(--red)' : sk < 20 ? 'var(--green)' : 'var(--text)';
+    } else { stochEl.textContent = '—'; stochEl.style.color = ''; }
+
+    const wvfEl = document.getElementById('ind-wvf');
+    if (s.indicators?.wvf_spike) {
+      wvfEl.innerHTML = `<span style="color: var(--yellow); font-weight: 600;">SPIKE ⚠</span> (${(s.indicators.wvf || 0).toFixed(1)})`;
+    } else if (s.indicators?.wvf != null) {
+      wvfEl.textContent = `${s.indicators.wvf.toFixed(1)}`;
+      wvfEl.style.color = '';
+    } else { wvfEl.textContent = '—'; }
+
+    // ATR row (add if not present)
+    const atrEl = document.getElementById('ind-atr');
+    if (atrEl) {
+      const a5 = s.indicators?.atr_5m, ad = s.indicators?.atr_d1;
+      atrEl.textContent = (a5 != null ? `5m ${a5.toFixed(2)}` : '—') +
+                          (ad != null ? ` / D1 ${ad.toFixed(2)}` : '');
+    }
+
+    // Pullback trend (the live signal gate)
+    const trendEl = document.getElementById('ind-trend');
+    const filterEl = document.getElementById('ind-filter-status');
+    if (trendEl) {
+      const t = s.indicators?.trend || 'flat';
+      const ef = s.indicators?.ema_fast, es = s.indicators?.ema_slow;
+      const arrow = t === 'up' ? '↗' : t === 'down' ? '↘' : '↔';
+      const color = t === 'up' ? 'var(--green)' : t === 'down' ? 'var(--red)' : 'var(--muted)';
+      const spread = (ef != null && es != null) ? ((ef - es) / es * 100) : null;
+      trendEl.innerHTML = `<span style="color: ${color}; font-weight: 600;">${arrow} ${t.toUpperCase()}</span>` +
+        (spread != null ? `<span style="color: var(--muted); font-size: 10px; margin-left: 6px;">${spread >= 0 ? '+' : ''}${spread.toFixed(2)}%</span>` : '');
+    }
+    if (filterEl) {
+      const enabled = s.indicators?.trend_filter_enabled;
+      const t = s.indicators?.trend || 'flat';
+      if (enabled) {
+        if (t === 'up') {
+          filterEl.innerHTML = '<span style="color: var(--orange);">filter ON: blocking sell-CALL (uptrend)</span>';
+        } else if (t === 'down') {
+          filterEl.innerHTML = '<span style="color: var(--orange);">filter ON: blocking sell-PUT (downtrend)</span>';
+        } else {
+          filterEl.innerHTML = '<span style="color: var(--green);">filter ON: both sides allowed (flat)</span>';
+        }
+      } else {
+        filterEl.innerHTML = '<span style="color: var(--muted);">filter OFF (MeanRev mode)</span>';
+      }
+    }
+
+    // ═══════════ PHASE 1+3 GATE STATUS PANEL ═══════════
+    // Mirrors what Pine's status table shows. Updates every snapshot.
+    renderGatePanel(s);
+
+    // Signals
+    const signalsEl = document.getElementById('signals');
+    const sigs = (s.last_signals || []).slice().reverse();
+    if (!sigs.length) {
+      signalsEl.className = 'empty';
+      signalsEl.innerHTML = 'Waiting for next signal…';
+    } else {
+      signalsEl.className = '';
+      signalsEl.innerHTML = sigs.map(renderSignal).join('');
+    }
+
+    // EOD IC card
+    renderICCard(s);
+
+    // Paper trades
+    const ptEl = document.getElementById('paper-trades');
+    const trades = s.open_positions || [];
+    if (!trades.length) {
+      ptEl.className = 'empty';
+      ptEl.innerHTML = 'No paper trades yet.';
+    } else {
+      ptEl.className = '';
+      ptEl.innerHTML = trades.map(t => `
+        <div class="signal ${t.side}">
+          <div class="signal-header">
+            <span class="signal-side ${t.side}">${t.side === 'sell_call_cs' ? 'CALL CS' : 'PUT CS'} · ${t.instrument}</span>
+            <span class="signal-time">${fmtTime(t.fired_at)}</span>
+          </div>
+          <div style="font-size: 11px;">Short: <strong>${t.short_strike}</strong> · Long: ${t.long_strike} · credit ${fmtMoney(t.estimated_credit)}</div>
+          <div style="font-size: 11px; color: var(--muted);">@ underlying ${fmtPx(t.underlying_at_signal)} · ${t.outcome || 'pending'}</div>
+        </div>`).join('');
+    }
+
+    document.getElementById('notes').textContent = (s.notes || []).join(' · ');
+
+    // Macro alerts banner
+    renderMacroAlertBar(s.macro_alerts || []);
+
+    // Detect new signals → fire notification + audio
+    const sigList = s.last_signals || [];
+    if (sigList.length) {
+      const newest = sigList[sigList.length - 1];
+      const key = `${newest.triggered_at}|${newest.side}`;
+      if (lastSeenSignalKey && lastSeenSignalKey !== key) {
+        // Only notify if we've seen at least one snapshot before — avoids
+        // notifying on every page load
+        fireSignalNotification(newest);
+      }
+      lastSeenSignalKey = key;
+    }
+
+    const tmBadge = document.getElementById('trading-mode');
+    tmBadge.className = 'badge ' + (s.backend_status === 'ok' ? 'ok' : 'warn');
+    tmBadge.textContent = s.backend_status?.toUpperCase() || '';
+  }
+
+  function connect() {
+    if (STATIC_MODE) return;   // no backend on GitHub Pages — snapshot mode
+    setConn('', 'connecting…');
+    const ws = new WebSocket(WS_URL);
+    ws.onopen = () => setConn('ok', 'connected');
+    ws.onmessage = (ev) => {
+      try {
+        const s = JSON.parse(ev.data);
+        renderState(s);
+        if (VIEW === 'monitor') refreshMonitor();
+      } catch (e) { console.error(e); }
+    };
+    ws.onerror = () => setConn('err', 'error');
+    ws.onclose = () => { setConn('err', 'disconnected; retrying…'); setTimeout(connect, 3000); };
+  }
+  if (!STATIC_MODE) {
+    fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
+    connect();
+  }
+
+  // ── Monitor tab ─────────────────────────────────────────────────────
+  let _monitorDebounce = null;
+  async function refreshMonitor() {
+    if (_monitorDebounce) return;
+    _monitorDebounce = setTimeout(() => { _monitorDebounce = null; }, 2000);
+    if (STATIC_MODE) return refreshMonitorStatic();
+    try {
+      const [stats, trades, alpaca] = await Promise.all([
+        fetch(`${API_BASE}/api/monitor/stats`).then(r => r.json()),
+        fetch(`${API_BASE}/api/paper_trades`).then(r => r.json()),
+        fetch(`${API_BASE}/api/alpaca/status`).then(r => r.json()).catch(() => null),
+      ]);
+      renderMonitorStats(stats);
+      renderEquityCurve(stats.equity_curve || []);
+      renderDailyPnl(stats.daily || []);
+      renderSignalRate(stats.daily || []);
+      renderOpenPositions(stats.open_trades || []);
+      renderTradeLog(trades.filter(t => t.strategy === 'directional_spread'));
+      renderAlpacaInfo(alpaca);
+      fetch(`${API_BASE}/api/debrief`).then(r => r.json()).then(renderDebrief).catch(() => {});
+    } catch (e) { console.error('monitor fetch error', e); }
+  }
+
+  // Read-only render from the published snapshot (GitHub Pages, no backend).
+  async function refreshMonitorStatic() {
+    try {
+      const snap = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+      const stats  = snap.stats  || {};
+      const trades = snap.trades || [];
+      renderMonitorStats(stats);
+      renderEquityCurve(stats.equity_curve || []);
+      renderDailyPnl(stats.daily || []);
+      renderSignalRate(stats.daily || []);
+      renderOpenPositions(stats.open_trades || []);
+      renderTradeLog(trades.filter(t => (t.strategy || 'directional_spread') === 'directional_spread'));
+      renderAlpacaInfo(snap.alpaca || null);
+      renderDebrief(snap.debrief || {});
+      renderSnapshotBanner(snap.generated_at, false);
+    } catch (e) {
+      console.error('snapshot fetch error', e);
+      renderSnapshotBanner(null, true);
+    }
+  }
+
+  function renderSnapshotBanner(ts, failed) {
+    let el = document.getElementById('snapshot-banner');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'snapshot-banner';
+      el.style.cssText = 'background:var(--panel2);border:1px solid var(--border);border-radius:6px;'
+        + 'padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--muted);';
+      const host = document.getElementById('view-monitor');
+      if (host) host.insertBefore(el, host.firstChild);
+    }
+    if (failed) {
+      el.innerHTML = '⚠️ No snapshot yet — the backend publishes one every few minutes during market hours.';
+      return;
+    }
+    const when = ts ? new Date(ts).toLocaleString() : 'unknown';
+    el.innerHTML = `📸 <strong>Read-only snapshot</strong> · updated ${when} · live trading runs on the backend`;
+  }
+
+  function renderDebrief(d) {
+    const el = document.getElementById('debrief-panel');
+    if (!el) return;
+    if (!d || !d.date) {
+      el.innerHTML = '<div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--muted);font-size:12px;">🔍 No closed trades to debrief yet.</div>';
+      return;
+    }
+    const sp = d.session_pnl || 0;
+    const spColor = sp >= 0 ? 'var(--green)' : 'var(--red)';
+    const spStr = (sp >= 0 ? '+$' : '−$') + Math.abs(sp).toFixed(0);
+    const tradeRows = (d.trades || []).map(a => {
+      const pc = a.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pstr = (a.pnl >= 0 ? '+$' : '−$') + Math.abs(a.pnl).toFixed(0);
+      return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">
+        <span>${a.icon}</span>
+        <span style="font-weight:600;min-width:58px;">#${a.trade_no} ${a.side}</span>
+        <span style="color:${pc};font-weight:600;min-width:46px;font-variant-numeric:tabular-nums;">${pstr}</span>
+        <span style="color:var(--muted);">${a.note}</span>
+      </div>`;
+    }).join('');
+    const fl = d.flags || {};
+    const skewLine = fl.directional_skew
+      ? `<div style="color:var(--orange);font-size:12px;margin-top:6px;">⚠️ ${fl.directional_skew}${fl.vol_context ? ' · vol: ' + fl.vol_context : ''}</div>`
+      : (fl.vol_context ? `<div style="color:var(--muted);font-size:12px;margin-top:6px;">vol: ${fl.vol_context}</div>` : '');
+    const ddPct = Math.min(100, d.dd_vs_backtest_pct || 0);
+    const ddColor = ddPct >= 100 ? 'var(--red)' : ddPct >= 70 ? 'var(--orange)' : 'var(--blue)';
+    el.innerHTML = `
+      <div style="background:var(--panel2);border:1px solid var(--border);border-left:4px solid ${spColor};border-radius:8px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:4px;">
+          <strong style="font-size:14px;">🔍 Debrief · ${d.date}</strong>
+          <span style="font-size:12px;color:var(--muted);">${(d.trades||[]).length} trade(s) · ${d.wins}W/${d.losses}L · <span style="color:${spColor};font-weight:700;">${spStr}</span></span>
+        </div>
+        ${tradeRows}
+        ${skewLine}
+        <div style="margin-top:10px;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.5;">
+          <strong>Verdict:</strong> ${d.verdict || ''}
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:2px;">
+            <span>drawdown vs backtest max (−$1,581)</span><span>${(d.dd_vs_backtest_pct||0).toFixed(0)}%</span>
+          </div>
+          <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${ddPct}%;background:${ddColor};"></div>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--dim);">${d.discipline || ''}</div>
+      </div>`;
+  }
+
+  function renderMonitorStats(s) {
+    const el = document.getElementById('monitor-stats');
+    const cards = [
+      { label: 'Total Trades', value: s.total, cls: 'neutral' },
+      { label: 'Win Rate', value: s.wr_pct + '%', cls: s.wr_pct >= 60 ? 'good' : 'bad' },
+      { label: 'Total P&L', value: '$' + (s.total_pnl||0).toFixed(0), cls: s.total_pnl >= 0 ? 'good' : 'bad' },
+      { label: 'Avg Win', value: '$' + (s.avg_win||0).toFixed(0), cls: 'good' },
+      { label: 'Avg Loss', value: '$' + (s.avg_loss||0).toFixed(0), cls: 'bad' },
+      { label: 'Max Drawdown', value: '$' + (s.max_drawdown||0).toFixed(0), cls: 'neutral' },
+      { label: 'Profit Factor', value: s.profit_factor >= 999 ? '∞' : (s.profit_factor||0).toFixed(2), cls: (s.profit_factor||0) >= 1.5 ? 'good' : 'neutral' },
+    ];
+    el.innerHTML = cards.map(c =>
+      `<div class="stat ${c.cls}"><div class="label">${c.label}</div><div class="value">${c.value}</div></div>`
+    ).join('');
+  }
+
+  function renderEquityCurve(curve) {
+    const svg = document.getElementById('equity-svg');
+    if (!curve.length) { svg.innerHTML = '<text x="50%" y="100" text-anchor="middle" fill="var(--muted)" font-size="12">No closed trades yet</text>'; return; }
+    const w = svg.clientWidth || 800, h = 200, pad = 40;
+    const vals = curve.map(c => c.cum);
+    const minV = Math.min(0, ...vals), maxV = Math.max(0, ...vals);
+    const range = (maxV - minV) || 1;
+    const xStep = (w - 2 * pad) / Math.max(vals.length - 1, 1);
+    const pts = vals.map((v, i) => `${pad + i * xStep},${h - pad - ((v - minV) / range) * (h - 2 * pad)}`);
+    const zeroY = h - pad - ((0 - minV) / range) * (h - 2 * pad);
+    // Fill area under curve
+    const fillPts = `${pad},${zeroY} ${pts.join(' ')} ${pad + (vals.length-1)*xStep},${zeroY}`;
+    svg.innerHTML = `
+      <line x1="${pad}" y1="${zeroY}" x2="${w-pad}" y2="${zeroY}" stroke="var(--border)" stroke-dasharray="4"/>
+      <polygon points="${fillPts}" fill="rgba(38,166,154,0.12)"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="var(--green)" stroke-width="2"/>
+      <text x="${pad}" y="${h-8}" fill="var(--muted)" font-size="10">${(curve[0]?.time||'').slice(0,10)}</text>
+      <text x="${w-pad}" y="${h-8}" fill="var(--muted)" font-size="10" text-anchor="end">${(curve[curve.length-1]?.time||'').slice(0,10)}</text>
+      <text x="${pad-4}" y="${pad-2}" fill="var(--muted)" font-size="10" text-anchor="end">$${maxV.toFixed(0)}</text>
+      ${minV < 0 ? `<text x="${pad-4}" y="${h-pad+12}" fill="var(--muted)" font-size="10" text-anchor="end">$${minV.toFixed(0)}</text>` : ''}
+      <text x="${w/2}" y="${h-8}" fill="var(--muted)" font-size="10" text-anchor="middle">${curve.length} trades</text>
+    `;
+  }
+
+  function renderDailyPnl(daily) {
+    const el = document.getElementById('daily-pnl');
+    if (!daily.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+    const maxPnl = Math.max(...daily.map(d => Math.abs(d.pnl)), 1);
+    el.innerHTML = daily.map(d => {
+      const pct = Math.abs(d.pnl) / maxPnl * 100;
+      const color = d.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const wr = d.trades > 0 ? Math.round(d.wins / d.trades * 100) : 0;
+      return `<div style="display:grid; grid-template-columns: 80px 1fr 60px 50px; gap:8px; align-items:center; padding:3px 0; border-bottom:1px solid var(--border);">
+        <span style="color:var(--muted);font-variant-numeric:tabular-nums;">${d.date.slice(5)}</span>
+        <div style="height:16px; display:flex; align-items:center;">
+          <div style="width:${pct}%; height:10px; background:${color}; border-radius:2px; min-width:2px;"></div>
+        </div>
+        <span style="text-align:right; color:${color}; font-weight:600; font-variant-numeric:tabular-nums;">$${d.pnl.toFixed(0)}</span>
+        <span style="text-align:right; color:var(--muted);">${d.trades}t/${wr}%</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderSignalRate(daily) {
+    const el = document.getElementById('signal-rate');
+    if (!daily.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+    const maxT = Math.max(...daily.map(d => d.trades), 1);
+    el.innerHTML = daily.map(d => {
+      const pct = d.trades / maxT * 100;
+      const color = d.trades > 5 ? 'var(--orange)' : 'var(--blue)';
+      return `<div style="display:grid; grid-template-columns: 80px 1fr 30px; gap:8px; align-items:center; padding:3px 0; border-bottom:1px solid var(--border);">
+        <span style="color:var(--muted);font-variant-numeric:tabular-nums;">${d.date.slice(5)}</span>
+        <div style="height:16px; display:flex; align-items:center;">
+          <div style="width:${pct}%; height:10px; background:${color}; border-radius:2px; min-width:2px;"></div>
+        </div>
+        <span style="text-align:right; color:${color}; font-weight:600;">${d.trades}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderOpenPositions(open) {
+    const el = document.getElementById('monitor-open');
+    if (!open.length) { el.innerHTML = '<div class="empty">No open positions.</div>'; return; }
+    el.innerHTML = open.map(t => {
+      const sideColor = t.side === 'sell_call_cs' ? 'var(--red)' : 'var(--green)';
+      const sideLabel = t.side === 'sell_call_cs' ? 'CALL' : 'PUT';
+      const peakColor = t.peak_pct_kept > 50 ? 'var(--green)' : t.peak_pct_kept > 0 ? 'var(--blue)' : 'var(--muted)';
+      const brokerBadge = t.broker_status ? `<span class="badge ${t.broker_status === 'submitted' || t.broker_status === 'filled' ? 'ok' : 'warn'}">${t.broker_status}</span>` : '';
+      return `<div style="background:var(--panel2); padding:10px; border-radius:6px; border-left:4px solid ${sideColor}; margin-bottom:6px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-weight:600; color:${sideColor};">#${t.trade_no} ${sideLabel} ${t.instrument} ${t.short_strike.toFixed(1)}/${t.long_strike.toFixed(1)}</span>
+          ${brokerBadge}
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:6px; font-size:11px;">
+          <div><span style="color:var(--muted);">Credit</span><br><strong>$${t.estimated_credit.toFixed(0)}</strong></div>
+          <div><span style="color:var(--muted);">Peak kept</span><br><strong style="color:${peakColor};">${t.peak_pct_kept}%</strong></div>
+          <div><span style="color:var(--muted);">Stop at</span><br><strong>${t.current_stop_pct_kept}%</strong></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function renderTradeLog(trades) {
+    const el = document.getElementById('monitor-trades');
+    if (!trades || !trades.length) { el.innerHTML = '<tr><td colspan="10" class="empty">No directional spread trades.</td></tr>'; return; }
+    const sorted = [...trades].sort((a, b) => (b.fired_at || '').localeCompare(a.fired_at || ''));
+    el.innerHTML = sorted.map(t => {
+      const cls = (t.pnl || 0) > 0 ? 'win' : (t.pnl || 0) < 0 ? 'lose' : 'skip';
+      const sideLabel = t.side === 'sell_call_cs' ? 'CALL' : 'PUT';
+      const entryTime = (t.fired_at || '').slice(11, 16);
+      const exitTime = t.closed_at ? t.closed_at.slice(11, 16) : '-';
+      const outcomeLabel = (t.outcome || 'open').replace(/_/g, ' ');
+      const broker = t.broker_status || '-';
+      return `<tr class="${cls}">
+        <td>${t.trade_no}</td>
+        <td style="font-variant-numeric:tabular-nums;">${entryTime}</td>
+        <td style="font-variant-numeric:tabular-nums;">${exitTime}</td>
+        <td><span style="color:${t.side === 'sell_call_cs' ? 'var(--red)' : 'var(--green)'};font-weight:600;">${sideLabel}</span></td>
+        <td>${t.short_strike.toFixed(1)}</td>
+        <td>${t.long_strike.toFixed(1)}</td>
+        <td class="outcome">${outcomeLabel}</td>
+        <td style="text-align:right;font-weight:600;font-variant-numeric:tabular-nums;">$${(t.pnl||0).toFixed(0)}</td>
+        <td>${(t.peak_pct_kept||0).toFixed(0)}%</td>
+        <td><span class="badge ${broker === 'submitted' || broker === 'filled' ? 'ok' : broker === 'error' ? 'warn' : ''}">${broker}</span></td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderAlpacaInfo(alpaca) {
+    const el = document.getElementById('alpaca-info');
+    if (!alpaca) { el.textContent = 'Alpaca status: unavailable'; return; }
+    const status = alpaca.enabled ? 'ACTIVE' : 'DISABLED';
+    const color = alpaca.enabled ? 'var(--green)' : 'var(--muted)';
+    el.innerHTML = `Paper broker: <strong style="color:${color};">${status}</strong> | `
+      + `Trading: ${alpaca.trading_enabled ? 'ON' : 'OFF'} | `
+      + `Open orders: ${alpaca.open_orders || 0} | `
+      + `<span style="color:var(--dim);">${alpaca.base_url || ''}</span>`;
+  }
+
+  async function alpacaKill() {
+    const btn = document.getElementById('kill-btn');
+    const status = document.getElementById('kill-status');
+    btn.disabled = true; btn.textContent = 'Killing...';
+    try {
+      const res = await fetch(`${API_BASE}/api/alpaca/kill`, { method: 'POST', headers: { 'X-ZeroDTE-Token': window.__ZDT || '' } }).then(r => r.json());
+      status.textContent = res.ok
+        ? `Killed ${res.cancelled} orders. Broker set to: ${res.paper_broker}`
+        : `Error: ${res.error}`;
+      status.style.color = res.ok ? 'var(--green)' : 'var(--red)';
+      refreshMonitor();
+    } catch (e) {
+      status.textContent = 'Kill request failed: ' + e.message;
+      status.style.color = 'var(--red)';
+    }
+    btn.disabled = false; btn.textContent = 'Kill All Orders';
+  }
+
+  if (STATIC_MODE) {
+    // GitHub Pages: read-only snapshot. Hide live-only tabs + kill switch,
+    // land on the Monitor, and refresh the snapshot once a minute.
+    // Live-only tabs are hidden on Pages, but the ⚙︎ Telegram gear STAYS —
+    // it writes settings through the GitOps control branch (see saveTgSettings).
+    ['tab-live', 'tab-backtest', 'tab-macro'].forEach(id => {
+      const b = document.getElementById(id); if (b) b.style.display = 'none';
+    });
+    const killBtn = document.getElementById('kill-btn');
+    if (killBtn) killBtn.style.display = 'none';
+    setView('monitor');
+    setInterval(refreshMonitor, 60000);
+  } else {
+    fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
+    connect();
+  }
+</script>
+
+</body>
+</html>

@@ -92,8 +92,9 @@ def _serve_dashboard_html(path: Path) -> HTMLResponse:
 
 @app.get("/")
 async def serve_pwa():
-    """Serve the single-file PWA dashboard at the root path."""
-    return _serve_dashboard_html(FRONTEND_INDEX)
+    """Root → v2 terminal. The old single-file dashboard was retired at cutover
+    (still recoverable via git / the Pages /classic.html fallback)."""
+    return RedirectResponse(url="/v2/", status_code=307)
 
 
 # ── v2 terminal (Preact+htm rebuild) — served live so writes can hit the API ──
@@ -125,6 +126,15 @@ async def serve_v2_manifest():
     if not p.exists():
         raise HTTPException(status_code=404, detail="manifest not found")
     return FileResponse(p, media_type="application/manifest+json")
+
+
+@app.get("/v2/sw.js")
+async def serve_v2_sw():
+    p = V2_DIR / "sw.js"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="sw.js not found")
+    return FileResponse(p, media_type="application/javascript",
+                        headers={"Service-Worker-Allowed": "/v2/", "Cache-Control": "no-cache"})
 
 
 # PWA assets — manifest, service worker, icons (installable PWA over HTTPS).
@@ -555,6 +565,28 @@ async def backtest_directional_spread(
         time_stop_min=time_stop_min,
         slippage_pct=slippage_pct,
         pnl_model=pnl_model,
+        data_window=data_window,
+        return_trades=True,
+    )
+
+
+@app.get("/api/backtest/honest")
+async def backtest_honest(
+    target_delta: int = 30,
+    final_tp_target: float = 90.0,
+    use_dynamic_stops: bool = False,
+    premium_mult: float = 1.2,
+    data_window: str = "3y",
+):
+    """Honest Black-Scholes backtest — the VALIDATED engine the live signal path
+    mirrors. Defaults = the deployed config (30Δ / TP90 / no-ladder), which
+    reproduces +$5,479 / 5yr. (The legacy proxy endpoint over-counts wins.)"""
+    from .honest_backtest import run_honest_backtest
+    return run_honest_backtest(
+        target_delta=target_delta,
+        final_tp_target=final_tp_target,
+        use_dynamic_stops=use_dynamic_stops,
+        premium_mult=premium_mult,
         data_window=data_window,
         return_trades=True,
     )

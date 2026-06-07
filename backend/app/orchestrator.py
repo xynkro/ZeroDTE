@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Set
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -66,7 +66,7 @@ class Orchestrator:
         self.predictor = LivePredictor(atr_d1_lookup=lambda d: self._daily_atr)
         self.subscribers: Set = set()
         self.state = DashboardState(
-            ts=datetime.utcnow().isoformat(),
+            ts=datetime.now(timezone.utc).isoformat(),
             backend_status="warming_up",
         )
         self.paper_trades: list[PaperTrade] = []
@@ -705,7 +705,7 @@ class Orchestrator:
             tg.send(
                 alert_text,
                 chat_id=settings.TELEGRAM_GROUP_CHAT_ID,
-                topic_id=settings.TELEGRAM_TOPIC_ZERO_DTE,
+                message_thread_id=settings.TELEGRAM_TOPIC_ZERO_DTE,
             )
             log.info("Flow scan at %s ET: %d anomalies, P/C %.2f, net Δ %+.0f",
                      target_window, len(result.anomalies),
@@ -843,6 +843,21 @@ class Orchestrator:
                     wave_msg = f"{wave_msg}\n\n{_dbf.format_debrief_telegram(_db)}"
             except Exception as e:
                 log.warning("EOD debrief render failed: %s", e)
+            # Daily reconciliation — flag any recorded trade the broker never saw.
+            try:
+                from . import reconcile as _rec
+                _rc = await _rec.reconcile(self)
+                if _rc.get("checked"):
+                    wave_msg = f"{wave_msg}\n{_rec.summarize(_rc)}"
+            except Exception as e:
+                log.warning("EOD reconcile failed: %s", e)
+            # Muted == the user WANTS silence, not a transport failure. Mark dedup
+            # and return so the safety loop doesn't rebuild + retry every 60s all
+            # day (the old behaviour, since both sends return None when muted).
+            if tg.is_muted():
+                dedup.mark_done("eod_summary_fired", date_str)
+                log.info("EOD summary suppressed (muted) for %s — not retrying", date_str)
+                return
             # Append the dashboard link so the EOD summaries match every other
             # alert (one tap → the Pages monitor).
             _url = settings.DASHBOARD_PUBLIC_URL
@@ -873,7 +888,7 @@ class Orchestrator:
     async def _refresh_state(self, last_bar: Bar, new_signals=None):
         ps = self.predictor.current_state()
 
-        self.state.ts = datetime.utcnow().isoformat()
+        self.state.ts = datetime.now(timezone.utc).isoformat()
         self.state.quote = LiveQuote(
             symbol="SPX", last=last_bar.close, timestamp=last_bar.time.isoformat(),
         )
@@ -1030,6 +1045,8 @@ class Orchestrator:
         if (regime_str == "non_volatile" or regime_str == "volatile") and \
            ps.get("proj_high") and ps.get("proj_low"):
             session_key = ps.get("session_date")
+            if not session_key:
+                return  # no session date yet (early boot / data gap) — don't dedup on None
             if not dedup.already_done("last_session_pinged", session_key) \
                and getattr(self, "_is_live_bar", False):
                 dedup.mark_done("last_session_pinged", session_key)
@@ -2080,7 +2097,8 @@ class Orchestrator:
             if getattr(self, "_is_live_bar", False):
                 try:
                     _is_dir = pt.strategy == "directional_spread"
-                    tg.ping_signal_exit(
+                    self._tg(
+                        tg.ping_signal_exit,
                         trade_no=pt.trade_no,
                         side=pt.side,
                         outcome=pt.outcome or "unknown",
@@ -2096,6 +2114,21 @@ class Orchestrator:
                     )
                 except Exception as e:
                     log.warning("ping_signal_exit failed: %s", e)
+
+    def _tg(self, fn, *args, **kwargs):
+        """Fire a Telegram ping OFF the event loop. send() uses a synchronous
+        httpx client; calling it inline on a bar would block bar processing /
+        exit management for up to the client timeout on a slow/hung send. We
+        run it in a thread (fire-and-forget) so the loop stays free."""
+        def _safe():
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001
+                log.warning("telegram %s failed: %s", getattr(fn, "__name__", fn), e)
+        try:
+            asyncio.get_running_loop().create_task(asyncio.to_thread(_safe))
+        except RuntimeError:
+            _safe()  # no running loop (scripts / tests) — call inline
 
     # ── Alpaca paper broker ──────────────────────────────────────────────────
 
@@ -2116,7 +2149,8 @@ class Orchestrator:
                 return
             try:
                 is_dir = pt.strategy == "directional_spread"
-                tg.ping_signal(
+                self._tg(
+                    tg.ping_signal,
                     side=pt.side,
                     underlying_price=pt.underlying_at_signal,
                     short_strike=float(pt.short_strike),

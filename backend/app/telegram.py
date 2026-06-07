@@ -106,7 +106,7 @@ def send(
         payload["reply_markup"] = reply_markup
 
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=6.0) as client:
             r = client.post(url, json=payload)
             # Capture body BEFORE raise_for_status so we see Telegram's error detail
             try:
@@ -178,9 +178,9 @@ def _route_macro() -> tuple[str | None, int | None]:
 def _route_iron_condor() -> tuple[str | None, int | None]:
     """Return (chat_id, thread_id) for end-of-day Iron Condor alerts.
 
-    Currently routes to the same topic as Wave (thread 2) due to a Telegram
-    bug that prevents bot posting in newly-created forum topics. Distinguished
-    visually via 🦅 emoji + once-daily cadence.
+    Routes to its OWN topic via TELEGRAM_TOPIC_IRON_CONDOR (env, currently 60).
+    The earlier 'bot can't post in newly-created forum topics' issue was fixed by
+    removing + re-adding the bot to the topic — verified working. 🦅 once-daily.
     """
     group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
     topic = os.environ.get("TELEGRAM_TOPIC_IRON_CONDOR", "").strip()
@@ -338,7 +338,8 @@ def ping_signal_exit(
     Routes to Wave Zero DTE Signals so the alert pairs with its entry.
     """
     side_tag = "CALL" if side == "sell_call_cs" else "PUT"
-    pct_move = (underlying_at_close - underlying_at_signal) / underlying_at_signal * 100
+    pct_move = ((underlying_at_close - underlying_at_signal) / underlying_at_signal * 100
+                if underlying_at_signal else 0.0)
     pnl_str = f"+${pnl:.0f}" if pnl >= 0 else f"−${abs(pnl):.0f}"
     tp_label = f"{tp_pct:.0f}% credit captured" if tp_pct is not None else "credit captured"
 

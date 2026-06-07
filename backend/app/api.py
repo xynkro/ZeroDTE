@@ -715,6 +715,14 @@ async def debrief(date: str | None = None):
     return dbf.build_debrief(orch.paper_trades, date)
 
 
+@app.get("/api/reconcile")
+async def reconcile_endpoint():
+    """Ledger ⇄ Alpaca reconciliation — flags any recorded trade the broker
+    never saw (data-integrity guardrail for the validation sample)."""
+    from . import reconcile as rec
+    return await rec.reconcile(orch)
+
+
 @app.get("/api/alpaca/status")
 async def alpaca_status():
     """Alpaca paper trading status."""

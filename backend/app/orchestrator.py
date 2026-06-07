@@ -114,9 +114,23 @@ class Orchestrator:
             return
         try:
             from .models import SignalEvent, PaperTrade, IronCondorBuilder
-            self._signal_history = [SignalEvent(**s) for s in (data.get("signal_history") or [])]
-            self.paper_trades = [PaperTrade(**t) for t in (data.get("paper_trades") or [])]
-            self.state.iron_condor_history = [IronCondorBuilder(**b) for b in (data.get("iron_condor_history") or [])]
+
+            def _safe_load(cls, items, label):
+                """Load per-item: one malformed record is dropped + logged, never
+                discards the whole session's state (resilient restore)."""
+                out = []
+                for it in (items or []):
+                    try:
+                        out.append(cls(**it))
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("state restore: dropping malformed %s (%s): %s",
+                                    label, str(it)[:80], e)
+                return out
+
+            self._signal_history = _safe_load(SignalEvent, data.get("signal_history"), "signal")
+            self.paper_trades = _safe_load(PaperTrade, data.get("paper_trades"), "paper_trade")
+            self.state.iron_condor_history = _safe_load(
+                IronCondorBuilder, data.get("iron_condor_history"), "ic_build")
             if self.state.iron_condor_history:
                 # Restore latest as the active IC
                 latest = self.state.iron_condor_history[-1]

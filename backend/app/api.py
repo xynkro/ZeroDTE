@@ -53,9 +53,11 @@ app = FastAPI(title="ZeroDTE Dashboard", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    # Allow any origin — backend only listens on localhost / LAN / Tailscale, all
-    # private-network. Avoids needing to enumerate every device's IP.
-    allow_origin_regex=".*",
+    # Tightened from ".*": the dashboard is served same-origin by this backend,
+    # and the public Pages PWA reads its data from raw.githubusercontent (NOT this
+    # API), so the only legitimate cross-origin callers are local + tailnet. This
+    # closes the open CORS surface flagged in the audit without breaking any flow.
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\]|[\w.-]+\.ts\.net)(:\d+)?$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

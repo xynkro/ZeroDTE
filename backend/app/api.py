@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from .config import settings
 from .orchestrator import Orchestrator
@@ -64,12 +65,66 @@ app.add_middleware(
 )
 
 
+def require_write_token(x_zerodte_token: str | None = Header(default=None)):
+    """Guard write/control endpoints. Disabled when API_WRITE_TOKEN is unset
+    (back-compat). When set, the backend injects it into its own served
+    dashboards so the operator's page works transparently; every other caller
+    must present it as the X-ZeroDTE-Token header."""
+    secret = settings.API_WRITE_TOKEN
+    if not secret:
+        return
+    if x_zerodte_token != secret:
+        raise HTTPException(status_code=401, detail="missing or invalid write token")
+
+
+def _serve_dashboard_html(path: Path) -> HTMLResponse:
+    """Serve a dashboard HTML file with the write token injected as window.__ZDT.
+    The injection only reaches the operator's own same-origin page; nothing is
+    injected when no token is configured."""
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"not found: {path.name}")
+    text = path.read_text()
+    tok = settings.API_WRITE_TOKEN
+    if tok:
+        text = text.replace("</head>", f"<script>window.__ZDT={json.dumps(tok)};</script></head>", 1)
+    return HTMLResponse(text)
+
+
 @app.get("/")
 async def serve_pwa():
     """Serve the single-file PWA dashboard at the root path."""
-    if FRONTEND_INDEX.exists():
-        return FileResponse(FRONTEND_INDEX, media_type="text/html")
-    return {"error": f"frontend not found at {FRONTEND_INDEX}"}
+    return _serve_dashboard_html(FRONTEND_INDEX)
+
+
+# ── v2 terminal (Preact+htm rebuild) — served live so writes can hit the API ──
+V2_DIR = FRONTEND_DIR / "v2"
+
+
+@app.get("/v2")
+async def serve_v2_redirect():
+    # Trailing slash so relative asset paths (./app.js) resolve correctly.
+    return RedirectResponse(url="/v2/", status_code=308)
+
+
+@app.get("/v2/")
+async def serve_v2():
+    return _serve_dashboard_html(V2_DIR / "index.html")
+
+
+@app.get("/v2/app.js")
+async def serve_v2_app():
+    p = V2_DIR / "app.js"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="app.js not found")
+    return FileResponse(p, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/v2/manifest.webmanifest")
+async def serve_v2_manifest():
+    p = V2_DIR / "manifest.webmanifest"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="manifest not found")
+    return FileResponse(p, media_type="application/manifest+json")
 
 
 # PWA assets — manifest, service worker, icons (installable PWA over HTTPS).
@@ -281,7 +336,7 @@ async def paper_trades():
     return [t.model_dump() for t in orch.paper_trades]
 
 
-@app.post("/api/telegram/eod_test")
+@app.post("/api/telegram/eod_test", dependencies=[Depends(require_write_token)])
 async def telegram_eod_test(date: str | None = None):
     """Manually fire an EOD summary for a given date (defaults to yesterday's
     most recent bar). Used to verify the pipeline before relying on it overnight.
@@ -323,7 +378,7 @@ async def get_telegram_prefs():
     return {"prefs": tp.get(), "message_types": tp.MESSAGE_TYPES}
 
 
-@app.post("/api/telegram/prefs")
+@app.post("/api/telegram/prefs", dependencies=[Depends(require_write_token)])
 async def set_telegram_prefs(payload: dict = Body(default={})):
     """Update Telegram message preferences (deep-merged over current), persist to
     backend/data/telegram_prefs.json, and apply on the next ping. Body is a
@@ -673,7 +728,7 @@ async def flow_last():
     return orch._last_flow_scan or {"scanned": False}
 
 
-@app.post("/api/flow/scan")
+@app.post("/api/flow/scan", dependencies=[Depends(require_write_token)])
 async def flow_scan_now():
     """Trigger an on-demand flow scan (requires IBKR connected + market hours)."""
     ibkr_ok = orch.feed and orch.feed.connected
@@ -706,7 +761,7 @@ async def flow_scan_now():
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/api/alpaca/kill")
+@app.post("/api/alpaca/kill", dependencies=[Depends(require_write_token)])
 async def alpaca_kill():
     """EMERGENCY KILL — actually stops everything:
       1. HALT the strategy (no new paper/broker entries, via settings.TRADING_HALTED)
@@ -729,7 +784,7 @@ async def alpaca_kill():
     return result
 
 
-@app.post("/api/trading/resume")
+@app.post("/api/trading/resume", dependencies=[Depends(require_write_token)])
 async def trading_resume():
     """Clear the kill-switch halt so the strategy can open entries again. Does NOT
     re-enable the live broker — set TRADING_ENABLED / PAPER_BROKER deliberately."""

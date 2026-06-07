@@ -255,6 +255,12 @@ class Settings:
     TELEGRAM_TOPIC_IRON_CONDOR: int = _i("TELEGRAM_TOPIC_IRON_CONDOR", 0)
     DASHBOARD_PUBLIC_URL: str = os.getenv("DASHBOARD_PUBLIC_URL", "")
 
+    # Shared-secret guarding the write/control endpoints (kill, resume, prefs,
+    # flow scan). Empty = auth disabled (back-compat). When set, the backend
+    # injects it into the served dashboards so the operator's own page works,
+    # and any other caller must present it as the X-ZeroDTE-Token header.
+    API_WRITE_TOKEN: str = os.getenv("API_WRITE_TOKEN", "")
+
     # Paths
     project_root: Path = PROJECT_ROOT
     data_dir: Path = PROJECT_ROOT / "backend" / "data"

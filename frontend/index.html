@@ -1090,7 +1090,7 @@
       status.textContent = 'saving…'; status.style.color = 'var(--muted)';
       try {
         const r = await fetch(`${API_BASE}/api/telegram/prefs`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prefs),
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-ZeroDTE-Token': window.__ZDT || '' }, body: JSON.stringify(prefs),
         }).then(r => r.json());
         status.textContent = r.ok ? '✓ saved — applies on next alert' : 'save failed';
         status.style.color = r.ok ? 'var(--green)' : 'var(--red)';
@@ -2337,7 +2337,7 @@
     const status = document.getElementById('kill-status');
     btn.disabled = true; btn.textContent = 'Killing...';
     try {
-      const res = await fetch(`${API_BASE}/api/alpaca/kill`, { method: 'POST' }).then(r => r.json());
+      const res = await fetch(`${API_BASE}/api/alpaca/kill`, { method: 'POST', headers: { 'X-ZeroDTE-Token': window.__ZDT || '' } }).then(r => r.json());
       status.textContent = res.ok
         ? `Killed ${res.cancelled} orders. Broker set to: ${res.paper_broker}`
         : `Error: ${res.error}`;

@@ -65,6 +65,67 @@ function useResource(loader, pollMs) {
   return { ...state, reload: run };
 }
 
+// ── Write layer ─────────────────────────────────────────────────────────────
+// Live mode: POST to the backend with the injected write token. The dashboard
+// is served by the backend, which injects window.__ZDT for the operator only;
+// any other caller is 401'd.
+const API_TOKEN = (typeof window !== 'undefined' && window.__ZDT) || '';
+async function apiWrite(path, body) {
+  const r = await fetch(API + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-ZeroDTE-Token': API_TOKEN },
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) throw new Error('unauthorized — open this from the backend (localhost / Tailscale), not Pages');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+// Static (Pages) mode: writes go through the GitOps control branch using the
+// operator's own GitHub token, held in sessionStorage (clears on close) — NOT
+// localStorage. The XSS path that could exfiltrate it is gone (Preact escapes).
+const GH_API = 'https://api.github.com/repos/xynkro/ZeroDTE';
+function ghToken(force) {
+  let t = sessionStorage.getItem('zerodte_gh_token');
+  if (!t || force) {
+    t = prompt('GitHub fine-grained token (repo: xynkro/ZeroDTE · Contents: Read & write).\nStored for THIS SESSION only.\n\nCreate: github.com/settings/tokens?type=beta');
+    if (t) { t = t.trim(); sessionStorage.setItem('zerodte_gh_token', t); }
+  }
+  return t;
+}
+const _b64e = s => btoa(unescape(encodeURIComponent(s)));
+const _b64d = s => decodeURIComponent(escape(atob((s || '').replace(/\n/g, ''))));
+async function ghGetControl(t) {
+  const r = await fetch(`${GH_API}/contents/control.json?ref=control&t=${Date.now()}`,
+    { headers: { Authorization: 'token ' + t, Accept: 'application/vnd.github+json' }, cache: 'no-store' });
+  if (r.status === 404) return { sha: null, json: { v: 0 } };
+  if (!r.ok) { const e = new Error('GitHub GET ' + r.status); e.status = r.status; throw e; }
+  const d = await r.json();
+  let j = { v: 0 }; try { j = JSON.parse(_b64d(d.content)); } catch (e) {}
+  return { sha: d.sha, json: j };
+}
+async function ghPutControl(t, sha, obj, msg) {
+  const body = { message: msg, branch: 'control', content: _b64e(JSON.stringify(obj, null, 2)) };
+  if (sha) body.sha = sha;
+  const r = await fetch(`${GH_API}/contents/control.json`, {
+    method: 'PUT', headers: { Authorization: 'token ' + t, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) { const x = await r.text(); const e = new Error('GitHub PUT ' + r.status + ' ' + x.slice(0, 90)); e.status = r.status; throw e; }
+  return r.json();
+}
+async function savePrefs(prefs) {
+  if (!STATIC) { await apiWrite('/api/telegram/prefs', prefs); return { via: 'api' }; }
+  const t = ghToken(false);
+  if (!t) throw new Error('cancelled (no token)');
+  try {
+    const cur = await ghGetControl(t);
+    const obj = Object.assign({}, cur.json, { v: (cur.json.v || 0) + 1, telegram_prefs: prefs });
+    await ghPutControl(t, cur.sha, obj, 'control: telegram prefs v' + obj.v);
+    return { via: 'gitops' };
+  } catch (e) { if (e.status === 401 || e.status === 403) sessionStorage.removeItem('zerodte_gh_token'); throw e; }
+}
+
 // ── Motion primitives ───────────────────────────────────────────────────────
 function Num({ value, format = (v) => fmt(v, 0), cls = '' }) {
   const ref = useRef(null);
@@ -125,6 +186,29 @@ const ErrorState = ({ message, onRetry }) => html`
   <div class="errbox" role="alert"><div class="glyph">⚠</div>
     <p>${message || 'Something went wrong.'}</p>
     ${onRetry && html`<div class="retry"><button class="btn" onClick=${onRetry}>Retry</button></div>`}</div>`;
+
+const Toggle = ({ checked, onChange, label }) => html`
+  <label class="tog"><input type="checkbox" checked=${!!checked} onChange=${e => onChange(e.target.checked)} />
+    <span class="sw" aria-hidden="true"></span><span>${label}</span></label>`;
+
+function Modal({ title, onClose, children, footer }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    const prev = document.activeElement;
+    ref.current?.querySelector('button,input,select,[tabindex]')?.focus();
+    return () => { document.removeEventListener('keydown', onKey); prev?.focus?.(); };
+  }, []);
+  return html`
+    <div class="scrim" onMouseDown=${e => { if (e.target.classList.contains('scrim')) onClose(); }}>
+      <div class="sheet" ref=${ref} role="dialog" aria-modal="true" aria-label=${title}>
+        <div class="sheet-h"><h2>${title}</h2><button class="x" aria-label="Close" onClick=${onClose}>×</button></div>
+        <div class="sheet-b">${children}</div>
+        ${footer && html`<div class="sheet-f">${footer}</div>`}
+      </div>
+    </div>`;
+}
 
 // ── Equity sparkline (SVG + GSAP draw) ──────────────────────────────────────
 function Sparkline({ curve = [], height = 132 }) {
@@ -224,6 +308,78 @@ function TradeTable({ trades = [] }) {
     </tbody></table></div>`;
 }
 
+// ── Telegram settings sheet (dual write: API live, GitOps on Pages) ─────────
+function SettingsSheet({ onClose }) {
+  const [prefs, setPrefs] = useState(null);
+  const [types, setTypes] = useState([]);
+  const [status, setStatus] = useState('loading');   // loading | ready | error | saving
+  const [msg, setMsg] = useState('');
+  useEffect(() => { (async () => {
+    try {
+      let p, t;
+      if (STATIC) { const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' }).then(r => r.json()); p = s.telegram_prefs || {}; t = s.telegram_types || []; }
+      else { const d = await fetch(`${API}/api/telegram/prefs`).then(r => r.json()); p = d.prefs || {}; t = d.message_types || []; }
+      setPrefs(p); setTypes(t); setStatus('ready');
+    } catch (e) { setStatus('error'); setMsg(e.message); }
+  })(); }, []);
+  const upd = (fn) => setPrefs(prev => { const n = structuredClone(prev); fn(n); return n; });
+  const save = async () => {
+    setStatus('saving'); setMsg('');
+    try { const r = await savePrefs(prefs); setStatus('ready'); setMsg(r.via === 'gitops' ? '✓ saved — backend applies within ~1 min' : '✓ saved — applies on next alert'); }
+    catch (e) { setStatus('ready'); setMsg('save failed: ' + e.message); }
+  };
+  const link = prefs?.link || {}, detail = prefs?.detail || {}, tmap = prefs?.types || {};
+  const footer = html`
+    <button class="btn primary" onClick=${save} disabled=${status === 'saving'}>${status === 'saving' ? 'Saving…' : 'Save'}</button>
+    <span class="muted" style="font-size:11.5px;flex:1">${msg}</span>`;
+  return html`
+    <${Modal} title="Telegram settings" onClose=${onClose} footer=${prefs ? footer : null}>
+      ${status === 'loading' && html`<${Skeleton} h=160 r=8 />`}
+      ${status === 'error' && html`<${ErrorState} message=${msg} />`}
+      ${prefs && html`<div>
+        ${STATIC && html`<div class="note-blue">\u{1F4F1} Phone mode — saves go via GitHub; your backend applies them within ~1 min. First save asks for a GitHub token (this session only).</div>`}
+        <div class="field"><label>Push these alerts</label>
+          <div class="toggle-grid">
+            ${types.map(t => html`<${Toggle} key=${t.key} label=${t.label} checked=${tmap[t.key] !== false}
+              onChange=${v => upd(n => { (n.types = n.types || {})[t.key] = v; })} />`)}
+          </div>
+        </div>
+        <div class="field"><label>Prefix — top of every alert</label>
+          <input class="inp" value=${prefs.prefix || ''} placeholder="(none)" onInput=${e => upd(n => n.prefix = e.target.value)} /></div>
+        <div class="field"><label>Footer — bottom of every alert</label>
+          <input class="inp" value=${prefs.footer || ''} placeholder="(none)" onInput=${e => upd(n => n.footer = e.target.value)} /></div>
+        <div class="field"><label>Dashboard link</label>
+          <${Toggle} label="Include the dashboard link" checked=${link.enabled !== false} onChange=${v => upd(n => { (n.link = n.link || {}).enabled = v; })} />
+          <div class="seg" style="margin-top:9px">
+            ${[['plain', 'plain URL'], ['button', 'tappable button']].map(([s, lbl]) => html`
+              <button key=${s} class=${(link.style || 'plain') === s ? 'on' : ''} onClick=${() => upd(n => { (n.link = n.link || {}).style = s; })}>${lbl}</button>`)}
+          </div>
+        </div>
+        <div class="field"><label>Entry detail lines</label>
+          <div class="toggle-grid">
+            ${['factors', 'plan', 'sizing'].map(k => html`<${Toggle} key=${k} label=${k} checked=${detail[k] !== false}
+              onChange=${v => upd(n => { (n.detail = n.detail || {})[k] = v; })} />`)}
+          </div>
+        </div>
+      </div>`}
+    </${Modal}>`;
+}
+
+// ── Kill switch — live only (backend-served); guarded; never on Pages ───────
+function KillButton() {
+  const [busy, setBusy] = useState(false);
+  const [res, setRes] = useState('');
+  const kill = async () => {
+    if (!confirm('KILL SWITCH\n\nHalt the strategy, disable the broker, and flatten ALL open positions. Continue?')) return;
+    setBusy(true); setRes('');
+    try { const r = await apiWrite('/api/alpaca/kill'); setRes(r.ok ? 'halted' : ('err: ' + (r.error || ''))); }
+    catch (e) { setRes('failed'); console.error(e); }
+    setBusy(false);
+  };
+  return html`<button class="btn danger" onClick=${kill} disabled=${busy} title="Emergency kill — halt + flatten">
+    ${busy ? '…' : '■ Kill'}${res ? ' · ' + res : ''}</button>`;
+}
+
 // ── Chrome ──────────────────────────────────────────────────────────────────
 function ConnPill({ res, mode, generatedAt }) {
   if (mode === 'static') {
@@ -235,7 +391,7 @@ function ConnPill({ res, mode, generatedAt }) {
   return html`<span class="pill"><span class=${clsx('dot', d)}></span>${label}</span>`;
 }
 
-function Topbar({ res, data }) {
+function Topbar({ res, data, onSettings }) {
   return html`
     <header class="topbar">
       <div class="brand">
@@ -244,7 +400,9 @@ function Topbar({ res, data }) {
       </div>
       <div class="spacer"></div>
       <${ConnPill} res=${res} mode=${data?.mode || (STATIC ? 'static' : 'live')} generatedAt=${data?.generatedAt} />
-      <button class="btn ghost" onClick=${res.reload} aria-label="Refresh" title="Refresh">↻</button>
+      ${!STATIC && html`<${KillButton} />`}
+      <button class="btn ghost icon-btn" onClick=${onSettings} aria-label="Telegram settings" title="Telegram settings">⚙</button>
+      <button class="btn ghost icon-btn" onClick=${res.reload} aria-label="Refresh" title="Refresh">↻</button>
     </header>`;
 }
 
@@ -279,10 +437,12 @@ function MonitorSkeleton() {
 function MonitorView() {
   const res = useResource(loadMonitor, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || res.data?.stats?.total) : null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return html`
     <div class="app">
-      <${Topbar} res=${res} data=${res.data} />
+      ${settingsOpen && html`<${SettingsSheet} onClose=${() => setSettingsOpen(false)} />`}
+      <${Topbar} res=${res} data=${res.data} onSettings=${() => setSettingsOpen(true)} />
       ${res.status === 'loading' && html`<${MonitorSkeleton} />`}
       ${res.status === 'error' && html`<div style="margin-top:24px"><${ErrorState} message=${'Could not reach the backend. ' + (res.error || '')} onRetry=${res.reload} /></div>`}
       ${res.data && html`

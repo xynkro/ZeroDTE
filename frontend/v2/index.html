@@ -177,6 +177,39 @@
     *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
     .reveal { opacity: 1; transform: none; }
   }
+
+  /* ─────────────────────────── Modal / sheet ─────────────────────────── */
+  .scrim { position: fixed; inset: 0; background: rgba(4,6,10,.66); backdrop-filter: blur(3px); z-index: 50; display: flex; align-items: flex-start; justify-content: center; padding: 22px; overflow: auto; animation: fade .18s var(--ease); }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  .sheet { width: 100%; max-width: 520px; margin: 14px auto 40px; background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow-pop); animation: rise .28s var(--ease-out); }
+  @keyframes rise { from { opacity: 0; transform: translateY(14px) scale(.99); } to { opacity: 1; transform: none; } }
+  .sheet-h { display: flex; align-items: center; justify-content: space-between; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+  .sheet-h h2 { font-size: 15px; }
+  .sheet-b { padding: 16px 18px; }
+  .sheet-f { display: flex; gap: 10px; align-items: center; padding: 13px 18px; border-top: 1px solid var(--line); }
+  .x { background: none; border: none; color: var(--ink-dim); font-size: 22px; line-height: 1; cursor: pointer; padding: 0 4px; }
+  .x:hover { color: var(--ink); }
+  .field { margin-bottom: 15px; }
+  .field > label { display: block; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 7px; }
+  .inp { width: 100%; background: var(--bg-elev-2); border: 1px solid var(--line); color: var(--ink); border-radius: var(--r-sm); padding: 9px 11px; font-family: var(--font-mono); font-size: 13px; }
+  .inp:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+  .toggle-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 16px; }
+  .tog { display: flex; align-items: center; gap: 9px; font-size: 12.5px; cursor: pointer; padding: 4px 0; min-height: 32px; }
+  .tog input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .sw { width: 34px; height: 19px; border-radius: 999px; background: var(--bg-elev-2); border: 1px solid var(--line); position: relative; transition: background .18s, border-color .18s; flex: none; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: var(--ink-faint); transition: transform .18s var(--ease), background .18s; }
+  .tog input:checked + .sw { background: var(--green-bg); border-color: var(--green-line); }
+  .tog input:checked + .sw::after { transform: translateX(15px); background: var(--green); }
+  .tog input:focus-visible + .sw { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .note-blue { font-size: 11.5px; color: var(--blue); background: var(--blue-bg); border: 1px solid #5b9dff33; border-radius: var(--r-sm); padding: 9px 11px; margin-bottom: 14px; }
+  .btn.primary { background: var(--green); border-color: var(--green); color: #06281c; font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.06); }
+  .btn.danger { background: var(--red-bg); border-color: var(--red-line); color: var(--red); }
+  .btn.danger:hover { border-color: var(--red); }
+  .seg { display: flex; gap: 4px; }
+  .seg button { flex: 1; padding: 7px; border: 1px solid var(--line); background: var(--bg-elev-2); color: var(--ink-dim); border-radius: var(--r-xs); font-size: 12px; cursor: pointer; }
+  .seg button.on { background: var(--green-bg); border-color: var(--green-line); color: var(--green); }
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; font-size: 14px; }
 </style>
 </head>
 <body>

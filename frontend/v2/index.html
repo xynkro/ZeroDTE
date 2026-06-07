@@ -44,7 +44,8 @@
 
   /* ─────────────────────────── Base ─────────────────────────── */
   * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; }
+  html, body { margin: 0; height: 100%; overflow-x: hidden; }
+  img, svg, table { max-width: 100%; }
   body {
     background: var(--bg);
     color: var(--ink);
@@ -75,11 +76,14 @@
   .vh { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 
   /* ─────────────────────────── Layout shell ─────────────────────────── */
-  .app { max-width: 1180px; margin: 0 auto; padding: 0 var(--sp-4) var(--sp-7); }
+  .app {
+    max-width: 1180px; margin: 0 auto;
+    padding: 0 max(var(--sp-4), env(safe-area-inset-right)) max(var(--sp-7), env(safe-area-inset-bottom)) max(var(--sp-4), env(safe-area-inset-left));
+  }
   .topbar {
     position: sticky; top: 0; z-index: 20;
     display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; row-gap: 8px;
-    padding: var(--sp-4) var(--sp-4) var(--sp-3);
+    padding: max(var(--sp-4), env(safe-area-inset-top)) max(var(--sp-4), env(safe-area-inset-right)) var(--sp-3) max(var(--sp-4), env(safe-area-inset-left));
     max-width: 1180px; margin: 0 auto;
     background: linear-gradient(var(--bg) 62%, transparent);
     backdrop-filter: blur(2px);
@@ -115,11 +119,12 @@
   .card-h .accent-tab { width: 4px; height: 15px; border-radius: 3px; background: var(--accent); }
   .card-b { padding: var(--sp-4); }
   .grid { display: grid; gap: var(--sp-4); }
-  @media (min-width: 760px) { .cols-2 { grid-template-columns: 1fr 1fr; } }
+  .grid > * { min-width: 0; }   /* prevent wide children from blowing out the column */
+  @media (min-width: 760px) { .cols-2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
   /* ─────────────────────────── Stat tiles ─────────────────────────── */
-  .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-3); }
-  @media (min-width: 560px) { .stats { grid-template-columns: repeat(4, 1fr); } }
+  .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  @media (min-width: 560px) { .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
   .stat { background: var(--bg-elev-2); border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 11px 13px; position: relative; overflow: hidden; }
   .stat .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); }
   .stat .v { font-family: var(--font-mono); font-weight: 600; font-size: 21px; margin-top: 3px; letter-spacing: -.02em; }
@@ -137,6 +142,7 @@
   /* ─────────────────────────── Debrief ─────────────────────────── */
   .debrief { border-left: 3px solid var(--accent); }
   .debrief .row { display:flex; gap:9px; align-items:baseline; padding: 7px 0; border-bottom:1px solid var(--line-soft); font-size: 13px; }
+  .debrief .row > * { min-width: 0; overflow-wrap: anywhere; }
   .debrief .row:last-child { border-bottom: none; }
   .debrief .ic { width: 18px; text-align:center; }
   .debrief .side { font-weight:600; min-width: 70px; }
@@ -237,8 +243,8 @@
   .bt-form .field { margin: 0; }
   .bt-form .inp, .bt-form select { width: auto; min-width: 84px; }
   select.inp { appearance: none; cursor: pointer; }
-  .bt-stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--sp-3); }
-  @media (min-width: 560px) { .bt-stats { grid-template-columns: repeat(4, 1fr); } }
+  .bt-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
+  @media (min-width: 560px) { .bt-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 </style>
 </head>
 <body>

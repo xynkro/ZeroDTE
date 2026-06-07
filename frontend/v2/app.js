@@ -240,7 +240,8 @@ function Sparkline({ curve = [], height = 132 }) {
   }, [pts, w]);
   return html`
     <div ref=${wrapRef}>
-      <svg width=${w} height=${height} viewBox=${`0 0 ${w} ${height}`} role="img" aria-label="Equity curve">
+      <svg viewBox=${`0 0 ${w} ${height}`} preserveAspectRatio="none" role="img" aria-label="Equity curve"
+           style=${{ width: '100%', height: height + 'px', display: 'block' }}>
         <line x1=${pad} y1=${zeroY} x2=${w - pad} y2=${zeroY} stroke="var(--line)" stroke-dasharray="3 4" />
         <polygon points=${`${pad},${zeroY} ${pts} ${x(vals.length - 1)},${zeroY}`} fill=${last >= 0 ? 'var(--green-bg)' : 'var(--red-bg)'} />
         <polyline ref=${ref} points=${pts} fill="none" stroke=${stroke} stroke-width="2"

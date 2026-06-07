@@ -1,7 +1,7 @@
 // ZeroDTE Terminal v2 — service worker. App-shell cache so the terminal launches
 // instantly / offline. NEVER caches /api or /ws (live data must hit the network).
-const CACHE = 'zerodte-v2-v1';
-const SHELL = ['./', './app.js', './manifest.webmanifest'];
+const CACHE = 'zerodte-v2-v2';
+const SHELL = ['./', './app.js', './manifest.webmanifest', './wordmark.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));

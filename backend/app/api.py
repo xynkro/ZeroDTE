@@ -137,6 +137,14 @@ async def serve_v2_sw():
                         headers={"Service-Worker-Allowed": "/v2/", "Cache-Control": "no-cache"})
 
 
+@app.get("/v2/wordmark.png")
+async def serve_v2_wordmark():
+    p = V2_DIR / "wordmark.png"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="wordmark.png not found")
+    return FileResponse(p, media_type="image/png")
+
+
 # PWA assets — manifest, service worker, icons (installable PWA over HTTPS).
 def _asset(filename: str, media_type: str, headers: dict | None = None):
     p = FRONTEND_DIR / filename

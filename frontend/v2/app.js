@@ -396,7 +396,7 @@ const ModePill = () => STATIC
 function Topbar({ view, setView, onSettings }) {
   return html`
     <header class="topbar">
-      <div class="brand"><span class="logo">Zero<b>DTE</b></span><span class="tag">terminal</span></div>
+      <div class="brand"><img class="wordmark" src="./wordmark.png" alt="ZeroDTE" /><span class="tag">terminal</span></div>
       <div class="spacer"></div>
       <${Nav} view=${view} setView=${setView} />
       <${ModePill} />

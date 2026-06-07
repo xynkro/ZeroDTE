@@ -74,9 +74,20 @@ def build_snapshot() -> dict:
     }
 
 
+# Explicit identity so `commit-tree` works regardless of global git config or
+# launchd's minimal environment (user.name/email may be unset).
+_GIT_ENV = {
+    **os.environ,
+    "GIT_AUTHOR_NAME": "ZeroDTE Publisher",
+    "GIT_AUTHOR_EMAIL": "publisher@zerodte.local",
+    "GIT_COMMITTER_NAME": "ZeroDTE Publisher",
+    "GIT_COMMITTER_EMAIL": "publisher@zerodte.local",
+}
+
+
 def _git(args: list[str], stdin: str | None = None) -> str:
     return subprocess.run(
-        ["git", *args], cwd=REPO, input=stdin,
+        ["git", *args], cwd=REPO, input=stdin, env=_GIT_ENV,
         capture_output=True, text=True, check=True,
     ).stdout.strip()
 

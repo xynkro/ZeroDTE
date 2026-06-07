@@ -46,6 +46,16 @@ async function loadMonitor() {
   };
 }
 
+async function loadSignals() {
+  if (STATIC) {
+    const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => { if (!r.ok) throw new Error('snapshot HTTP ' + r.status); return r.json(); });
+    return { mode: 'static', _snapAt: s.generated_at, ...(s.signals || {}) };
+  }
+  const d = await fetch(`${API}/api/signals`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+  return { mode: 'live', ...d };
+}
+
 // useResource — the loading/error/data state machine every view shares.
 function useResource(loader, pollMs) {
   const [state, setState] = useState({ status: 'loading', data: null, error: null });
@@ -382,7 +392,7 @@ function KillButton() {
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
-const VIEWS = [['monitor', 'Monitor'], ['backtest', 'Backtest'], ['macro', 'Macro']];
+const VIEWS = [['monitor', 'Monitor'], ['signals', 'Signals'], ['backtest', 'Backtest'], ['macro', 'Macro']];
 
 const Nav = ({ view, setView }) => html`
   <nav class="nav" aria-label="Views">
@@ -551,6 +561,152 @@ function BacktestView() {
 }
 
 // ── App ─────────────────────────────────────────────────────────────────────
+// ── Signals cockpit (the 'brain') ───────────────────────────────────────────
+const SIDE = {
+  sell_call_cs: { label: 'SELL CALL SPREAD', short: 'CALL', kind: 'call' },
+  sell_put_cs: { label: 'SELL PUT SPREAD', short: 'PUT', kind: 'put' },
+};
+const sideOf = s => SIDE[s] || { label: s || '—', short: '?', kind: '' };
+const pctFrom = (a, b) => (a != null && b ? (a - b) / b * 100 : null);
+const sideAccent = kind => kind === 'call' ? 'var(--red)' : 'var(--green)';
+
+function useNow(ms = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const id = setInterval(() => setNow(Date.now()), ms); return () => clearInterval(id); }, [ms]);
+  return now;
+}
+
+function Countdown({ to, now }) {
+  if (!to) return html`<span class="muted">—</span>`;
+  const ms = new Date(to).getTime() - now;
+  if (isNaN(ms)) return html`<span class="muted">—</span>`;
+  if (ms <= 0) return html`<span class="countdown urgent">passed</span>`;
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  const pad = n => String(n).padStart(2, '0');
+  const txt = h > 0 ? `${h}h ${pad(m)}m` : `${m}m ${pad(ss)}s`;
+  const cls = ms < 5 * 60000 ? 'urgent' : ms < 20 * 60000 ? 'warn' : '';
+  return html`<span class=${clsx('countdown', cls)}>${txt}</span>`;
+}
+
+function PositionCockpit({ p, underlying, timeStopAt, now }) {
+  const s = sideOf(p.side);
+  const tp = p.tp_underlying_target, stop = p.stop_underlying_target;
+  let bar = null;
+  if (tp != null && stop != null && underlying != null) {
+    const lo = Math.min(tp, stop, underlying), hi = Math.max(tp, stop, underlying), span = (hi - lo) || 1;
+    const at = v => `${Math.max(0, Math.min(100, (v - lo) / span * 100))}%`;
+    bar = html`<div>
+      <div class="distbar">
+        <div class="tick tp" style=${{ left: at(tp) }}></div>
+        <div class="tick stop" style=${{ left: at(stop) }}></div>
+        <div class="tick now" style=${{ left: at(underlying) }}></div>
+      </div>
+      <div class="distcap"><span class="pos">TP ${fmt(tp, 0)}</span><span>now ${fmt(underlying, 0)}</span><span class="neg">STOP ${fmt(stop, 0)}</span></div>
+    </div>`;
+  }
+  const pnl = p.pnl;
+  return html`<${Card} title=${'Open position · #' + p.trade_no} accent=${sideAccent(s.kind)}
+    actions=${p.broker_status && html`<${Badge} kind=${p.broker_status === 'closed' ? 'neutral' : 'ok'}>${p.broker_status}</${Badge}>`}>
+    <div class=${clsx('sig', s.kind)}>
+      <div class="sig-side">${s.label}<span class="dirpill">${p.instrument || 'SPY'} · live</span></div>
+      <div class="sig-legs">
+        <span><span class="big">${fmt(p.short_strike, 0)}</span> <span class="lbl">short</span></span>
+        <span class="faint">/</span>
+        <span><span class="big">${fmt(p.long_strike, 0)}</span> <span class="lbl">long</span></span>
+      </div>
+      <div class="kvs">
+        <div class="kv"><div class="k">Credit</div><div class="v">${money(p.credit, 0)}</div></div>
+        <div class="kv"><div class="k">Live P&L</div><div class=${clsx('v', pnl == null ? null : pnl >= 0 ? 'pos' : 'neg')}>${pnl == null ? '—' : signMoney(pnl, 0)}</div></div>
+        <div class="kv"><div class="k">Peak kept</div><div class="v">${fmt(p.peak_pct_kept, 0)}%</div></div>
+        <div class="kv"><div class="k">Time-stop</div><div class="v"><${Countdown} to=${timeStopAt} now=${now} /></div></div>
+      </div>
+      ${bar}
+    </div>
+  </${Card}>`;
+}
+
+function SignalCard({ sig }) {
+  const s = sideOf(sig.side);
+  const when = sig.triggered_at ? new Date(sig.triggered_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+  return html`<${Card} title="Latest signal" accent=${sideAccent(s.kind)}>
+    <div class=${clsx('sig', s.kind)}>
+      <div class="sig-side">${s.label}<span class="dirpill">${sig.instrument || 'signal'}</span></div>
+      <div class="sig-legs">
+        <span><span class="big">${fmt(sig.short_strike, 0)}</span> <span class="lbl">short</span></span>
+        <span class="faint">/</span>
+        <span><span class="big">${fmt(sig.long_strike, 0)}</span> <span class="lbl">long</span></span>
+      </div>
+      <div class="kvs">
+        <div class="kv"><div class="k">Confluence</div><div class="v">${sig.confluence_score ?? '—'}</div></div>
+        ${sig.credit != null && html`<div class="kv"><div class="k">Credit</div><div class="v">${money(sig.credit, 0)}</div></div>`}
+        ${sig.roi_pct != null && html`<div class="kv"><div class="k">ROI</div><div class="v">${fmt(sig.roi_pct, 0)}%</div></div>`}
+        <div class="kv"><div class="k">Fired</div><div class="v" style="font-size:13px">${when}</div></div>
+      </div>
+    </div>
+  </${Card}>`;
+}
+
+function ZoneLadder({ d }) {
+  const reg = d.regime || {}, u = d.underlying, ch = reg.proj_high, cl = reg.proj_low;
+  const dist = z => (z != null && u != null) ? `${pctFrom(z, u) >= 0 ? '+' : ''}${fmt(pctFrom(z, u), 2)}%` : '';
+  const regimeLabel = { non_volatile: 'Non-volatile', volatile: 'Volatile', pre_obs: 'Pre-open-range' }[reg.regime] || reg.regime || '—';
+  return html`<${Card} title="Tonight's strategy — sell zones" accent="var(--amber)"
+    actions=${html`<${Badge} kind=${reg.classified ? 'ok' : 'neutral'}>${reg.classified ? regimeLabel : 'awaiting 9:45 ET'}</${Badge}>`}>
+    ${(ch == null && cl == null)
+      ? html`<${EmptyState} glyph="\u{1F4CF}" title="Zones set after the opening range"
+          hint="Projected sell zones publish once the 9:30–9:45 ET observation window closes." />`
+      : html`<div>
+        <div class="zone callz"><span class="zlbl">Call-spread sell zone <span class="faint">(short above)</span></span><span class="zval">${fmt(ch, 0)}</span><span class="zdist">${dist(ch)}</span></div>
+        <div class="zone now"><span class="zlbl">Spot</span><span class="zval">${fmt(u, 0)}</span><span class="zdist">${d.feed && d.feed !== 'none' ? d.feed : 'last'}</span></div>
+        <div class="zone putz"><span class="zlbl">Put-spread sell zone <span class="faint">(short below)</span></span><span class="zval">${fmt(cl, 0)}</span><span class="zdist">${dist(cl)}</span></div>
+      </div>`}
+  </${Card}>`;
+}
+
+function RecentSignals({ list }) {
+  if (!list || !list.length) return null;
+  return html`<${Card} title="Recent signals" accent="var(--violet)">
+    ${list.map((sig, i) => {
+      const s = sideOf(sig.side);
+      const when = sig.triggered_at ? new Date(sig.triggered_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+      return html`<div class="sigrow" key=${i}>
+        <span class=${clsx('s-side', s.kind)}>${s.short}</span>
+        <span class="s-meta">${sig.short_strike != null ? `${fmt(sig.short_strike, 0)}/${fmt(sig.long_strike, 0)}` : ''} · spot ${fmt(sig.underlying_price, 0)}${sig.confluence_score != null ? ` · conf ${sig.confluence_score}` : ''}</span>
+        <span class="s-meta">${when}</span>
+      </div>`;
+    })}
+  </${Card}>`;
+}
+
+function SignalsView() {
+  const res = useResource(loadSignals, STATIC ? 60000 : 5000);
+  const now = useNow(1000);
+  const staggerKey = res.status === 'ready'
+    ? ((res.data?.open_positions || []).length + '|' + (res.data?.latest_signal?.triggered_at || '')) : null;
+  const staggerRef = useStagger(staggerKey);
+  if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
+  if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not load signals. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
+  const d = res.data || {};
+  const open = d.open_positions || [];
+  const sig = d.latest_signal;
+  const tvUrl = d.tv_chart_url || 'https://www.tradingview.com/chart/?symbol=SP%3ASPX&interval=5';
+  return html`
+    <div ref=${staggerRef} class="grid" style="margin-top:16px" aria-busy=${res.status === 'refreshing'}>
+      ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Snapshot</strong>${d._snapAt ? ' · ' + new Date(d._snapAt).toLocaleString() : ''} — live countdown / P&L update on the backend terminal.</span></div>`}
+      <div data-stagger style="display:flex;justify-content:flex-end">
+        <a class="btn" href=${tvUrl} target="_blank" rel="noopener noreferrer">\u{1F4C8} Open chart on TradingView</a>
+      </div>
+      ${open.length
+        ? open.map((p, i) => html`<div data-stagger key=${p.trade_no || i}><${PositionCockpit} p=${p} underlying=${d.underlying} timeStopAt=${d.time_stop_at} now=${now} /></div>`)
+        : (sig
+          ? html`<div data-stagger><${SignalCard} sig=${sig} /></div>`
+          : html`<div data-stagger><${Card} title="Signal"><${EmptyState} glyph="\u{1F9E0}" title="No open position"
+              hint="No live signal right now. Tonight's sell zones are below; entries fire to Telegram + here in real time." /></${Card}></div>`)}
+      <div data-stagger><${ZoneLadder} d=${d} /></div>
+      <div data-stagger><${RecentSignals} list=${d.recent_signals} /></div>
+    </div>`;
+}
+
 function App() {
   const [view, setView] = useState('monitor');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -559,6 +715,7 @@ function App() {
       ${settingsOpen && html`<${SettingsSheet} onClose=${() => setSettingsOpen(false)} />`}
       <${Topbar} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
       ${view === 'monitor' && html`<${MonitorView} />`}
+      ${view === 'signals' && html`<${SignalsView} />`}
       ${view === 'backtest' && html`<${BacktestView} />`}
       ${view === 'macro' && html`<${MacroView} />`}
     </div>`;

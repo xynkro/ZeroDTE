@@ -60,6 +60,7 @@ def build_snapshot() -> dict:
     alpaca_raw = _get("/api/alpaca/status", {}) or {}
     tg_raw = _get("/api/telegram/prefs", {}) or {}
     debrief = _get("/api/debrief", {}) or {}
+    signals = _get("/api/signals", {}) or {}
     ds = [t for t in trades_raw if t.get("strategy") == "directional_spread"]
     trades = [{k: t.get(k) for k in TRADE_FIELDS} for t in ds]
     alpaca = {
@@ -79,6 +80,9 @@ def build_snapshot() -> dict:
         "telegram_types": tg_raw.get("message_types", []),
         # Auto session debrief (latest session) — rendered read-only on the phone.
         "debrief": debrief,
+        # The 'brain' cockpit — latest signal + sell zones + open positions, so the
+        # phone Signals tab works off the snapshot (countdown/P&L tick client-side).
+        "signals": signals,
     }
 
 

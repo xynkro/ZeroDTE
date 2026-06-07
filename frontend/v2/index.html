@@ -245,6 +245,62 @@
   select.inp { appearance: none; cursor: pointer; }
   .bt-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-3); }
   @media (min-width: 560px) { .bt-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+  /* ─────────────────────────── Signals cockpit ─────────────────────────── */
+  .sig { border-left: 3px solid var(--accent); }
+  .sig.call { --accent: var(--red); }
+  .sig.put  { --accent: var(--green); }
+  .sig-side { font-family: var(--font-display); font-weight: 800; font-size: 21px; letter-spacing: -.01em; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dirpill { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; padding: 3px 9px; border-radius: var(--r-pill); }
+  .sig.call .dirpill { color: var(--red); background: var(--red-bg); border: 1px solid var(--red-line); }
+  .sig.put  .dirpill { color: var(--green); background: var(--green-bg); border: 1px solid var(--green-line); }
+  .sig-legs { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; font-family: var(--font-mono); flex-wrap: wrap; }
+  .sig-legs .big { font-size: 27px; font-weight: 600; letter-spacing: -.02em; }
+  .sig-legs .lbl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); }
+  .kvs { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 9px; margin-top: 14px; }
+  @media (min-width: 520px) { .kvs { grid-template-columns: repeat(4, minmax(0,1fr)); } }
+  .kv { background: var(--bg-elev-2); border: 1px solid var(--line-soft); border-radius: var(--r-sm); padding: 9px 11px; }
+  .kv .k { font-size: 9.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--ink-faint); }
+  .kv .v { font-family: var(--font-mono); font-weight: 600; font-size: 17px; margin-top: 3px; }
+  .countdown { font-variant-numeric: tabular-nums; }
+  .countdown.warn { color: var(--amber); } .countdown.urgent { color: var(--red); }
+  .distbar { position: relative; height: 34px; border-radius: var(--r-sm); margin-top: 10px; background: var(--bg-elev-2); border: 1px solid var(--line); }
+  .distbar .tick { position: absolute; top: -1px; bottom: -1px; }
+  .distbar .tick.tp { width: 2px; background: var(--green); }
+  .distbar .tick.stop { width: 2px; background: var(--red); }
+  .distbar .tick.now { width: 3px; background: var(--ink); box-shadow: 0 0 0 2px var(--bg); border-radius: 1px; }
+  .distcap { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--ink-faint); margin-top: 5px; font-family: var(--font-mono); }
+  .zone { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+  .zone:last-child { border-bottom: none; }
+  .zone .zlbl { font-size: 11px; letter-spacing: .04em; color: var(--ink-dim); }
+  .zone .zval { font-family: var(--font-mono); font-weight: 600; font-size: 17px; text-align: right; }
+  .zone .zdist { font-family: var(--font-mono); font-size: 11px; color: var(--ink-faint); min-width: 58px; text-align: right; }
+  .zone.callz .zval { color: var(--red); } .zone.putz .zval { color: var(--green); }
+  .zone.now { background: var(--bg-elev-2); border-radius: var(--r-sm); padding: 10px 12px; border-bottom: none; }
+  .sigrow { display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; }
+  .sigrow:last-child { border-bottom: none; }
+  .sigrow .s-side { font-weight: 600; } .sigrow .s-side.call { color: var(--red); } .sigrow .s-side.put { color: var(--green); }
+  .sigrow .s-meta { color: var(--ink-faint); font-size: 11px; }
+
+  /* ─────────────────────────── Mobile polish ─────────────────────────── */
+  html { -webkit-text-size-adjust: 100%; }
+  button, a, .nav button, .tog, .btn { -webkit-tap-highlight-color: transparent; }
+  @media (pointer: coarse) {
+    .icon-btn { width: 42px; height: 42px; font-size: 16px; }
+    .nav button { padding: 9px 15px; }
+    .btn { padding: 10px 15px; }
+    .x { font-size: 26px; padding: 4px 12px; }
+    .seg button { padding: 10px; }
+    /* iOS zooms the page when focusing an input < 16px — pin to 16 on touch */
+    .inp, select.inp, input, textarea, select { font-size: 16px; }
+  }
+  @media (max-width: 420px) {
+    .cal-row, .cal-h { grid-template-columns: 76px 44px 1fr 50px 50px; gap: 6px; font-size: 11px; }
+  }
+  @media (max-width: 560px) {
+    .scrim { padding: 10px; }
+    .sheet { margin: 6px auto 24px; }
+  }
 </style>
 </head>
 <body>

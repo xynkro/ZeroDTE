@@ -731,6 +731,15 @@ async def reconcile_endpoint():
     return await rec.reconcile(orch)
 
 
+@app.get("/api/signals")
+async def get_signals():
+    """The 'brain' cockpit payload — latest signal + tonight's sell zones + live
+    open positions (with TP/stop targets + the daily time-stop). The frontend
+    Signals view ticks the countdown / P&L off these client-side."""
+    from . import signals_view
+    return signals_view.assemble(orch)
+
+
 @app.get("/api/alpaca/status")
 async def alpaca_status():
     """Alpaca paper trading status."""

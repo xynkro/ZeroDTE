@@ -1886,8 +1886,10 @@
     ws.onerror = () => setConn('err', 'error');
     ws.onclose = () => { setConn('err', 'disconnected; retrying…'); setTimeout(connect, 3000); };
   }
-  fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
-  connect();
+  if (!STATIC_MODE) {
+    fetch(API_BASE + '/api/state').then(r => r.json()).then(renderState).catch(()=>{});
+    connect();
+  }
 
   // ── Monitor tab ─────────────────────────────────────────────────────
   let _monitorDebounce = null;

@@ -206,6 +206,22 @@ class Settings:
     # high TP is the profitable half of the parameter space.
     DIRECTIONAL_TP_TARGET: float = _f("DIRECTIONAL_TP_TARGET", 90.0)
 
+    # ── Staged quant-audit controls (2026-06) · default = CURRENT behaviour ──
+    # These are wired but OFF, so flipping the env var is the entire change. See
+    # docs/ZeroDTE_Quant_Audit.pptx + docs/FLAWS.md for the rationale.
+    #
+    # Suppress the CALL book. The validated +$5,479 edge is ~96% PUT-selling
+    # (147 puts +$5,357 vs 6 calls +$121). The live call book (sell-calls-on-rallies)
+    # is counter-trend in an up-drift and statistically unsupported. ON = stand
+    # aside on every sell-call signal; keep selling puts.
+    DIRECTIONAL_SUPPRESS_CALLS: bool = _b("DIRECTIONAL_SUPPRESS_CALLS", False)
+    # Evaluate exits on CLOSED bars only (mirrors honest_backtest's worst-first
+    # ordering). The live feed re-dispatches the developing 5m bar every ~60s, so
+    # evaluating exits on it can book intra-bar TPs the backtest would never see
+    # (phantom wins). ON = defer exit evaluation to the first dispatch of the NEXT
+    # bar. NOTE: validate session-end (time-stop / EOD) behaviour before enabling.
+    EXIT_ON_CLOSED_BAR_ONLY: bool = _b("EXIT_ON_CLOSED_BAR_ONLY", False)
+
     # Dynamic stop-loss ladder — DISABLED. The honest backtest showed the ladder
     # ratchets you out of winners that recover; no-ladder beat ladder at every
     # delta. Only the initial -100% loss stop + time stop remain.

@@ -544,7 +544,7 @@ class Orchestrator:
         self._update_mid_session_volatility(bar)
         await self._refresh_state(bar, new_signals=signals)
         # Check open wave trades for TP / STOP / TIME / EOD exits → fire EXIT alerts
-        self._check_open_wave_trades(bar)
+        self._dispatch_exit_check(bar)
         self._maybe_ping_midday_status(bar)
         await self._maybe_scan_flow(bar)
         await self._maybe_build_eod_ic(bar)
@@ -1888,6 +1888,14 @@ class Orchestrator:
         if settings.TRADING_HALTED:
             return None, "skipped: trading HALTED (kill switch active)"
 
+        # ── GATE 0b: Directional book control (staged, default OFF) ──
+        # The validated edge is ~96% PUT-selling; the live call book is counter-trend
+        # in an up-drift and statistically unsupported. When suppressed, stand aside
+        # on call-spread signals and keep selling puts. See docs/FLAWS.md.
+        if settings.DIRECTIONAL_SUPPRESS_CALLS and ev.side == "sell_call_cs":
+            log.info("Signal gated [suppress_calls]: call book disabled by config")
+            return None, "skipped: call-selling suppressed (DIRECTIONAL_SUPPRESS_CALLS)"
+
         # ── GATE 1: Confluence threshold ──
         min_score = settings.WAVE_MIN_CONFLUENCE_SCORE
         if ev.confluence_score < min_score:
@@ -2066,6 +2074,25 @@ class Orchestrator:
                  trade_no, ev.side, sp.instrument, sp.short_strike, sp.long_strike,
                  sp.estimated_credit_dollars or 0.0, pt.contracts, sizing_note)
         return pt, sizing_note
+
+    def _dispatch_exit_check(self, bar: Bar):
+        """Run the per-bar exit check, optionally gated to CLOSED bars.
+
+        Default: evaluate on every dispatch (current behaviour). With
+        EXIT_ON_CLOSED_BAR_ONLY: the live feed re-dispatches the developing 5m bar
+        every ~60s; evaluating exits on it can book intra-bar TPs that the
+        worst-first backtest would never see. We therefore evaluate exits for a bar
+        only once a strictly NEWER bar timestamp arrives — i.e. on the now-CLOSED
+        previous bar — mirroring honest_backtest. (Caveat to validate before
+        enabling: the final RTH bar's exits defer to the next session unless caught
+        by the EOD settlement path.)"""
+        if not settings.EXIT_ON_CLOSED_BAR_ONLY:
+            self._check_open_wave_trades(bar)
+            return
+        prev = getattr(self, "_pending_exit_bar", None)
+        if prev is not None and getattr(bar, "time", None) and bar.time > prev.time:
+            self._check_open_wave_trades(prev)   # previous bar is now closed
+        self._pending_exit_bar = bar
 
     def _check_open_wave_trades(self, bar: Bar):
         """Per-bar exit check across all open paper trades.

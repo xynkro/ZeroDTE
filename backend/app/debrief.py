@@ -17,9 +17,20 @@ from __future__ import annotations
 BACKTEST_MAX_DD = 1581.0
 BACKTEST_TRADES = 153
 BACKTEST_TOTAL = 5479.0
+# Share of the validated edge that comes from PUT-selling (147 puts +$5,357 vs
+# 6 calls +$121 over 3yr). The live book must be judged per-side against this.
+BACKTEST_PUT_SHARE = 96
+# Cost-sensitivity of the validated edge (round-trip $/spread, SPX) — the edge
+# sits inside the cost error bar, so report the curve, not one number.
+COST_CURVE = {25: 5479, 35: 3949, 45: 0, 60: 124}
 # Realized 5m-return stdev below this = a calm "grind" tape (worst case for
 # selling premium against a trend); above = genuinely moving.
 LOW_VOL_STD = 0.0008
+
+
+def _money(v) -> str:
+    v = v or 0.0
+    return (f"+${v:.0f}" if v >= 0 else f"−${abs(v):.0f}")
 
 
 def _classify(t) -> dict:
@@ -59,6 +70,34 @@ def _classify(t) -> dict:
     }
 
 
+def _book_split(ds) -> dict:
+    """Per-side (put vs call) CUMULATIVE live economics — the single most important
+    cut. The validated edge is ~96% puts; if the live book skews to calls, the
+    headline +$5,479 does not support it."""
+    split = {}
+    for key, label in (("sell_put_cs", "put"), ("sell_call_cs", "call")):
+        ts = [t for t in ds if t.side == key]
+        pnls = [t.pnl or 0.0 for t in ts]
+        w = sum(1 for p in pnls if p > 0)
+        split[label] = {
+            "n": len(ts), "wins": w,
+            "win_rate": round(w / len(ts) * 100, 1) if ts else None,
+            "total_pnl": round(sum(pnls), 2),
+            "mean_pnl": round(sum(pnls) / len(ts), 2) if ts else None,
+        }
+    nc, npu = split["call"]["n"], split["put"]["n"]
+    note = None
+    if nc + npu > 0:
+        call_share = round(nc / (nc + npu) * 100)
+        if call_share >= 50 and nc >= 2:
+            note = (f"⚠️ {call_share}% of live trades are CALLS, but the validated edge is "
+                    f"~{BACKTEST_PUT_SHARE}% PUTS — you are trading the unproven side.")
+        elif npu > nc:
+            note = f"put-led book ({npu}P/{nc}C) — aligned with the validated put edge."
+    split["note"] = note
+    return split
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""
@@ -75,6 +114,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
             "flags": {}, "verdict": "No closed trades yet — nothing to debrief.",
             "discipline": f"Validated on {BACKTEST_TRADES} trades. You have 0.",
             "cum_pnl": cum_all, "dd_vs_backtest_pct": dd_pct,
+            "book_split": _book_split(ds),
         }
 
     date = date or days[-1]
@@ -137,6 +177,8 @@ def build_debrief(trades, date: str | None = None) -> dict:
         "verdict": verdict,
         "discipline": discipline,
         "available_dates": days,
+        # Cumulative put-book vs call-book economics (quant-audit: the headline cut).
+        "book_split": _book_split(ds),
     }
 
 
@@ -157,6 +199,13 @@ def format_debrief_telegram(d: dict) -> str:
         lines.append(f"⚠️ {fl['directional_skew']}")
     if fl.get("vol_context"):
         lines.append(f"vol: {fl['vol_context']}")
+    bs = d.get("book_split") or {}
+    pu, ca = bs.get("put") or {}, bs.get("call") or {}
+    if (pu.get("n") or 0) + (ca.get("n") or 0) > 0:
+        lines.append(f"book: PUT {pu.get('n',0)} ({_money(pu.get('total_pnl'))}) · "
+                     f"CALL {ca.get('n',0)} ({_money(ca.get('total_pnl'))})")
+        if bs.get("note"):
+            lines.append(bs["note"])
     lines.append(f"verdict: {d['verdict']}")
     lines.append(d["discipline"])
     return "\n".join(lines)

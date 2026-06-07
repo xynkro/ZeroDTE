@@ -122,6 +122,15 @@ class PaperTrade(BaseModel):
     # Broker order tracking (Alpaca paper trading)
     alpaca_order_id: str | None = None
     broker_status: str | None = None  # "submitted" / "filled" / "shadow" / "error"
+    # Wall-clock entry time (distinct from fired_at = the BAR timestamp). Lets us
+    # detect backfill/restart phantom trades whose bar time is stale. (quant-audit)
+    opened_wall_clock: str | None = None
+    # Broker-REALIZED economics from actual Alpaca fills — populated separately from
+    # the Black-Scholes model P&L so the validation can be judged on real fills, not
+    # the model grading itself. None until the fill-read hook is wired live. The
+    # existing `pnl` field remains the MODEL pnl. (quant-audit: critical flaw #2)
+    broker_realized_credit: float | None = None  # net entry credit from fills
+    broker_realized_pnl: float | None = None      # realized $ from entry+exit fills
     # Black-Scholes pricing state (directional_spread, DIRECTIONAL_PNL_MODEL=bs).
     # Per-5m realized vol fixed at entry; check_exit reprices the spread each bar
     # with shrinking time-to-expiry instead of the underlying-move proxy.

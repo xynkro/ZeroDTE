@@ -1,245 +1,236 @@
 //@version=6
-// ZeroDTE Directional Spread Tracker
-// Mirrors the live backend (directional_spread_manager.py, DIRECTIONAL_PNL_MODEL=bs):
-//   - Same entry signals as predictor.py (Stoch reversal cross + EMA10/30 trend
-//     filter + VWAP gate + prime-window/cooldown + non-volatile regime).
-//   - Strikes placed at TRUE Black-Scholes delta using intraday realized vol.
-//   - Management = high-TP / no-ladder THETA HARVEST (the honest re-validation
-//     winner): hold the spread, take profit at TP% of credit, hard loss-stop when
-//     the spread doubles, time-stop 30m before close, else settle at expiry.
-//   - Spread repriced each bar with Black-Scholes (shrinking time-to-expiry).
-// On-chart P&L is an estimate; the backend + Telegram carry the authoritative fills.
-indicator("ZeroDTE Directional Spread", overlay=true, max_labels_count=500, max_lines_count=500)
+// =============================================================================
+// ZeroDTE — BACKEND MIRROR (directional 0DTE credit spread)
+// =============================================================================
+// This indicator is a FAITHFUL PORT of the backend "boss" (predictor.run_backtest
+// + orchestrator confluence/VWAP gates + bs_pricing 30Δ strike placement).
+// Goal: whatever the backend tells Telegram, TradingView shows the SAME signal
+// and the SAME strike targets. Nothing here is re-invented — every constant
+// mirrors backend/app/{predictor.py, config.py, bs_pricing.py, directional_spread_manager.py}.
+//
+// PARITY SCOPE (per Caspar): the macro-blackout calendar lives in Telegram (it
+// tells you when NOT to trade). TradingView's job is the SIGNAL + the STRIKE
+// VALUES to target. The only backend input TV cannot see is the Finnhub econ
+// calendar; an optional manual "mute" toggle covers known event days.
+//
+// USE ON: SPX, 5-minute chart, America/New_York. (0DTE same-day expiry.)
+// =============================================================================
+indicator("ZeroDTE Backend Mirror", overlay=true, max_labels_count=500, max_lines_count=500)
 
-// Inputs (mirror .env)
-shortDelta = input.int(30, "Short delta", minval=5, maxval=45, step=5, group="Strategy")
-wing       = input.float(10.0, "Wing width ($)", group="Strategy")
-premMult   = input.float(1.2, "IV / realized-vol premium", group="Strategy")
-tpPct      = input.float(90.0, "Take-profit (% of credit)", group="Strategy")
-costRT     = input.float(25.0, "Round-trip cost ($/spread)", group="Strategy")
-showTable  = input.bool(true, "Show stats table", group="Display")
-showLines  = input.bool(true, "Draw strike lines", group="Display")
+// ── Inputs (defaults == backend LOCKED PARAMETERS) ──────────────────────────
+grpSig = "Signal (backend-locked)"
+iObsMin       = input.int(15,   "Observation window (min)",        group=grpSig, minval=5)
+iVolMult      = input.float(1.5,"Volatile regime mult (obsRange/ATR_D1)", group=grpSig, step=0.1)
+iCooldown     = input.int(6,    "Cooldown bars (same direction)",  group=grpSig, minval=0)
+iCutoffH      = input.int(14,   "No-new-entry hour (ET)",          group=grpSig)
+iCutoffM      = input.int(0,    "No-new-entry minute (ET)",        group=grpSig)
+iStochHi      = input.int(80,   "Stoch high thr",                  group=grpSig)
+iStochLo      = input.int(20,   "Stoch low thr",                   group=grpSig)
+iTrendThr     = input.float(0.05,"Trend EMA-spread thr (%)",       group=grpSig, step=0.01)
+iConfMin      = input.int(3,    "Min confluence (of 4)",           group=grpSig, minval=0, maxval=4)
+iRsiHi        = input.float(65, "Conf RSI overbought",             group=grpSig)
+iRsiLo        = input.float(35, "Conf RSI oversold",               group=grpSig)
+iNearEmaPct   = input.float(0.30,"Conf near-EMA10 max ext (%)",    group=grpSig, step=0.01)
+iPrimeStartH  = input.int(10,   "Prime start hour (ET)",           group=grpSig)
+iPrimeStartM  = input.int(30,   "Prime start min (ET)",            group=grpSig)
+iPrimeEndH    = input.int(13,   "Prime end hour (ET)",             group=grpSig)
+iPrimeEndM    = input.int(0,    "Prime end min (ET)",              group=grpSig)
+iVwapGate     = input.bool(true,"VWAP alignment gate (mandatory)", group=grpSig)
+iMuteToday    = input.bool(false,"Macro blackout today (mute signals)", group=grpSig)
 
-// Time / session (ET)
-etMin     = hour(time, "America/New_York") * 60 + minute(time, "America/New_York")
-OPEN_MIN  = 570
-CLOSE_MIN = 960
-OBS_END   = OPEN_MIN + 15
-PRIME_S   = 10 * 60 + 30
-PRIME_E   = 13 * 60
-NO_NEW    = 14 * 60 + 30
-TSTOP_MIN = CLOSE_MIN - 30
-newDay    = ta.change(time("D")) != 0
+grpStk = "Strikes (Black-Scholes 30D)"
+iWing         = input.float(10.0,"Wing ($, SPX)",                  group=grpStk)
+iPremiumMult  = input.float(1.20,"Premium mult (IV/RV)",           group=grpStk, step=0.05)
+iTpPct        = input.float(90,  "TP % of credit",                 group=grpStk)
 
-// Black-Scholes (tv = sigma*sqrt(T))
+// ── Normal CDF (Abramowitz & Stegun 7.1.26) — for BS credit only ────────────
 ncdf(x) =>
     t = 1.0 / (1.0 + 0.2316419 * math.abs(x))
     dd = 0.3989422804014327 * math.exp(-x * x / 2.0)
     p = dd * t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
     x >= 0 ? 1.0 - p : p
 
-bsCall(S, K, tv) =>
+callPrice(S, K, tv) =>
     out = 0.0
     if tv <= 0.0
         out := math.max(0.0, S - K)
     else
         d1 = (math.log(S / K) + 0.5 * tv * tv) / tv
-        out := S * ncdf(d1) - K * ncdf(d1 - tv)
+        d2 = d1 - tv
+        out := S * ncdf(d1) - K * ncdf(d2)
     out
 
-bsPut(S, K, tv) =>
+putPrice(S, K, tv) =>
     out = 0.0
     if tv <= 0.0
         out := math.max(0.0, K - S)
     else
         d1 = (math.log(S / K) + 0.5 * tv * tv) / tv
-        out := K * ncdf(-(d1 - tv)) - S * ncdf(-d1)
+        d2 = d1 - tv
+        out := K * ncdf(-d2) - S * ncdf(-d1)
     out
 
-spreadVal(isCall, S, sK, lK, tv) =>
-    isCall ? math.max(0.0, bsCall(S, sK, tv) - bsCall(S, lK, tv)) : math.max(0.0, bsPut(S, sK, tv) - bsPut(S, lK, tv))
+// ── ET clock ────────────────────────────────────────────────────────────────
+TZ = "America/New_York"
+etH = hour(time, TZ)
+etM = minute(time, TZ)
+minOfDay = etH * 60 + etM
+OPEN_MIN = 9 * 60 + 30                 // 09:30 ET
+minsSinceOpen = minOfDay - OPEN_MIN
+isRTH = (minOfDay >= OPEN_MIN) and (minOfDay < 16 * 60)
 
-zAbs = shortDelta <= 5 ? 1.645 : shortDelta <= 10 ? 1.282 : shortDelta <= 15 ? 1.036 : shortDelta <= 20 ? 0.842 : shortDelta <= 25 ? 0.674 : shortDelta <= 30 ? 0.524 : shortDelta <= 35 ? 0.385 : 0.253
+// Session change detector (new ET calendar day OR intraday wrap)
+newDay = ta.change(time("D")) != 0
+isNewSession = na(minsSinceOpen[1]) ? true : ((minsSinceOpen < minsSinceOpen[1]) or newDay)
 
-// Vol + periods to expiry.
-// SESSION-ANCHORED realized vol (matches backend _session_realized_std): use only
-// today's intra-session log returns, EXCLUDING the overnight-gap return (the first
-// bar of the session). A rolling cross-session window (ta.stdev(logret,20)) pulls in
-// overnight gaps + the prior session's volatility, which inflated vol and pushed the
-// strikes ~5x too far OTM ("$100-wide" bug, May 2026).
-logret    = math.log(close / close[1])
-var float sumR  = 0.0
-var float sumR2 = 0.0
-var int   nR    = 0
-if newDay
-    sumR := 0.0
-    sumR2 := 0.0
-    nR := 0          // drop the overnight-gap return (this bar's logret)
-else
-    sumR  := sumR + logret
-    sumR2 := sumR2 + logret * logret
-    nR    := nR + 1
-rv5       = nR >= 5 ? math.sqrt(math.max(0.0, (sumR2 - sumR * sumR / nR) / (nR - 1))) : na
-periodsRem = math.max((CLOSE_MIN - etMin) / 5.0, 0.0)
-tvNow     = rv5 * math.sqrt(periodsRem) * premMult
+// ── Indicators (backend-exact) ──────────────────────────────────────────────
+rsi   = ta.rsi(close, 14)
+k     = ta.stoch(close, high, low, 14)
+d     = ta.sma(k, 3)
+ema10 = ta.ema(close, 10)
+ema30 = ta.ema(close, 30)
 
-// Indicators (match predictor.py)
-k      = ta.stoch(close, high, low, 14)
-d      = ta.sma(k, 3)
-ema10  = ta.ema(close, 10)
-ema30  = ta.ema(close, 30)
-spreadPct = (ema10 - ema30) / ema30 * 100.0
-trendUp   = spreadPct > 0.05
-trendDn   = spreadPct < -0.05
-rsi    = ta.rsi(close, 14)
-vwap   = ta.vwap(hlc3)
-wvf    = (ta.highest(close, 22) - low) / ta.highest(close, 22) * 100.0
-wvfSpike = wvf > (ta.sma(wvf, 22) + 2.0 * ta.stdev(wvf, 22))
-
-var float obsHi = na
-var float obsLo = na
-if newDay
-    obsHi := na
-    obsLo := na
-if etMin >= OPEN_MIN and etMin < OBS_END
-    obsHi := na(obsHi) ? high : math.max(obsHi, high)
-    obsLo := na(obsLo) ? low : math.min(obsLo, low)
+// Prior-day ATR(14) on the Daily timeframe (no lookahead) — regime input
 atrD1 = request.security(syminfo.tickerid, "D", ta.atr(14)[1], lookahead=barmerge.lookahead_off)
-obsRange = (not na(obsHi) and not na(obsLo)) ? obsHi - obsLo : na
-regimeVol = (not na(obsRange) and not na(atrD1) and atrD1 > 0) ? (obsRange / atrD1 > 1.5) : false
 
-inPrime = etMin >= PRIME_S and etMin <= PRIME_E
-crossDownHi = k[1] > d[1] and k < d and k[1] > 80
-crossUpLo   = k[1] < d[1] and k > d and k[1] < 20
+// Williams VIX Fix (period 22, 2-sigma BB band — backend uses population sigma)
+hc22     = ta.highest(close, 22)
+wvf      = (hc22 - low) / hc22 * 100.0
+wvfMid   = ta.sma(wvf, 22)
+wvfSd    = ta.stdev(wvf, 22, true)                      // biased=true == population (ddof=0)
+wvfSpike = wvf > (wvfMid + 2.0 * wvfSd)
 
-callRsi = rsi > 65
-putRsi  = rsi < 35
-nearEma = math.abs(close - ema10) / close * 100.0 < 0.30
-confCall = (callRsi ? 1 : 0) + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
-confPut  = (putRsi ? 1 : 0)  + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
+// EMA-spread trend (counter-trend suppression)
+spreadPct = (ema10 - ema30) / ema30 * 100.0
+trendUp   = spreadPct >  iTrendThr
+trendDown = spreadPct < -iTrendThr
 
-var int lastCall = -100
-var int lastPut  = -100
-callCoolOK = bar_index - lastCall >= 6
-putCoolOK  = bar_index - lastPut >= 6
+// ── Observation window + volatile-regime lock (per session) ─────────────────
+var float obsHigh = na
+var float obsLow  = na
+var bool  obsDone = false
+var bool  isVolatile = false
+if isNewSession
+    obsHigh := na
+    obsLow  := na
+    obsDone := false
+    isVolatile := false
+inObs = isRTH and (minsSinceOpen < iObsMin)
+if inObs
+    obsHigh := na(obsHigh) ? high : math.max(obsHigh, high)
+    obsLow  := na(obsLow)  ? low  : math.min(obsLow,  low)
+// First post-obs bar: finalize regime once.
+if isRTH and (minsSinceOpen >= iObsMin) and (not obsDone) and (not na(obsHigh)) and (not na(atrD1)) and atrD1 > 0
+    obsRange = obsHigh - obsLow
+    isVolatile := (obsRange / atrD1) > iVolMult
+    obsDone := true
 
-canEnter = etMin >= OBS_END and etMin < NO_NEW and not regimeVol
-callSig = canEnter and crossDownHi and not trendUp and callCoolOK and close > vwap and confCall >= 3
-putSig  = canEnter and crossUpLo  and not trendDn and putCoolOK  and close < vwap and confPut  >= 3
+// ── Session-anchored VWAP + realized 5m vol ─────────────────────────────────
+// VWAP mirrors backend _compute_session_vwap EXACTLY: typical = HLC3, weight =
+// max(volume or 1, 1). SPX index has no volume → weight=1 → cumulative HLC3 mean
+// (TWAP). realized_std mirrors _session_realized_std (>=5 session closes).
+var float sSum   = 0.0
+var float sSumSq = 0.0
+var int   sN     = 0
+var int   rthBar = 0
+var float cumPV  = 0.0
+var float cumV   = 0.0
+if isNewSession
+    sSum := 0.0
+    sSumSq := 0.0
+    sN := 0
+    rthBar := 0
+    cumPV := 0.0
+    cumV := 0.0
+if isRTH
+    rthBar += 1
+    typ = (high + low + close) / 3.0
+    wv = math.max(nz(volume, 1), 1)
+    cumPV += typ * wv
+    cumV  += wv
+    if rthBar >= 2 and close[1] > 0 and close > 0          // skip overnight gap
+        lr = math.log(close / close[1])
+        sSum   += lr
+        sSumSq += lr * lr
+        sN     += 1
+vwap = cumV > 0 ? cumPV / cumV : na
+realizedStd = (rthBar >= 5 and sN >= 2) ? math.sqrt((sSumSq - sSum * sSum / sN) / (sN - 1)) : na
 
-// Open-trade state (arrays — mutable inside functions; scalars are not)
-var array<bool>  tActive = array.new<bool>()
-var array<bool>  tIsCall = array.new<bool>()
-var array<float> tShort  = array.new<float>()
-var array<float> tLong   = array.new<float>()
-var array<float> tCredit = array.new<float>()
-var array<float> tPeak   = array.new<float>()
-var array<line>  tLine   = array.new<line>()
+// ── Raw trigger: stochastic reversal cross (backend run_backtest) ───────────
+crossDownFromHigh = (k[1] > d[1]) and (k < d) and (k[1] > iStochHi)   // -> SELL CALL
+crossUpFromLow    = (k[1] < d[1]) and (k > d) and (k[1] < iStochLo)   // -> SELL PUT
 
-// Counters held in 1-element arrays so functions can mutate them
-var array<int>   gCnt = array.new<int>(3, 0)    // [signals, wins, losses]
-var array<float> gPnl = array.new<float>(1, 0.0)
+cutoffMin = iCutoffH * 60 + iCutoffM
+afterCutoff = minOfDay >= cutoffMin
 
-openTrade(isCall) =>
-    sK = isCall ? close * math.exp(0.5 * tvNow * tvNow + zAbs * tvNow) : close * math.exp(0.5 * tvNow * tvNow - zAbs * tvNow)
-    lK = isCall ? sK + wing : sK - wing
-    creditPS = spreadVal(isCall, close, sK, lK, tvNow)
-    if creditPS > 0.02 and periodsRem > 0
-        creditUSD = creditPS * 100.0
-        array.push(tActive, true)
-        array.push(tIsCall, isCall)
-        array.push(tShort, sK)
-        array.push(tLong, lK)
-        array.push(tCredit, creditUSD)
-        array.push(tPeak, 0.0)
-        ln = showLines ? line.new(bar_index, sK, bar_index + 12, sK, color=isCall ? color.red : color.green, width=1, style=line.style_dashed) : na
-        array.push(tLine, ln)
-        n = array.get(gCnt, 0) + 1
-        array.set(gCnt, 0, n)
-        lbl = (isCall ? "SELL CALL " : "SELL PUT ") + str.tostring(shortDelta) + "D #" + str.tostring(n) + "\n$" + str.tostring(sK, "#.0") + " cr $" + str.tostring(creditUSD, "#")
-        label.new(bar_index, isCall ? high : low, lbl, style=isCall ? label.style_label_down : label.style_label_up, color=isCall ? color.new(color.red, 20) : color.new(color.green, 20), textcolor=color.white, size=size.small)
+// Cooldown (bars since last same-direction signal)
+var int lastCallBar = na
+var int lastPutBar  = na
+callCoolOk = na(lastCallBar) or (bar_index - lastCallBar) >= iCooldown
+putCoolOk  = na(lastPutBar)  or (bar_index - lastPutBar)  >= iCooldown
 
-if callSig
-    openTrade(true)
-    lastCall := bar_index
-if putSig
-    openTrade(false)
-    lastPut := bar_index
+postObs = isRTH and (minsSinceOpen >= iObsMin)
 
-closeTrade(i, exitPct, isWin, reason) =>
-    creditUSD = array.get(tCredit, i)
-    pnl = creditUSD * (exitPct / 100.0) - costRT
-    array.set(gPnl, 0, array.get(gPnl, 0) + pnl)
-    array.set(gCnt, isWin ? 1 : 2, array.get(gCnt, isWin ? 1 : 2) + 1)
-    array.set(tActive, i, false)
-    ln = array.get(tLine, i)
-    if not na(ln)
-        line.set_x2(ln, bar_index)
-    isCall = array.get(tIsCall, i)
-    txt = (isWin ? "WIN " : "LOSS ") + reason + "\n" + (pnl >= 0 ? "+$" : "-$") + str.tostring(math.abs(pnl), "#")
-    label.new(bar_index, isCall ? low : high, txt, style=isCall ? label.style_label_up : label.style_label_down, color=isWin ? color.new(color.teal, 25) : color.new(color.maroon, 25), textcolor=color.white, size=size.tiny)
+// ── Confluence (4 scored quality factors; macro/VIX are gates in backend) ───
+inPrime = (minOfDay >= (iPrimeStartH * 60 + iPrimeStartM)) and (minOfDay <= (iPrimeEndH * 60 + iPrimeEndM))
+nearEma = (math.abs(close - ema10) / close * 100.0) < iNearEmaPct
 
-if array.size(tActive) > 0
-    for i = 0 to array.size(tActive) - 1
-        if array.get(tActive, i)
-            isCall = array.get(tIsCall, i)
-            sK = array.get(tShort, i)
-            lK = array.get(tLong, i)
-            creditUSD = array.get(tCredit, i)
-            creditPS = creditUSD / 100.0
-            maxLossPct = (creditPS - wing) / creditPS * 100.0
-            worstPx = isCall ? high : low
-            bestPx  = isCall ? low : high
-            if etMin >= CLOSE_MIN
-                vEod = spreadVal(isCall, close, sK, lK, 0.0)
-                ep = math.max(maxLossPct, math.min(100.0, (creditPS - vEod) / creditPS * 100.0))
-                closeTrade(i, ep, ep > 0, "EOD")
-            else
-                vW = spreadVal(isCall, worstPx, sK, lK, tvNow)
-                vB = spreadVal(isCall, bestPx, sK, lK, tvNow)
-                pkW = math.max(maxLossPct, math.min(100.0, (creditPS - vW) / creditPS * 100.0))
-                pkB = math.max(maxLossPct, math.min(100.0, (creditPS - vB) / creditPS * 100.0))
-                if pkB > array.get(tPeak, i)
-                    array.set(tPeak, i, pkB)
-                breached = isCall ? worstPx >= sK : worstPx <= sK
-                if pkW <= -100.0
-                    closeTrade(i, pkW, false, breached ? "BREACH" : "STOP2x")
-                else if pkB >= tpPct
-                    closeTrade(i, tpPct, true, "TP" + str.tostring(tpPct, "#"))
-                else if etMin >= TSTOP_MIN
-                    vC = spreadVal(isCall, close, sK, lK, tvNow)
-                    ep = math.max(maxLossPct, math.min(100.0, (creditPS - vC) / creditPS * 100.0))
-                    closeTrade(i, ep, ep > 0, "T-30m")
+confCall = (rsi > iRsiHi ? 1 : 0) + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
+confPut  = (rsi < iRsiLo ? 1 : 0) + (wvfSpike ? 1 : 0) + (nearEma ? 1 : 0) + (inPrime ? 1 : 0)
 
-// Stats table
-var table tbl = table.new(position.top_right, 2, 8, border_width=1, frame_color=color.gray, frame_width=1)
-if showTable and barstate.islast
-    nSig = array.get(gCnt, 0)
-    nWin = array.get(gCnt, 1)
-    nLos = array.get(gCnt, 2)
-    pnlSum = array.get(gPnl, 0)
-    denom = nWin + nLos > 0 ? nWin + nLos : 1
-    wr = 100.0 * nWin / denom
-    nOpen = 0
-    if array.size(tActive) > 0
-        for i = 0 to array.size(tActive) - 1
-            nOpen += array.get(tActive, i) ? 1 : 0
-    table.cell(tbl, 0, 0, "ZeroDTE Directional", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
-    table.cell(tbl, 1, 0, "30D TP90 theta", text_color=color.white, bgcolor=color.new(color.blue, 0), text_size=size.small)
-    table.cell(tbl, 0, 1, "Strategy", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 1, str.tostring(shortDelta) + "D / $" + str.tostring(wing, "#") + " / no-ladder", text_color=color.white, text_size=size.small)
-    table.cell(tbl, 0, 2, "Signals", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 2, str.tostring(nSig), text_color=color.white, text_size=size.small)
-    table.cell(tbl, 0, 3, "Closed W / L", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 3, str.tostring(nWin) + " / " + str.tostring(nLos), text_color=color.white, text_size=size.small)
-    table.cell(tbl, 0, 4, "Win rate", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 4, str.tostring(wr, "#.0") + "%", text_color=wr >= 60 ? color.lime : color.orange, text_size=size.small)
-    table.cell(tbl, 0, 5, "Est P&L", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 5, (pnlSum >= 0 ? "+$" : "-$") + str.tostring(math.abs(pnlSum), "#"), text_color=pnlSum >= 0 ? color.lime : color.red, text_size=size.small)
-    table.cell(tbl, 0, 6, "Open now", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 6, str.tostring(nOpen), text_color=color.white, text_size=size.small)
-    table.cell(tbl, 0, 7, "P&L truth", text_color=color.silver, text_size=size.small)
-    table.cell(tbl, 1, 7, "backend + Telegram", text_color=color.aqua, text_size=size.small)
+// Failsafe-open when VWAP unavailable — matches backend _check_vwap_for_side.
+vwapCallOk = (not iVwapGate) or na(vwap) or (close > vwap)
+vwapPutOk  = (not iVwapGate) or na(vwap) or (close < vwap)
 
-plotshape(callSig, "Sell Call signal", shape.triangledown, location.abovebar, color.red, size=size.tiny)
-plotshape(putSig, "Sell Put signal", shape.triangleup, location.belowbar, color.green, size=size.tiny)
+// ── Full signal stack (mirrors what the boss actually FIRES -> Telegram) ────
+baseOk = postObs and (not isVolatile) and (not afterCutoff) and (not iMuteToday)
+fireCall = baseOk and crossDownFromHigh and callCoolOk and (not trendUp)   and (confCall >= iConfMin) and vwapCallOk
+firePut  = baseOk and crossUpFromLow    and putCoolOk  and (not trendDown) and (confPut  >= iConfMin) and vwapPutOk
+if fireCall
+    lastCallBar := bar_index
+if firePut
+    lastPutBar := bar_index
+
+// ── Strike placement: Black-Scholes 30D (closed form) + credit ──────────────
+Z30 = 0.5244005127416016                                  // |inverseNormal(0.30)|
+periodsLeft = math.max((16 * 60) - minOfDay, 0) / 5.0
+tv0 = na(realizedStd) ? na : realizedStd * math.sqrt(periodsLeft) * iPremiumMult
+
+// ── Plot signals + strike targets ───────────────────────────────────────────
+plotSignal(isCall) =>
+    S = close
+    haveVol = (not na(tv0)) and tv0 > 0
+    float sk = na
+    float lk = na
+    float creditUsd = na
+    if haveVol
+        sk := isCall ? S * math.exp(0.5 * tv0 * tv0 + Z30 * tv0) : S * math.exp(0.5 * tv0 * tv0 - Z30 * tv0)
+        lk := isCall ? sk + iWing : sk - iWing
+        cps = isCall ? math.max(0.0, callPrice(S, sk, tv0) - callPrice(S, lk, tv0)) : math.max(0.0, putPrice(S, sk, tv0) - putPrice(S, lk, tv0))
+        creditUsd := cps * 100.0
+    else
+        sk := isCall ? S * (1 + 0.35 / 100.0) : S * (1 - 0.35 / 100.0)   // fallback: 30D ~ 0.35% OTM
+        lk := isCall ? sk + iWing : sk - iWing
+    tpBuyback = na(creditUsd) ? na : creditUsd * (1 - iTpPct / 100.0)
+    col = isCall ? color.new(color.red, 0) : color.new(color.green, 0)
+    txt = (isCall ? "SELL CALL" : "SELL PUT") + "\nshort " + str.tostring(sk, "#.##") + " / long " + str.tostring(lk, "#.##") + (na(creditUsd) ? "\ncredit n/a (warming)" : "\nest credit $" + str.tostring(creditUsd, "#") + "\nTP " + str.tostring(iTpPct, "#") + "% (buy back ~$" + str.tostring(tpBuyback, "#") + ")\nSL ~-$" + str.tostring(creditUsd, "#") + " (spread 2x) T-30m")
+    label.new(bar_index, isCall ? high : low, txt, style=isCall ? label.style_label_down : label.style_label_up, color=col, textcolor=color.white, size=size.small, yloc=isCall ? yloc.abovebar : yloc.belowbar)
+    line.new(bar_index, sk, bar_index + 12, sk, color=col, width=2, style=line.style_solid)
+    line.new(bar_index, lk, bar_index + 12, lk, color=color.new(col, 55), width=1, style=line.style_dashed)
+
+if fireCall
+    plotSignal(true)
+if firePut
+    plotSignal(false)
+
+// ── Visual context ──────────────────────────────────────────────────────────
+plot(vwap, "VWAP", color=color.new(color.orange, 30))
+plot(ema10, "EMA10", color=color.new(color.aqua, 40))
+plot(ema30, "EMA30", color=color.new(color.blue, 40))
+bgcolor(isVolatile and isRTH ? color.new(color.gray, 88) : na, title="Volatile regime (stand aside)")
+plotshape(fireCall, "Sell Call", shape.triangledown, location.abovebar, color.red,  size=size.tiny)
+plotshape(firePut,  "Sell Put",  shape.triangleup,   location.belowbar, color.green, size=size.tiny)
+
+// ── Alerts (so a TV alert can mirror Telegram) ──────────────────────────────
+alertcondition(fireCall, "ZeroDTE SELL CALL", "ZeroDTE SELL CALL signal")
+alertcondition(firePut,  "ZeroDTE SELL PUT",  "ZeroDTE SELL PUT signal")

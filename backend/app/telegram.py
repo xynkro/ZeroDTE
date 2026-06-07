@@ -209,10 +209,18 @@ def ping_signal(
     strategy: str = "wave",
     tp_pct: float | None = None,        # directional: TP as % of credit (e.g. 90)
     short_delta: int | None = None,     # directional: short-leg delta
+    confluence_factors: dict | None = None,  # boss's actual scored factors (faithful breakdown)
+    executed: bool = True,              # True = order reached the broker; False = signal not executed
+    exec_note: str | None = None,       # broker result note (e.g. "broker rejected", "after-hours")
 ) -> dict | None:
     """Fire on each new signal entry. Routes to Wave Zero DTE Signals topic.
     Includes sizing recommendation + management plan so the trader knows the
     entire trade plan from the alert alone.
+
+    Telegram is a faithful projection of the backend ("boss"): the confluence
+    breakdown shows EXACTLY the 4 scored quality factors the boss used to decide
+    (macro/VIX are gates, not scored — see orchestrator GATE 2/4), so the alert
+    reconciles 1:1 against the backend and (later) the Pine display.
     """
     if side == "sell_call_cs":
         emoji = "🔴⬆️"
@@ -223,13 +231,30 @@ def ping_signal(
 
     n_tag = f" #{trade_no}" if trade_no else ""
     delta_tag = f" · {short_delta}Δ" if short_delta else ""
+    # Telegram == execution: the header states plainly whether this actually
+    # reached the broker. A non-executed signal is labelled so it can NEVER be
+    # mistaken for a fill (the whole point of "what's in Telegram is what you execute").
+    head = f"{emoji} ENTRY{n_tag}" if executed else f"⚠️ SIGNAL (NOT EXECUTED){n_tag}"
     lines = [
-        f"{emoji} ENTRY{n_tag} · {verb} · {instrument}{delta_tag} · conf {confluence_score}/{confluence_max}",
+        f"{head} · {verb} · {instrument}{delta_tag} · conf {confluence_score}/{confluence_max}",
         f"underlying ${underlying_price:.2f}",
         f"short ${short_strike:.0f}" + (f" / long ${long_strike:.0f}" if long_strike else ""),
         f"trend: {trend}"
         + (f" · est credit ${estimated_credit:.0f}" if estimated_credit else ""),
     ]
+    # Confluence breakdown — the boss's ACTUAL 4 scored quality factors (faithful).
+    # Order/labels mirror orchestrator's _QUALITY_FACTORS so Telegram == backend.
+    if confluence_factors:
+        cf = confluence_factors
+        rsi_on = bool(cf.get("rsi_overbought") or cf.get("rsi_oversold"))
+        mark = lambda b: "✓" if b else "✗"
+        lines.append(
+            f"factors: RSI{mark(rsi_on)} WVF{mark(cf.get('wvf_spike'))} "
+            f"EMA{mark(cf.get('near_ema10'))} Prime{mark(cf.get('in_prime_window'))}"
+        )
+    # Broker result note (Telegram == execution): why a signal did/didn't execute.
+    if exec_note:
+        lines.append(("⛔ " if not executed else "ℹ️ ") + exec_note)
     # Sizing + management plan
     if sizing_note:
         lines.append(f"size: {sizing_note}")

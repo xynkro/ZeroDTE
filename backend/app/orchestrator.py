@@ -515,11 +515,14 @@ class Orchestrator:
                 self.state.backend_status = "ok"
             log.info("Feed recovered — bars flowing again.")
         signals = self.predictor.on_bar(bar)
-        # Telegram gate: only fire pings on LIVE bars (within 10 min of now).
-        # Mock-feed replay floods otherwise — every session for every historical
-        # day would trigger session-open + signal + macro-blackout pings.
+        # Telegram gate: only fire pings on LIVE bars. The window is FEED-AWARE so the
+        # system keeps working when Alpaca is down and it falls back to the free Yahoo
+        # feed (which lags ~15 min). A fixed 10-min window silently killed EVERY ping on
+        # the fallback (the "dead night" bug); real-time feeds stay strict for fast
+        # stale detection. Mock-feed replay (bars days old) is excluded by either window.
         bar_age = (datetime.now(ET) - bar.time.astimezone(ET)).total_seconds()
-        self._is_live_bar = bar_age < 600  # 10 min threshold
+        live_window = 1500 if getattr(self.state, "feed_type", "") == "yfinance" else 600
+        self._is_live_bar = bar_age < live_window
         # Morning alive heartbeat — fires once per session at first live bar.
         # Guarantees the user always sees a Telegram ping even on no-signal days.
         self._maybe_ping_morning_alive(bar)
@@ -890,7 +893,7 @@ class Orchestrator:
                 pt, sizing_note = self._open_paper_trade(ev)
                 if pt is None:
                     log.info(
-                        "Signal gated (%s): conf=%d/5 side=%s",
+                        "Signal gated (%s): conf=%d/4 side=%s",
                         sizing_note or "no wave_strikes",
                         ev.confluence_score, ev.side,
                     )
@@ -905,8 +908,14 @@ class Orchestrator:
                     pt.outcome = "skipped_low_conf"  # type: ignore
                     pt.exit_reason = sizing_note
                     continue
-                # Re-fire the entry ping with management plan attached
-                if pt is not None and getattr(self, "_is_live_bar", False):
+                # Entry ping. When the Alpaca submit task will run (broker=alpaca AND
+                # trader present), IT owns the ping so it reflects the REAL result
+                # (filled vs rejected) — Telegram == execution. Otherwise (shadow/none,
+                # or trader missing) fire the immediate ping here so a signal is never silent.
+                submit_owns_ping = (settings.PAPER_BROKER == "alpaca"
+                                    and getattr(self, "alpaca_trader", None) is not None)
+                if pt is not None and getattr(self, "_is_live_bar", False) \
+                   and not submit_owns_ping:
                     try:
                         # Source alert data from the ACTUAL opened trade (pt), not
                         # ev.wave_strikes — directional trades use SPX/30Δ/BS strikes,
@@ -919,7 +928,8 @@ class Orchestrator:
                             long_strike=float(pt.long_strike) if pt.long_strike else None,
                             estimated_credit=float(pt.estimated_credit) if pt.estimated_credit else None,
                             confluence_score=ev.confluence_score,
-                            confluence_max=len(ev.confluence) if ev.confluence else 5,
+                            confluence_max=4,  # 4 scored quality factors (macro/vix are gates, not scored)
+                            confluence_factors=ev.confluence,  # faithful breakdown of the boss's decision
                             trend=self.predictor.current_state().get("trend", "flat"),
                             instrument=pt.instrument,
                             pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
@@ -1138,7 +1148,14 @@ class Orchestrator:
             except Exception as e:
                 log.debug("TV enrichment failed (non-fatal): %s", e)
 
-        confluence_score = sum(1 for v in confluence.values() if v)
+        # Confluence SCORE = ONLY the validated backtest quality factors
+        # (rsi-directional, wvf-spike, near-ema, prime-window). macro_clear and
+        # vix_bucket_ok are GATES enforced separately in _open_paper_trade (GATE 2/4) —
+        # counting them here double-dipped and added ~2 free points, firing ~13x more
+        # than the backtest, which scores only these 4. (They stay in the dict for logging.)
+        _QUALITY_FACTORS = ("rsi_overbought", "rsi_oversold", "wvf_spike",
+                            "near_ema10", "in_prime_window")
+        confluence_score = sum(1 for k in _QUALITY_FACTORS if confluence.get(k))
 
         # ── Telegram push: cross-device alert ──────────────────────────────
         # Pick the best XSP wave suggestion to embed in the push (most users
@@ -1829,11 +1846,11 @@ class Orchestrator:
         min_score = settings.WAVE_MIN_CONFLUENCE_SCORE
         if ev.confluence_score < min_score:
             log.info(
-                "Signal gated [confluence]: %d/5 < threshold %d/5 (factors=%s)",
+                "Signal gated [confluence]: %d/4 < threshold %d/4 (factors=%s)",
                 ev.confluence_score, min_score,
                 {k: v for k, v in ev.confluence.items()},
             )
-            return None, f"skipped: confluence {ev.confluence_score}/5 < {min_score}/5 threshold"
+            return None, f"skipped: confluence {ev.confluence_score}/4 < {min_score}/4 threshold"
 
         # ── GATE 2: Macro blackout ──
         if settings.WAVE_BLACKOUT_BLOCKS_ENTRIES:
@@ -1987,7 +2004,9 @@ class Orchestrator:
             if settings.PAPER_BROKER == "alpaca" and hasattr(self, "alpaca_trader") \
                and self.alpaca_trader is not None:
                 pt.broker_status = "pending"
-                self._broker_entry_tasks[pt.id] = asyncio.create_task(self._submit_alpaca_entry(pt))
+                self._broker_entry_tasks[pt.id] = asyncio.create_task(
+                    self._submit_alpaca_entry(pt, ev, sizing_note,
+                                              getattr(self, "_is_live_bar", False)))
             return pt, sizing_note
 
         # Legacy wave_manager path
@@ -2051,19 +2070,77 @@ class Orchestrator:
 
     # ── Alpaca paper broker ──────────────────────────────────────────────────
 
-    async def _submit_alpaca_entry(self, pt: PaperTrade):
-        """Submit directional spread entry to Alpaca paper API as SPY."""
+    async def _submit_alpaca_entry(self, pt: PaperTrade, ev=None,
+                                   sizing_note: str | None = None, is_live: bool = False):
+        """Submit a directional-spread entry to Alpaca paper (as SPY), then fire the
+        Telegram ENTRY ping reflecting the REAL broker result — Telegram == execution.
+
+        A signal that does NOT actually execute (outside market hours, or rejected by
+        the broker) is REMOVED from the trade ledger and pinged as "NOT EXECUTED", so
+        the Monitor + Telegram only ever show trades that genuinely reached the broker.
+        This is what closes the old gap where the ledger logged sim signals as "trades".
+        """
         from .directional_spread_manager import spy_strike_params
+
+        def _ping(executed: bool, exec_note: str | None):
+            if not (is_live and ev is not None):
+                return
+            try:
+                is_dir = pt.strategy == "directional_spread"
+                tg.ping_signal(
+                    side=pt.side,
+                    underlying_price=pt.underlying_at_signal,
+                    short_strike=float(pt.short_strike),
+                    long_strike=float(pt.long_strike) if pt.long_strike else None,
+                    estimated_credit=float(pt.estimated_credit) if pt.estimated_credit else None,
+                    confluence_score=ev.confluence_score,
+                    confluence_max=4,
+                    confluence_factors=ev.confluence,
+                    trend=self.predictor.current_state().get("trend", "flat"),
+                    instrument=pt.instrument,
+                    pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
+                    trade_no=pt.trade_no,
+                    contracts=pt.contracts,
+                    sizing_note=sizing_note,
+                    tp_target=pt.tp_underlying_target,
+                    stop_target=pt.stop_underlying_target,
+                    strategy=pt.strategy,
+                    tp_pct=settings.DIRECTIONAL_TP_TARGET if is_dir else None,
+                    short_delta=settings.DIRECTIONAL_SHORT_DELTA if is_dir else None,
+                    executed=executed,
+                    exec_note=exec_note,
+                )
+            except Exception as e:
+                log.warning("entry ping (executed=%s) failed: %s", executed, e)
+
+        def _drop_trade():
+            # Never executed → remove from the ledger so Monitor/Telegram stay truthful.
+            try:
+                self.paper_trades.remove(pt)
+            except ValueError:
+                pass
+
+        # Market-hours guard: Alpaca rejects options market orders outside RTH. Don't
+        # even attempt; report the signal as fired-but-not-executed.
+        now_et = datetime.now(ET)
+        mod = now_et.hour * 60 + now_et.minute
+        in_rth = now_et.weekday() < 5 and (9 * 60 + 30) <= mod < (16 * 60)
+        if not in_rth:
+            pt.broker_status = "skipped_afterhours"
+            _drop_trade()
+            log.info("Signal #%d outside RTH — not executed (Alpaca rejects after-hours).", pt.trade_no)
+            _ping(executed=False, exec_note="after-hours — market closed, not executed")
+            self._persist_state()
+            return
+
         try:
-            # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale), not a
-            # legacy proxy — so the Alpaca paper fills validate the real strategy.
+            # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale).
             params = spy_strike_params(
                 side=pt.side,
                 spx_short_strike=pt.short_strike,
                 spx_credit_dollars=pt.estimated_credit,
             )
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
-
             result = await self.alpaca_trader.place_credit_spread(
                 underlying="SPY",
                 expiry=today_str,
@@ -2072,23 +2149,27 @@ class Orchestrator:
                 long_strike=params["long_strike"],
                 qty=pt.contracts,
             )
-
             if result and not result.get("shadow"):
                 pt.alpaca_order_id = result.get("id")
                 pt.broker_status = "submitted"
                 log.info("Alpaca paper entry: trade #%d → order %s (SPY %s %.1f/%.1f)",
                          pt.trade_no, pt.alpaca_order_id,
                          params["side_type"], params["short_strike"], params["long_strike"])
+                _ping(executed=True, exec_note="submitted to Alpaca")
             elif result and result.get("shadow"):
                 pt.broker_status = "shadow"
+                _ping(executed=True, exec_note="shadow (broker disabled)")
             else:
                 pt.broker_status = "error"
-                log.error("Alpaca paper entry failed for trade #%d", pt.trade_no)
-
+                _drop_trade()
+                log.error("Alpaca paper entry REJECTED for trade #%d", pt.trade_no)
+                _ping(executed=False, exec_note="Alpaca rejected the order")
             self._persist_state()
         except Exception as e:
             pt.broker_status = "error"
+            _drop_trade()
             log.exception("Alpaca entry failed for trade #%d: %s", pt.trade_no, e)
+            _ping(executed=False, exec_note="submit failed (exception)")
 
     async def _submit_alpaca_exit(self, pt: PaperTrade):
         """Close Alpaca paper position when directional spread exits.

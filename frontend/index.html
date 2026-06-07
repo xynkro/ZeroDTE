@@ -772,6 +772,9 @@
       <button onclick="refreshMonitor()" style="background: var(--panel2); border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px;">Refresh</button>
     </div>
 
+    <!-- Session debrief (auto post-mortem of the latest session) -->
+    <div id="debrief-panel" style="margin-bottom: 16px;"></div>
+
     <!-- Stats grid -->
     <div id="monitor-stats" class="bt-summary"></div>
 
@@ -2101,6 +2104,7 @@
       renderOpenPositions(stats.open_trades || []);
       renderTradeLog(trades.filter(t => t.strategy === 'directional_spread'));
       renderAlpacaInfo(alpaca);
+      fetch(`${API_BASE}/api/debrief`).then(r => r.json()).then(renderDebrief).catch(() => {});
     } catch (e) { console.error('monitor fetch error', e); }
   }
 
@@ -2118,6 +2122,7 @@
       renderOpenPositions(stats.open_trades || []);
       renderTradeLog(trades.filter(t => (t.strategy || 'directional_spread') === 'directional_spread'));
       renderAlpacaInfo(snap.alpaca || null);
+      renderDebrief(snap.debrief || {});
       renderSnapshotBanner(snap.generated_at, false);
     } catch (e) {
       console.error('snapshot fetch error', e);
@@ -2141,6 +2146,55 @@
     }
     const when = ts ? new Date(ts).toLocaleString() : 'unknown';
     el.innerHTML = `📸 <strong>Read-only snapshot</strong> · updated ${when} · live trading runs on the backend`;
+  }
+
+  function renderDebrief(d) {
+    const el = document.getElementById('debrief-panel');
+    if (!el) return;
+    if (!d || !d.date) {
+      el.innerHTML = '<div style="background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:12px;color:var(--muted);font-size:12px;">🔍 No closed trades to debrief yet.</div>';
+      return;
+    }
+    const sp = d.session_pnl || 0;
+    const spColor = sp >= 0 ? 'var(--green)' : 'var(--red)';
+    const spStr = (sp >= 0 ? '+$' : '−$') + Math.abs(sp).toFixed(0);
+    const tradeRows = (d.trades || []).map(a => {
+      const pc = a.pnl >= 0 ? 'var(--green)' : 'var(--red)';
+      const pstr = (a.pnl >= 0 ? '+$' : '−$') + Math.abs(a.pnl).toFixed(0);
+      return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px;">
+        <span>${a.icon}</span>
+        <span style="font-weight:600;min-width:58px;">#${a.trade_no} ${a.side}</span>
+        <span style="color:${pc};font-weight:600;min-width:46px;font-variant-numeric:tabular-nums;">${pstr}</span>
+        <span style="color:var(--muted);">${a.note}</span>
+      </div>`;
+    }).join('');
+    const fl = d.flags || {};
+    const skewLine = fl.directional_skew
+      ? `<div style="color:var(--orange);font-size:12px;margin-top:6px;">⚠️ ${fl.directional_skew}${fl.vol_context ? ' · vol: ' + fl.vol_context : ''}</div>`
+      : (fl.vol_context ? `<div style="color:var(--muted);font-size:12px;margin-top:6px;">vol: ${fl.vol_context}</div>` : '');
+    const ddPct = Math.min(100, d.dd_vs_backtest_pct || 0);
+    const ddColor = ddPct >= 100 ? 'var(--red)' : ddPct >= 70 ? 'var(--orange)' : 'var(--blue)';
+    el.innerHTML = `
+      <div style="background:var(--panel2);border:1px solid var(--border);border-left:4px solid ${spColor};border-radius:8px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;flex-wrap:wrap;gap:4px;">
+          <strong style="font-size:14px;">🔍 Debrief · ${d.date}</strong>
+          <span style="font-size:12px;color:var(--muted);">${(d.trades||[]).length} trade(s) · ${d.wins}W/${d.losses}L · <span style="color:${spColor};font-weight:700;">${spStr}</span></span>
+        </div>
+        ${tradeRows}
+        ${skewLine}
+        <div style="margin-top:10px;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.5;">
+          <strong>Verdict:</strong> ${d.verdict || ''}
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-bottom:2px;">
+            <span>drawdown vs backtest max (−$1,581)</span><span>${(d.dd_vs_backtest_pct||0).toFixed(0)}%</span>
+          </div>
+          <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${ddPct}%;background:${ddColor};"></div>
+          </div>
+        </div>
+        <div style="margin-top:8px;font-size:11px;color:var(--dim);">${d.discipline || ''}</div>
+      </div>`;
   }
 
   function renderMonitorStats(s) {

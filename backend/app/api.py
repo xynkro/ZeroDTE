@@ -617,6 +617,15 @@ async def monitor_stats():
     }
 
 
+@app.get("/api/debrief")
+async def debrief(date: str | None = None):
+    """Auto session post-mortem (latest session by default, or ?date=YYYY-MM-DD):
+    per-trade classification, directional-skew + vol context, and an honest
+    verdict that separates 'strategy by design' from 'investigate'."""
+    from . import debrief as dbf
+    return dbf.build_debrief(orch.paper_trades, date)
+
+
 @app.get("/api/alpaca/status")
 async def alpaca_status():
     """Alpaca paper trading status."""

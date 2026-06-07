@@ -820,6 +820,15 @@ class Orchestrator:
                 stoch_k=ps.get("stoch_k"),
                 regime=ps.get("regime"),
             )
+            # Auto session debrief — append the post-mortem to the wave summary
+            # so the nightly Telegram tells you WHAT went wrong, not just the P&L.
+            try:
+                from . import debrief as _dbf
+                _db = _dbf.build_debrief(self.paper_trades, date_str)
+                if _db.get("date"):
+                    wave_msg = f"{wave_msg}\n\n{_dbf.format_debrief_telegram(_db)}"
+            except Exception as e:
+                log.warning("EOD debrief render failed: %s", e)
             # Append the dashboard link so the EOD summaries match every other
             # alert (one tap → the Pages monitor).
             _url = settings.DASHBOARD_PUBLIC_URL

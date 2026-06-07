@@ -59,6 +59,7 @@ def build_snapshot() -> dict:
     trades_raw = _get("/api/paper_trades", [])
     alpaca_raw = _get("/api/alpaca/status", {}) or {}
     tg_raw = _get("/api/telegram/prefs", {}) or {}
+    debrief = _get("/api/debrief", {}) or {}
     ds = [t for t in trades_raw if t.get("strategy") == "directional_spread"]
     trades = [{k: t.get(k) for k in TRADE_FIELDS} for t in ds]
     alpaca = {
@@ -76,6 +77,8 @@ def build_snapshot() -> dict:
         # and pre-fill the settings panel with no backend connection.
         "telegram_prefs": tg_raw.get("prefs", {}),
         "telegram_types": tg_raw.get("message_types", []),
+        # Auto session debrief (latest session) — rendered read-only on the phone.
+        "debrief": debrief,
     }
 
 

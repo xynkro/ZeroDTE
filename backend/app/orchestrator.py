@@ -820,6 +820,12 @@ class Orchestrator:
                 stoch_k=ps.get("stoch_k"),
                 regime=ps.get("regime"),
             )
+            # Append the dashboard link so the EOD summaries match every other
+            # alert (one tap → the Pages monitor).
+            _url = settings.DASHBOARD_PUBLIC_URL
+            if _url:
+                wave_msg = f"{wave_msg}\n📱 {_url}"
+                ic_msg = f"{ic_msg}\n📱 {_url}"
             wave_ok = tg.ping_eod_wave(wave_msg)
             ic_ok = tg.ping_eod_iron_condor(ic_msg)
             if not wave_ok and not ic_ok:

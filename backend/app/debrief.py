@@ -98,6 +98,20 @@ def _book_split(ds) -> dict:
     return split
 
 
+def _broker_check(ds) -> dict:
+    """Model P&L vs REAL Alpaca-fill P&L — the validation's source of truth once
+    fills are captured. Empty until live orders fill (READ_BROKER_FILLS)."""
+    have = [t for t in ds if getattr(t, "broker_realized_pnl", None) is not None]
+    if not have:
+        return {"n": 0, "note": "no real fills captured yet — P&L is model-only"}
+    model = round(sum((t.pnl or 0.0) for t in have), 2)
+    real = round(sum(t.broker_realized_pnl for t in have), 2)
+    gap = round(real - model, 2)
+    return {"n": len(have), "model_pnl": model, "broker_pnl": real, "slippage": gap,
+            "note": (f"real fills run {_money(gap)} vs model across {len(have)} trade(s)"
+                     if abs(gap) >= 1 else "real ≈ model")}
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""
@@ -115,6 +129,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
             "discipline": f"Validated on {BACKTEST_TRADES} trades. You have 0.",
             "cum_pnl": cum_all, "dd_vs_backtest_pct": dd_pct,
             "book_split": _book_split(ds),
+            "broker_realized": _broker_check(ds),
         }
 
     date = date or days[-1]
@@ -179,6 +194,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
         "available_dates": days,
         # Cumulative put-book vs call-book economics (quant-audit: the headline cut).
         "book_split": _book_split(ds),
+        "broker_realized": _broker_check(ds),
     }
 
 

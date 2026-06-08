@@ -1896,6 +1896,16 @@ class Orchestrator:
             log.info("Signal gated [suppress_calls]: call book disabled by config")
             return None, "skipped: call-selling suppressed (DIRECTIONAL_SUPPRESS_CALLS)"
 
+        # ── GATE 0c: Dealer-gamma (GEX) stand-aside (staged, default OFF) ──
+        # Strongly-negative GEX = vol-amplified = breach-prone. UNVALIDATED: there is
+        # NO historical GEX (CBOE delayed quotes are current-day only), so the
+        # breach-rate edge can't be backtested — this stays theory-only until live
+        # GEX-stamped trades accumulate enough to measure. See docs/FLAWS.md.
+        if settings.GEX_GATING_ENABLED and self._gex is not None \
+                and getattr(self._gex, "ok", False) and self._gex.regime == settings.GEX_GATE_REGIME:
+            log.info("Signal gated [gex]: standing aside on %s-gamma session", self._gex.regime)
+            return None, f"skipped: {self._gex.regime}-GEX stand-aside (GEX_GATING_ENABLED)"
+
         # ── GATE 1: Confluence threshold ──
         min_score = settings.WAVE_MIN_CONFLUENCE_SCORE
         if ev.confluence_score < min_score:
@@ -2238,6 +2248,9 @@ class Orchestrator:
                 short_strike=params["short_strike"],
                 long_strike=params["long_strike"],
                 qty=pt.contracts,
+                # SPY per-share net credit ≈ SPX$credit / 10(scale) / 100(mult).
+                # Only used when ALPACA_MARKETABLE_LIMIT is on (scaffold; model-derived).
+                limit_credit=(pt.estimated_credit or 0) / 1000.0,
             )
             if result and not result.get("shadow"):
                 pt.alpaca_order_id = result.get("id")
@@ -2246,6 +2259,7 @@ class Orchestrator:
                          pt.trade_no, pt.alpaca_order_id,
                          params["side_type"], params["short_strike"], params["long_strike"])
                 _ping(executed=True, exec_note="submitted to Alpaca")
+                asyncio.create_task(self._capture_fill(pt, pt.alpaca_order_id, "entry"))
             elif result and result.get("shadow"):
                 pt.broker_status = "shadow"
                 _ping(executed=True, exec_note="shadow (broker disabled)")
@@ -2304,6 +2318,7 @@ class Orchestrator:
                     pt.broker_status = "closed"
                     log.info("Alpaca paper exit (reverse): trade #%d → order %s",
                              pt.trade_no, result.get("id", "?"))
+                    asyncio.create_task(self._capture_fill(pt, result.get("id"), "exit"))
                 else:
                     pt.broker_status = "close_error"
 
@@ -2311,6 +2326,31 @@ class Orchestrator:
         except Exception as e:
             pt.broker_status = "close_error"
             log.exception("Alpaca exit failed for trade #%d: %s", pt.trade_no, e)
+
+    async def _capture_fill(self, pt: PaperTrade, order_id, kind: str):
+        """Best-effort: read REAL Alpaca fills into broker_realized_* fields.
+        Pure instrumentation — NEVER affects a trading decision. This is what turns
+        the validation from 'model grading itself' into a real-fill measurement."""
+        if not settings.READ_BROKER_FILLS or not order_id or self.alpaca_trader is None:
+            return
+        try:
+            from .alpaca_trader import order_net_cashflow
+            await asyncio.sleep(4.0)   # let the fill settle before reading
+            order = await self.alpaca_trader.get_order(order_id)
+            cf = order_net_cashflow(order)
+            if cf is None:
+                log.info("fill-read %s: order %s not filled yet (trade #%s)", kind, order_id, pt.trade_no)
+                return
+            if kind == "entry":
+                pt.broker_realized_credit = cf
+            else:
+                base = pt.broker_realized_credit if pt.broker_realized_credit is not None else 0.0
+                pt.broker_realized_pnl = round(base + cf, 2)
+            log.info("fill-read %s: trade #%s real cashflow $%.2f | model credit $%.0f model pnl %s",
+                     kind, pt.trade_no, cf, pt.estimated_credit or 0, pt.pnl)
+            self._persist_state()
+        except Exception as e:  # noqa: BLE001
+            log.warning("fill-read %s failed for trade #%s: %s", kind, pt.trade_no, e)
 
     # ── Mock feed fallback ───────────────────────────────────────────────────
 

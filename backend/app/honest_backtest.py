@@ -94,6 +94,31 @@ def _prepare(data_window: str):
     return ctx
 
 
+def _event_dates(years) -> set:
+    """Deterministic high-impact macro days: FOMC (published schedule) + NFP
+    (1st Friday) + OPEX (3rd Friday). CPI is omitted (its date drifts and needs a
+    real calendar) — so this UNDER-counts event days, making the overlay a
+    conservative lower bound on how many trades live's blackout would remove."""
+    import datetime as _dt
+    out = set()
+    FOMC = [
+        "2022-01-26", "2022-03-16", "2022-05-04", "2022-06-15", "2022-07-27", "2022-09-21", "2022-11-02", "2022-12-14",
+        "2023-02-01", "2023-03-22", "2023-05-03", "2023-06-14", "2023-07-26", "2023-09-20", "2023-11-01", "2023-12-13",
+        "2024-01-31", "2024-03-20", "2024-05-01", "2024-06-12", "2024-07-31", "2024-09-18", "2024-11-07", "2024-12-18",
+        "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30", "2025-09-17", "2025-11-05", "2025-12-17",
+        "2026-01-28", "2026-03-18", "2026-05-06", "2026-06-17",
+    ]
+    out.update(d for d in FOMC if int(d[:4]) in years)
+    for y in years:
+        for m in range(1, 13):
+            fri = [d for d in range(1, 29) if _dt.date(y, m, d).weekday() == 4]
+            if fri:
+                out.add(_dt.date(y, m, fri[0]).isoformat())          # NFP (1st Fri)
+                if len(fri) >= 3:
+                    out.add(_dt.date(y, m, fri[2]).isoformat())      # OPEX (3rd Fri)
+    return out
+
+
 def run_honest_backtest(
     target_delta: int = 20,
     wing_dollars: float = 10.0,
@@ -108,11 +133,18 @@ def run_honest_backtest(
     max_entry_tv: float | None = None,
     data_window: str = "3y",
     return_trades: bool = True,
+    # ── Quant-audit pricing-honesty knobs (default = original flat behaviour) ──
+    skew_enabled: bool = False,        # price puts richer / calls cheaper (real skew)
+    skew_put_mult: float = 1.15,       # put IV ≈ 1.15× the flat realized-vol base
+    skew_call_mult: float = 0.90,      # call IV ≈ 0.90× the base
+    vol_ratchet: bool = False,         # lift repricing vol if intraday RV exceeds entry RV
+    block_event_days: bool = False,    # skip FOMC/NFP/OPEX days (mirrors live blackout)
 ) -> dict:
     ctx = _prepare(data_window)
     if ctx is None:
         return {"error": "missing data"}
     bars, by_date, sessions, ema10_arr, idx_by_time, data_file = ctx
+    event_set = _event_dates(range(2021, 2027)) if block_event_days else set()
 
     trades = []
     n_signals = n_filt_conf = n_filt_vwap = n_filt_vol = 0
@@ -125,6 +157,8 @@ def run_honest_backtest(
         if not sb:
             continue
         sb_sorted = sorted(sb, key=lambda x: x.time)
+        if block_event_days and str(s.session_date) in event_set:
+            continue
 
         for sig in s.signals:
             n_signals += 1
@@ -161,15 +195,21 @@ def run_honest_backtest(
                 n_filt_vol += 1
                 continue
 
-            # Strikes by true delta
+            # Skew: tilt the vol per side (puts richer, calls cheaper). Applied to
+            # BOTH strike placement and credit so the 30Δ strike + premium stay
+            # internally consistent with the side's implied vol.
+            sk = (skew_put_mult if side == "sell_put_cs" else skew_call_mult) if skew_enabled else 1.0
+            tv0s = tv0 * sk
+
+            # Strikes by true delta (on the side-skewed vol)
             if side == "sell_call_cs":
-                short_K = bs.strike_for_call_delta(S0, tv0, target_delta / 100.0)
+                short_K = bs.strike_for_call_delta(S0, tv0s, target_delta / 100.0)
                 long_K = short_K + wing_dollars
             else:
-                short_K = bs.strike_for_put_delta(S0, tv0, target_delta / 100.0)
+                short_K = bs.strike_for_put_delta(S0, tv0s, target_delta / 100.0)
                 long_K = short_K - wing_dollars
 
-            credit_ps = bs.spread_value(side, S0, short_K, long_K, tv0)
+            credit_ps = bs.spread_value(side, S0, short_K, long_K, tv0s)
             if credit_ps <= 0.02:
                 continue
             credit_usd = credit_ps * mult
@@ -180,6 +220,7 @@ def run_honest_backtest(
             outcome = "expire"
             exit_pct = None
             bars_held = 0
+            post_closes = []
 
             for b in sb_sorted:
                 if b.time <= sig.time:
@@ -195,7 +236,13 @@ def run_honest_backtest(
                     break
 
                 bars_held += 1
-                tv = bs.total_vol_to_expiry(r5, pr, premium_mult)
+                post_closes.append(b.close)
+                # Vol-floor ratchet: lift repricing vol if intraday RV exceeds the
+                # entry RV (conservative-only — can never reduce a loss estimate).
+                r5_eff = r5
+                if vol_ratchet and len(post_closes) >= 2:
+                    r5_eff = max(r5, bs.realized_5m_std([S0] + post_closes))
+                tv = bs.total_vol_to_expiry(r5_eff, pr, premium_mult) * sk
                 worst = b.high if side == "sell_call_cs" else b.low
                 best = b.low if side == "sell_call_cs" else b.high
 

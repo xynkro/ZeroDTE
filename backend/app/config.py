@@ -222,6 +222,28 @@ class Settings:
     # bar. NOTE: validate session-end (time-stop / EOD) behaviour before enabling.
     EXIT_ON_CLOSED_BAR_ONLY: bool = _b("EXIT_ON_CLOSED_BAR_ONLY", False)
 
+    # ── Pricing-honesty + execution upgrades (2026-06, default OFF) ──
+    # Skew: price puts richer / calls cheaper (real index 0DTE skew) vs a flat vol.
+    # Re-validation: baseline +$5,479/t1.85 → +skew +$9,926/t3.65 (edge ~99.7%
+    # puts). CONTINGENT on capturing the skew at fills — trust only once
+    # broker-realized P&L confirms it.
+    DIRECTIONAL_SKEW_ENABLED: bool = _b("DIRECTIONAL_SKEW_ENABLED", False)
+    DIRECTIONAL_SKEW_PUT_MULT: float = _f("DIRECTIONAL_SKEW_PUT_MULT", 1.15)
+    DIRECTIONAL_SKEW_CALL_MULT: float = _f("DIRECTIONAL_SKEW_CALL_MULT", 0.90)
+    # Vol-floor ratchet: lift exit-repricing vol if intraday RV exceeds entry RV
+    # (conservative-only). Re-validation: −10% P&L (honest tails), lower drawdown.
+    DIRECTIONAL_VOL_RATCHET: bool = _b("DIRECTIONAL_VOL_RATCHET", False)
+    # GEX gating: stand aside on strongly-negative dealer-gamma sessions. Validate
+    # the breach-rate edge before enabling. Inert until proven.
+    GEX_GATING_ENABLED: bool = _b("GEX_GATING_ENABLED", False)
+    GEX_GATE_REGIME: str = os.getenv("GEX_GATE_REGIME", "negative")
+    # Marketable-limit execution: limit (1 tick give) instead of market mleg orders.
+    # NEEDS a real option-quote feed to set the price; without one the limit comes
+    # from the same BS model (circular). Scaffold only until a quote feed exists.
+    ALPACA_MARKETABLE_LIMIT: bool = _b("ALPACA_MARKETABLE_LIMIT", False)
+    # Read real Alpaca fills into broker_realized_pnl (instrumentation, default ON).
+    READ_BROKER_FILLS: bool = _b("READ_BROKER_FILLS", True)
+
     # Dynamic stop-loss ladder — DISABLED. The honest backtest showed the ladder
     # ratchets you out of winners that recover; no-ladder beat ladder at every
     # delta. Only the initial -100% loss stop + time stop remain.

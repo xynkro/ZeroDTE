@@ -51,6 +51,20 @@ def _periods_remaining(bar_time) -> float:
     return max((16 * 60) - (et.hour * 60 + et.minute), 0) / 5.0
 
 
+def _skew_mult(side: str) -> float:
+    """Per-side vol tilt (puts richer, calls cheaper) when skew pricing is on.
+    Mirrors honest_backtest so the live path and the validation share one model."""
+    if not settings.DIRECTIONAL_SKEW_ENABLED:
+        return 1.0
+    return (settings.DIRECTIONAL_SKEW_PUT_MULT if side == "sell_put_cs"
+            else settings.DIRECTIONAL_SKEW_CALL_MULT)
+
+
+# Transient per-trade post-entry closes, for the vol-floor ratchet (not persisted;
+# rebuilt as bars arrive; cleared on close). Keyed by trade.id.
+_ratchet_closes: dict[str, dict] = {}
+
+
 def bs_entry_strikes(
     side: str,
     spot: float,
@@ -74,13 +88,14 @@ def bs_entry_strikes(
     tv0 = bs.total_vol_to_expiry(realized_std, pr, pm)
     if tv0 <= 0:
         return None
+    tv0s = tv0 * _skew_mult(side)   # side-skewed vol (flat when skew disabled)
     if side == "sell_call_cs":
-        short_k = bs.strike_for_call_delta(spot, tv0, short_delta / 100.0)
+        short_k = bs.strike_for_call_delta(spot, tv0s, short_delta / 100.0)
         long_k = short_k + wing_dollars
     else:
-        short_k = bs.strike_for_put_delta(spot, tv0, short_delta / 100.0)
+        short_k = bs.strike_for_put_delta(spot, tv0s, short_delta / 100.0)
         long_k = short_k - wing_dollars
-    credit_ps = bs.spread_value(side, spot, short_k, long_k, tv0)
+    credit_ps = bs.spread_value(side, spot, short_k, long_k, tv0s)
     if credit_ps <= 0.02:
         return None
     return {
@@ -491,7 +506,21 @@ def _check_exit_bs(trade: PaperTrade, bar: Bar) -> Optional[dict]:
         is_same_bar = False
 
     pr = _periods_remaining(bar.time)
-    tv = bs.total_vol_to_expiry(r5, pr, pm)
+    # Vol-floor ratchet: lift the repricing vol if intraday realized vol exceeds
+    # entry vol (conservative-only). Dedupe by bar timestamp so developing-bar
+    # re-dispatches don't double-count closes.
+    r5_eff = r5
+    if settings.DIRECTIONAL_VOL_RATCHET and r5:
+        rc = _ratchet_closes.setdefault(
+            trade.id, {"t": None, "closes": [trade.underlying_at_signal or bar.close]})
+        if rc["t"] is None or bar.time > rc["t"]:
+            rc["closes"].append(bar.close)
+            rc["t"] = bar.time
+        if len(rc["closes"]) >= 2:
+            roll = bs.realized_5m_std(rc["closes"])
+            if roll and roll > r5_eff:
+                r5_eff = roll
+    tv = bs.total_vol_to_expiry(r5_eff, pr, pm) * _skew_mult(side)
 
     if side == "sell_call_cs":
         worst_px, best_px = bar.high, bar.low
@@ -562,6 +591,7 @@ def _close(trade: PaperTrade, bar: Bar, outcome: str, reason: str):
     trade.underlying_at_close = bar.close
     trade.outcome = outcome  # type: ignore
     trade.exit_reason = reason
+    _ratchet_closes.pop(trade.id, None)  # free transient vol-ratchet buffer
 
 
 def _exit_dict(trade: PaperTrade, bar: Bar) -> dict:

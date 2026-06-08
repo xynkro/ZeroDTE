@@ -76,6 +76,7 @@ class AlpacaTrader:
         long_strike: float,
         qty: int = 1,
         order_class: str = "oto",  # one-triggers-other
+        limit_credit: float | None = None,  # per-share net credit (model mid) for marketable-limit
     ) -> dict | None:
         """Place a vertical credit spread.
 
@@ -117,6 +118,13 @@ class AlpacaTrader:
                     {"symbol": long_sym, "ratio_qty": "1", "side": "buy", "position_intent": "buy_to_open"},
                 ],
             }
+            # Marketable-limit (staged, default OFF): a net-credit limit 1 tick below
+            # the model mid — fills like a market order but caps adverse slippage.
+            # SCAFFOLD: limit_credit comes from the BS model (no live NBBO feed), so
+            # the real benefit needs a genuine option-quote source first.
+            if settings.ALPACA_MARKETABLE_LIMIT and limit_credit and limit_credit > 0.02:
+                order["type"] = "limit"
+                order["limit_price"] = str(round(max(0.01, limit_credit - 0.01), 2))
 
             url = f"{settings.ALPACA_BASE_URL}/v2/orders"
             resp = await client.post(url, json=order)
@@ -297,6 +305,47 @@ class AlpacaTrader:
         except Exception as e:
             log.error("Alpaca list orders failed: %s", e)
             return []
+
+    async def get_order(self, order_id: str) -> dict | None:
+        """Fetch a single order WITH its legs (nested) — for reading real fills."""
+        try:
+            client = await self._ensure_client()
+            url = f"{settings.ALPACA_BASE_URL}/v2/orders/{order_id}"
+            resp = await client.get(url, params={"nested": "true"})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:  # noqa: BLE001
+            log.warning("Alpaca get_order %s failed: %s", order_id, e)
+            return None
+
+
+def order_net_cashflow(order: dict, multiplier: int = 100) -> float | None:
+    """Net signed $ cashflow of a FILLED multi-leg order: +received on sold legs,
+    −paid on bought legs. Returns None if no leg has a fill price yet (still
+    pending). Defensive about Alpaca's response shape — verify on first live fill."""
+    if not order:
+        return None
+    legs = order.get("legs") or [order]
+    total, any_fill = 0.0, False
+    for leg in legs:
+        px = leg.get("filled_avg_price")
+        if px in (None, "", "0", "0.0"):
+            continue
+        try:
+            price = float(px)
+        except (TypeError, ValueError):
+            continue
+        qty = leg.get("filled_qty") or leg.get("qty") or order.get("filled_qty") or 0
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            continue
+        any_fill = True
+        sign = 1.0 if (leg.get("side") == "sell") else -1.0
+        total += sign * price * qty * multiplier
+    return round(total, 2) if any_fill else None
 
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open

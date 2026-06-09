@@ -1853,19 +1853,24 @@ class Orchestrator:
         return start_min <= bar_min < end_min
 
     def _check_vix_bucket_for_wave(self) -> tuple[bool, float | None, str]:
-        """Reuse the IC adaptive_otm picker to decide if the VIX bucket allows
-        wave entries. If the bucket maps to pct_otm=None ("stand aside"), wave
-        also stands aside. Returns (is_allowed, vix_value, rationale).
+        """Decide if the VIX level allows directional (wave) entries, using a
+        DIRECTIONAL-specific stand-aside threshold (WAVE_VIX_STANDASIDE) — decoupled
+        from the IC builder's tighter 22 line. Validated on the put book: VIX 22-30
+        is the best put-selling regime; only VIX>=30 is net-negative. Returns
+        (is_allowed, vix_value, rationale).
 
         Failsafe-open: if VIX fetch fails, allow entries (rather than block all
         signals during a transient outage).
         """
         try:
             from .vix_gate import check_iv_safe
-            from .adaptive_otm import pick_pct_otm
-            _, vix_value, _ = check_iv_safe(threshold=999.0)  # threshold ignored — we want the value
-            decision = pick_pct_otm(vix_value)
-            return (decision.pct_otm is not None), vix_value, decision.rationale
+            _, vix_value, source = check_iv_safe(threshold=999.0)  # threshold ignored — we want the value
+            if vix_value is None:
+                return True, None, "VIX unavailable — allowing entry"
+            thr = settings.WAVE_VIX_STANDASIDE
+            if vix_value >= thr:
+                return False, vix_value, f"VIX {vix_value:.1f} ≥ {thr:.0f} stand-aside ({source})"
+            return True, vix_value, f"VIX {vix_value:.1f} < {thr:.0f} ({source})"
         except Exception as e:
             log.warning("Wave VIX check failed (failsafe-open): %s", e)
             return True, None, "VIX check failed — allowing entry"

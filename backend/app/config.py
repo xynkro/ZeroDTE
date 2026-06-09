@@ -243,6 +243,13 @@ class Settings:
     ALPACA_MARKETABLE_LIMIT: bool = _b("ALPACA_MARKETABLE_LIMIT", False)
     # Read real Alpaca fills into broker_realized_pnl (instrumentation, default ON).
     READ_BROKER_FILLS: bool = _b("READ_BROKER_FILLS", True)
+    # Directional VIX stand-aside threshold (decoupled from the IC builder's 22 line).
+    # Validated on the put book (153-trade backtest, prior-day VIX): VIX 22-30 is the
+    # BEST regime (+$128/trade, 83% WR, 11% breach); only VIX>=30 is net-negative
+    # (50% breach, tail risk). Default 22.0 = CURRENT behaviour. Set 30.0 to capture
+    # the +$2,304 the 22-line was leaving on the table. (Note: the live gate compares
+    # VIX1D, which is more reactive than the 30d VIX used to calibrate this.)
+    WAVE_VIX_STANDASIDE: float = _f("WAVE_VIX_STANDASIDE", 22.0)
 
     # Dynamic stop-loss ladder — DISABLED. The honest backtest showed the ladder
     # ratchets you out of winners that recover; no-ladder beat ladder at every

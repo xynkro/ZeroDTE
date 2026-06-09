@@ -311,7 +311,36 @@
 <body>
   <div id="app" role="main" aria-busy="true"></div>
   <noscript style="display:block;padding:40px;text-align:center;color:#9aa3b4">This dashboard requires JavaScript.</noscript>
-  <script>if ('serviceWorker' in navigator) { window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {})); }</script>
+  <script>
+    (function () {
+      // Escape hatch: …/v2/?reset nukes the service worker + all caches and reloads
+      // clean — recovers a stuck/stale installed PWA in one tap.
+      if (location.search.indexOf('reset') !== -1) {
+        var done = function () { location.replace('./'); };
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations()
+            .then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); })
+            .catch(function () {})
+            .then(function () { return window.caches ? caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }) : null; })
+            .catch(function () {})
+            .then(done, done);
+        } else { done(); }
+        return;
+      }
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker.register('./sw.js').then(function (reg) {
+            reg.update();
+            // Auto-apply new deploys: when a new SW takes control, reload once.
+            var refreshing = false;
+            navigator.serviceWorker.addEventListener('controllerchange', function () {
+              if (refreshing) return; refreshing = true; location.reload();
+            });
+          }).catch(function () {});
+        });
+      }
+    })();
+  </script>
   <script type="module" src="./app.js"></script>
 </body>
 </html>

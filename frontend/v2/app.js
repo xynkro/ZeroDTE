@@ -678,6 +678,22 @@ function RecentSignals({ list }) {
   </${Card}>`;
 }
 
+function TodayCard({ t }) {
+  if (!t) return null;
+  const gated = Object.entries(t.gated || {});
+  const alive = !!t.last_bar_et;
+  const fired = t.fired > 0;
+  return html`<${Card} title=${'Today · ' + (t.date || '')} accent=${fired ? 'var(--green)' : 'var(--blue)'}
+    actions=${html`<span class="pill"><span class=${clsx('dot', alive && t.market_open ? 'live' : alive ? 'warn' : 'err')}></span>${t.last_bar_et ? 'last bar ' + t.last_bar_et : 'no feed'}</span>`}>
+    <div class="today-status">${t.status}</div>
+    ${gated.length ? html`<div class="today-gates">
+      ${gated.map(([k, n]) => html`<span class="gate-chip" key=${k}>${k} <b>×${n}</b></span>`)}
+    </div>` : ''}
+    ${(t.evaluated > 0) ? html`<div class="today-meta">${t.evaluated} signal${t.evaluated !== 1 ? 's' : ''} evaluated · ${t.fired} fired${t.market_open ? '' : ' · session closed'}</div>`
+      : html`<div class="today-meta">${t.market_open ? 'market open — watching for a setup' : t.weekday ? 'market closed for the day' : 'weekend — market closed'}</div>`}
+  </${Card}>`;
+}
+
 function SignalsView() {
   const res = useResource(loadSignals, STATIC ? 60000 : 5000);
   const now = useNow(1000);
@@ -693,6 +709,7 @@ function SignalsView() {
   return html`
     <div ref=${staggerRef} class="grid" style="margin-top:16px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Snapshot</strong>${d._snapAt ? ' · ' + new Date(d._snapAt).toLocaleString() : ''} — live countdown / P&L update on the backend terminal.</span></div>`}
+      ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
       <div data-stagger style="display:flex;justify-content:flex-end">
         <a class="btn" href=${tvUrl} target="_blank" rel="noopener noreferrer">\u{1F4C8} Open chart on TradingView</a>
       </div>

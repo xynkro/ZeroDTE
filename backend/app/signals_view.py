@@ -69,6 +69,45 @@ def _time_stop_iso() -> str:
     return (close - timedelta(minutes=mins)).isoformat()
 
 
+def _today_block(orch) -> dict:
+    """Today's heartbeat + activity so the dashboard never looks frozen: did the
+    engine evaluate today, how many signals, and why each was stood aside."""
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    lb = getattr(orch, "_last_bar_wall", None)
+    try:
+        last_bar = lb.strftime("%H:%M ET") if lb is not None else None
+    except Exception:
+        last_bar = None
+    fired = sum(1 for s in (getattr(orch, "_signal_history", None) or [])
+                if (getattr(s, "triggered_at", "") or "")[:10] == today)
+    same_day = getattr(orch, "_today_date", None) == today
+    evaluated = getattr(orch, "_today_evaluated", 0) if same_day else 0
+    gated = dict(getattr(orch, "_today_gated", {})) if same_day else {}
+    gated_n = sum(gated.values())
+    is_weekday = now_et.weekday() < 5
+    try:
+        is_rth = bool(orch._is_rth_now())
+    except Exception:
+        is_rth = False
+    if not is_weekday:
+        status = "Market closed (weekend)"
+    elif fired:
+        status = f"{fired} signal{'s' if fired != 1 else ''} fired today"
+    elif gated_n:
+        top = max(gated, key=gated.get)
+        status = f"{evaluated} signal{'s' if evaluated != 1 else ''} evaluated · all stood aside — {top}"
+    elif is_rth:
+        status = "Live — no qualifying signal yet"
+    else:
+        status = "No signal today"
+    return {
+        "date": today, "weekday": is_weekday, "market_open": is_rth,
+        "last_bar_et": last_bar, "evaluated": evaluated, "fired": fired,
+        "gated": gated, "status": status,
+    }
+
+
 def assemble(orch) -> dict:
     st = orch.state
     q = getattr(st, "quote", None)
@@ -89,6 +128,7 @@ def assemble(orch) -> dict:
             "proj_low": reg.proj_low,     # put-spread sell zone
             "obs_drift_pct": reg.obs_drift_pct,
         },
+        "today": _today_block(orch),
         "latest_signal": _sig_dict(sigs[-1]) if sigs else None,
         "recent_signals": [_sig_dict(s) for s in reversed(sigs[-6:])],
         "open_positions": [_pos_dict(p) for p in open_pos],

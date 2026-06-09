@@ -79,6 +79,12 @@ class Orchestrator:
         self._last_bar_wall: datetime | None = None
         self._feed_stale_alerted: bool = False
         self._staleness_task = None
+        # Daily activity ledger — so the dashboard shows "today: N signals, all
+        # stood aside (VIX)" instead of looking frozen on the last trade. Reset on
+        # date change. (Gated signals are otherwise discarded, so we count them here.)
+        self._today_date: str | None = None
+        self._today_evaluated: int = 0
+        self._today_gated: dict[str, int] = {}
         # Dealer-gamma (GEX) regime cache + refresh task.
         self._gex = None
         self._gex_task = None
@@ -936,6 +942,7 @@ class Orchestrator:
                 # no alert). The dashboard only shows signals that ACTUALLY fired.
                 pt, sizing_note = self._open_paper_trade(ev)
                 if pt is None:
+                    self._note_signal(sizing_note)  # record for today's heartbeat
                     log.info(
                         "Signal gated (%s): conf=%d/4 side=%s",
                         sizing_note or "no wave_strikes",
@@ -943,6 +950,7 @@ class Orchestrator:
                     )
                     continue  # gate failed — don't pollute history
                 # Passed all gates — add to history
+                self._note_signal()  # fired
                 self._signal_history.append(ev)
                 # Legacy 0-contract path (small account, sizing math) — should be
                 # rare with Phase 1 gates + floor-at-1 rule, but keep as safety.
@@ -1870,6 +1878,26 @@ class Orchestrator:
         limit_dollars = -abs(settings.ACCOUNT_SIZE_USD * settings.DAILY_LOSS_LIMIT_PCT / 100.0)
         today_pnl = self._today_realized_pnl()
         return today_pnl <= limit_dollars, today_pnl, limit_dollars
+
+    def _note_signal(self, gated_reason: str | None = None):
+        """Record a signal evaluation for today's dashboard heartbeat. gated_reason
+        is None when the signal FIRED, else the gate's 'skipped: …' message. Lets
+        the app show 'today: N signals stood aside (VIX)' instead of looking frozen."""
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        if self._today_date != today:
+            self._today_date = today
+            self._today_evaluated = 0
+            self._today_gated = {}
+        self._today_evaluated += 1
+        if gated_reason:
+            r = (gated_reason or "").lower()
+            cat = ("VIX bucket" if "vix" in r else "macro blackout" if "blackout" in r
+                   else "confluence" if "confluence" in r else "daily cap" if "cap" in r
+                   else "max concurrent" if "positions" in r else "vol spike" if "vol spike" in r
+                   else "VWAP" if "vwap" in r else "loss limit" if "loss" in r
+                   else "halted" if "halt" in r else "calls suppressed" if "call-selling" in r
+                   else "GEX stand-aside" if "gex" in r else "other")
+            self._today_gated[cat] = self._today_gated.get(cat, 0) + 1
 
     def _open_paper_trade(self, ev: SignalEvent) -> tuple[PaperTrade | None, str]:
         """Returns (paper_trade, sizing_note). PaperTrade is None if any gate fails.

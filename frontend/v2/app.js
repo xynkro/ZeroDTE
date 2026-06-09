@@ -31,18 +31,20 @@ async function loadMonitor() {
     return {
       mode: 'static', generatedAt: s.generated_at,
       stats: s.stats || {}, debrief: s.debrief || {}, trades: s.trades || [], alpaca: s.alpaca || null,
+      today: (s.signals || {}).today || null,
     };
   }
-  const [stats, debrief, trades, alpaca] = await Promise.all([
+  const [stats, debrief, trades, alpaca, today] = await Promise.all([
     fetch(`${API}/api/monitor/stats`).then(r => r.json()),
     fetch(`${API}/api/debrief`).then(r => r.json()).catch(() => ({})),
     fetch(`${API}/api/paper_trades`).then(r => r.json()).catch(() => []),
     fetch(`${API}/api/alpaca/status`).then(r => r.json()).catch(() => null),
+    fetch(`${API}/api/signals`).then(r => r.json()).then(d => d.today).catch(() => null),
   ]);
   return {
     mode: 'live', generatedAt: null,
     stats: stats || {}, debrief: debrief || {},
-    trades: (trades || []).filter(t => t.strategy === 'directional_spread'), alpaca,
+    trades: (trades || []).filter(t => t.strategy === 'directional_spread'), alpaca, today,
   };
 }
 
@@ -453,6 +455,7 @@ function MonitorView() {
   return html`
     <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
+      ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
       <div data-stagger><${StatsRow} s=${d.stats || {}} /></div>
       <div class="grid cols-2">
         <${DebriefCard} d=${d.debrief} />

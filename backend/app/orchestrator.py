@@ -1887,7 +1887,12 @@ class Orchestrator:
     def _note_signal(self, gated_reason: str | None = None):
         """Record a signal evaluation for today's dashboard heartbeat. gated_reason
         is None when the signal FIRED, else the gate's 'skipped: …' message. Lets
-        the app show 'today: N signals stood aside (VIX)' instead of looking frozen."""
+        the app show 'today: N signals stood aside (VIX)' instead of looking frozen.
+
+        Only counts LIVE-bar evaluations (same rule as entry pings) so warmup/replay/
+        after-hours re-dispatches don't inflate the day's count with phantom signals."""
+        if not getattr(self, "_is_live_bar", False):
+            return
         today = datetime.now(ET).strftime("%Y-%m-%d")
         if self._today_date != today:
             self._today_date = today

@@ -163,6 +163,11 @@ class IronCondorBuilder(BaseModel):
     call_pct_otm: float | None = None   # effective %OTM used for call side
     put_pct_otm: float | None = None    # effective %OTM used for put side
     notes: list[str] = []
+    # Broker execution (Alpaca paper, IC_EXECUTION_ENABLED). The IC was alert-only
+    # until 2026-06-10 — these track the actual order so "set and forget" is real.
+    alpaca_order_id: str | None = None
+    broker_status: str | None = None    # "submitted" / "shadow" / "error" / "closed_stop"
+    contracts: int = 1
 
 
 class DashboardState(BaseModel):

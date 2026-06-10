@@ -145,6 +145,9 @@ class Orchestrator:
             self._trade_seq_today = int(data.get("trade_seq_today") or 0)
             self._trade_seq_date = data.get("trade_seq_date")
             self._eod_ic_built_today = data.get("eod_ic_built_today")
+            self._today_date = data.get("today_date")
+            self._today_evaluated = int(data.get("today_evaluated") or 0)
+            self._today_gated = dict(data.get("today_gated") or {})
             self.state.last_signals = self._signal_history[-20:]
             self.state.open_positions = [t for t in self.paper_trades if not t.closed]
             log.info(
@@ -174,6 +177,11 @@ class Orchestrator:
                 "trade_seq_today": self._trade_seq_today,
                 "trade_seq_date":  self._trade_seq_date,
                 "eod_ic_built_today": self._eod_ic_built_today,
+                # Today's heartbeat ledger — survives restarts so the dashboard
+                # never shows "0 signals" after a mid-session bounce.
+                "today_date": self._today_date,
+                "today_evaluated": self._today_evaluated,
+                "today_gated": dict(self._today_gated),
             }
             state_store.save_async(snapshot)
         except Exception as e:
@@ -790,6 +798,40 @@ class Orchestrator:
             )
         except Exception as e:
             log.warning("ping_ic_stop failed: %s", e)
+        # If this IC was EXECUTED, the stop actually closes it (two reverse spreads).
+        if ic.broker_status == "submitted" and getattr(self, "alpaca_trader", None) is not None:
+            asyncio.create_task(self._close_alpaca_ic(ic))
+
+    async def _close_alpaca_ic(self, ic):
+        """Close an executed IC at the breakeven stop: buy back both SPY spreads."""
+        try:
+            def spy(strike: float) -> float:
+                return float(round(strike / 10.0))
+            cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
+            ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
+            if cl <= cs:
+                cl = cs + 1.0
+            if pl >= ps:
+                pl = ps - 1.0
+            today_str = datetime.now(ET).strftime("%Y-%m-%d")
+            qty = max(1, ic.contracts or 1)
+            r1 = await self.alpaca_trader.close_credit_spread(
+                underlying="SPY", expiry=today_str, side="call",
+                short_strike=cs, long_strike=cl, qty=qty)
+            r2 = await self.alpaca_trader.close_credit_spread(
+                underlying="SPY", expiry=today_str, side="put",
+                short_strike=ps, long_strike=pl, qty=qty)
+            ok = bool(r1 and not r1.get("shadow")) and bool(r2 and not r2.get("shadow"))
+            ic.broker_status = "closed_stop" if ok else "close_error"
+            log.info("IC stop close %s: call=%s put=%s", ic.build_id,
+                     (r1 or {}).get("id", "?"), (r2 or {}).get("id", "?"))
+            self._tg(tg.ping_eod_iron_condor,
+                     "🦅 IC STOP — closed both spreads on Alpaca paper"
+                     if ok else "⚠️ IC stop close FAILED — check Alpaca (position may still be open)")
+            self._persist_state()
+        except Exception as e:  # noqa: BLE001
+            ic.broker_status = "close_error"
+            log.exception("IC stop close failed for %s: %s", ic.build_id, e)
 
     async def _maybe_fire_eod_summary(self, bar: Bar):
         """Fire the EOD wave + IC summary ONCE per session, after 16:00 ET.
@@ -849,6 +891,13 @@ class Orchestrator:
                     wave_msg = f"{wave_msg}\n\n{_dbf.format_debrief_telegram(_db)}"
             except Exception as e:
                 log.warning("EOD debrief render failed: %s", e)
+            # Today's gate ledger — so Telegram and the app's Today card agree on
+            # no-trade days ("2 signals stood aside — confluence" instead of silence).
+            if self._today_date == date_str and self._today_evaluated > 0:
+                gates = ", ".join(f"{k} ×{v}" for k, v in self._today_gated.items())
+                fired_n = self._today_evaluated - sum(self._today_gated.values())
+                wave_msg = (f"{wave_msg}\n👁 today: {self._today_evaluated} signal(s) seen · "
+                            f"{fired_n} fired" + (f" · stood aside: {gates}" if gates else ""))
             # Daily reconciliation — flag any recorded trade the broker never saw.
             try:
                 from . import reconcile as _rec
@@ -1394,6 +1443,11 @@ class Orchestrator:
                 )
             except Exception as e:
                 log.warning("ping_iron_condor (CBOE) failed: %s", e)
+            # EXECUTE (northstar #1) — only the auto build, once per day, live bars.
+            # The CBOE path has real strikes + credit; the geometric fallback stays
+            # alert-only (placing market orders on estimated strikes is reckless).
+            if trigger == "auto":
+                asyncio.create_task(self._submit_alpaca_ic(new_ic))
         return True
 
     async def _build_eod_iron_condor(self, bar: Bar):
@@ -2312,6 +2366,69 @@ class Orchestrator:
             _drop_trade()
             log.exception("Alpaca entry failed for trade #%d: %s", pt.trade_no, e)
             _ping(executed=False, exec_note="submit failed (exception)")
+
+    async def _submit_alpaca_ic(self, ic):
+        """EXECUTE the EOD iron condor on Alpaca paper (northstar strategy #1 —
+        'set and forget'). Converts the SPX build to SPY (1/10, $1 grid, wings
+        pushed out if rounding collapses them) and submits the 4-leg mleg order.
+        The breakeven stop-rule (_check_ic_stop_loss) closes it; otherwise it rides
+        to same-day expiry."""
+        if not settings.IC_EXECUTION_ENABLED or settings.PAPER_BROKER != "alpaca" \
+                or getattr(self, "alpaca_trader", None) is None:
+            return
+        if ic.broker_status:  # already handled (dedup per build)
+            return
+        try:
+            def spy(strike: float) -> float:
+                return float(round(strike / 10.0))
+            cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
+            ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
+            if cl <= cs:
+                cl = cs + 1.0   # keep the call wing real after rounding
+            if pl >= ps:
+                pl = ps - 1.0   # keep the put wing real after rounding
+            today_str = datetime.now(ET).strftime("%Y-%m-%d")
+            qty = max(1, settings.IC_CONTRACTS)
+            result = await self.alpaca_trader.place_iron_condor(
+                underlying="SPY", expiry=today_str,
+                call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+            )
+            if result and not result.get("shadow"):
+                ic.alpaca_order_id = result.get("id")
+                ic.broker_status = "submitted"
+                ic.contracts = qty
+                log.info("IC EXECUTED on Alpaca: %s → SPY C%.0f/%.0f P%.0f/%.0f ×%d order %s",
+                         ic.build_id, cs, cl, ps, pl, qty, ic.alpaca_order_id)
+                self._tg(tg.ping_eod_iron_condor,
+                         f"🦅 IC EXECUTED · Alpaca paper · SPY C{cs:.0f}/{cl:.0f} P{ps:.0f}/{pl:.0f} "
+                         f"×{qty} · set-and-forget (stop rule armed, else expiry)")
+                asyncio.create_task(self._capture_ic_fill(ic))
+            elif result and result.get("shadow"):
+                ic.broker_status = "shadow"
+            else:
+                ic.broker_status = "error"
+                log.error("IC execution REJECTED for %s", ic.build_id)
+                self._tg(tg.ping_eod_iron_condor,
+                         "⚠️ IC NOT executed — Alpaca rejected the order (see logs). Alert-only today.")
+            self._persist_state()
+        except Exception as e:  # noqa: BLE001
+            ic.broker_status = "error"
+            log.exception("IC execution failed for %s: %s", ic.build_id, e)
+
+    async def _capture_ic_fill(self, ic):
+        """Best-effort: read the IC's real fill cashflow (instrumentation only)."""
+        if not settings.READ_BROKER_FILLS or not ic.alpaca_order_id:
+            return
+        try:
+            from .alpaca_trader import order_net_cashflow
+            await asyncio.sleep(4.0)
+            order = await self.alpaca_trader.get_order(ic.alpaca_order_id)
+            cf = order_net_cashflow(order)
+            if cf is not None:
+                log.info("IC fill-read: %s real credit $%.2f | model credit $%.0f",
+                         ic.build_id, cf, ic.total_credit_dollars or 0)
+        except Exception as e:  # noqa: BLE001
+            log.warning("IC fill-read failed for %s: %s", ic.build_id, e)
 
     async def _submit_alpaca_exit(self, pt: PaperTrade):
         """Close Alpaca paper position when directional spread exits.

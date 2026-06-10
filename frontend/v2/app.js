@@ -22,6 +22,14 @@ const money = (v, d = 0) => { const n = v || 0; return (n < 0 ? '−$' : '$') + 
 const signMoney = (v, d = 0) => { const n = v || 0; return (n >= 0 ? '+$' : '−$') + Math.abs(n).toFixed(d); };
 const fmt = (v, d = 0) => (v == null ? '—' : (+v).toFixed(d));
 const clsx = (...a) => a.filter(Boolean).join(' ');
+// '2026-06-09' → 'Tue 9 Jun' (ISO YYYY-MM-DD reads ambiguous; all dates are ET days)
+const fmtDay = (iso) => {
+  try {
+    const d = new Date((iso || '').slice(0, 10) + 'T12:00:00');
+    if (isNaN(d)) return iso || '—';
+    return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  } catch (e) { return iso || '—'; }
+};
 
 // ── Data layer ──────────────────────────────────────────────────────────────
 async function loadMonitor() {
@@ -271,7 +279,7 @@ function DebriefCard({ d }) {
   const ddColor = ddPct >= 100 ? 'var(--red)' : ddPct >= 70 ? 'var(--amber)' : 'var(--blue)';
   const fl = d.flags || {};
   return html`
-    <${Card} title=${`Debrief · ${d.date}`} accent=${tone}
+    <${Card} title=${`Last trade · ${fmtDay(d.date)}`} accent=${tone}
       actions=${html`<span class="muted" style="font-size:12px">${(d.trades || []).length} trade(s) · ${d.wins}W/${d.losses}L · <b style=${{ color: tone }}>${signMoney(sp)}</b></span>`}
       cls="debrief">
       ${(d.trades || []).map(a => html`
@@ -686,7 +694,7 @@ function TodayCard({ t }) {
   const gated = Object.entries(t.gated || {});
   const alive = !!t.last_bar_et;
   const fired = t.fired > 0;
-  return html`<${Card} title=${'Today · ' + (t.date || '')} accent=${fired ? 'var(--green)' : 'var(--blue)'}
+  return html`<${Card} title=${'Today · ' + fmtDay(t.date) + ' · ET'} accent=${fired ? 'var(--green)' : 'var(--blue)'}
     actions=${html`<span class="pill"><span class=${clsx('dot', alive && t.market_open ? 'live' : alive ? 'warn' : 'err')}></span>${t.last_bar_et ? 'last bar ' + t.last_bar_et : 'no feed'}</span>`}>
     <div class="today-status">${t.status}</div>
     ${gated.length ? html`<div class="today-gates">

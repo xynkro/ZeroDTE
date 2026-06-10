@@ -243,6 +243,14 @@ class Settings:
     ALPACA_MARKETABLE_LIMIT: bool = _b("ALPACA_MARKETABLE_LIMIT", False)
     # Read real Alpaca fills into broker_realized_pnl (instrumentation, default ON).
     READ_BROKER_FILLS: bool = _b("READ_BROKER_FILLS", True)
+    # EXECUTE the EOD iron condor on Alpaca paper (northstar strategy #1). Until
+    # 2026-06-10 the IC was ALERT-ONLY: it built strikes, pinged Telegram, and never
+    # placed the trade. ON = submit the 4-leg SPY mleg (SPX/10, $1 grid) when the
+    # CBOE build passes the min-credit gate; the breakeven stop-rule then CLOSES it
+    # via two reverse spreads. Held to expiry otherwise (0DTE — expires same day).
+    IC_EXECUTION_ENABLED: bool = _b("IC_EXECUTION_ENABLED", False)
+    IC_CONTRACTS: int = _i("IC_CONTRACTS", 1)
+
     # Directional VIX stand-aside threshold (decoupled from the IC builder's 22 line).
     # Validated on the put book (153-trade backtest, prior-day VIX): VIX 22-30 is the
     # BEST regime (+$128/trade, 83% WR, 11% breach); only VIX>=30 is net-negative

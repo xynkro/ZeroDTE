@@ -102,12 +102,12 @@ class AlpacaFeed:
             log.error("Alpaca warmup failed: %s", e)
             return False
 
-    async def get_options_chain_with_greeks(
-        self, instrument: str, underlying: float
-    ) -> dict:
-        """Stub — Alpaca free tier doesn't include options chain.
-        Returns empty dict so the IC builder falls back to geometric picker."""
-        return {}
+    async def get_options_chain_with_greeks(self, *args, **kwargs) -> dict:
+        """Stub — Alpaca free tier doesn't include options chain. Accepts any call
+        shape (the flow scanner passes IBKR's kwargs symbol=/underlying_price=/
+        strike_pct_band=; the old 2-arg signature made every flow scan crash with
+        TypeError). Returns an error dict so callers exit cleanly."""
+        return {"error": "no_chain_via_alpaca"}
 
     async def stop(self):
         """Cancel the polling loop and close HTTP client."""

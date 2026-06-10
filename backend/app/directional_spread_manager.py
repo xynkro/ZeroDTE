@@ -300,10 +300,14 @@ def open_directional_trade(
 
     max_loss = wing * multiplier - credit
 
-    # Sizing
+    # Sizing — on the EXECUTED venue's risk. Alpaca executes SPY at 1/10 SPX, so a
+    # "1 SPX contract" ledger trade really risks ~$70, not ~$700. Sizing against
+    # the SPX figure floored every trade to 1 contract (~0.65% account risk when
+    # 4% was configured). exec_scale carries through to P&L so dollars stay real.
+    exec_scale = 0.1 if settings.PAPER_BROKER == "alpaca" else 1.0
     confluence_max = len(sig_event.confluence) if sig_event.confluence else 4
     contracts, sizing_note = recommend_contracts(
-        max_loss_per_contract_usd=max_loss,
+        max_loss_per_contract_usd=max_loss * exec_scale,
         confluence_score=sig_event.confluence_score,
         confluence_max=confluence_max,
     )
@@ -329,6 +333,7 @@ def open_directional_trade(
         current_stop_pct_kept=-100.0,  # initial: lose full credit
         breakeven_dist_pct=breakeven_dist_pct,
         bs_realized_std=realized_std,  # set → check_exit reprices with Black-Scholes
+        exec_scale=exec_scale,
         outcome="pending",
     ), sizing_note
 
@@ -485,7 +490,11 @@ def _check_exit_bs(trade: PaperTrade, bar: Bar) -> Optional[dict]:
         return max(max_loss_pct, min(100.0, (credit_ps - value_ps) / credit_ps * 100.0))
 
     def _pnl(exit_pct: float) -> float:
-        return (trade.estimated_credit or 0.0) * (exit_pct / 100.0) * trade.contracts - cost * trade.contracts
+        # exec_scale converts the SPX-notional per-contract math to the executed
+        # venue's real dollars (0.1 = SPY): credit AND cost scale together, so
+        # `pnl` is what the account actually makes/loses across `contracts`.
+        scale = getattr(trade, "exec_scale", 1.0) or 1.0
+        return ((trade.estimated_credit or 0.0) * (exit_pct / 100.0) - cost) * trade.contracts * scale
 
     # EOD — settle at intrinsic value (a close-through here is a real loss)
     if bar_min >= close_min:

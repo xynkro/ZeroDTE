@@ -1296,6 +1296,12 @@ class Orchestrator:
         User can override with /icnow to rebuild any time."""
         et_time = bar.time.astimezone(ET)
         date_str = et_time.strftime("%Y-%m-%d")
+        # Stale-bar guard: warmup/backfill can re-dispatch YESTERDAY's bars after a
+        # restart; their bar-date dodges the built-today check and the rebuild
+        # OVERWRITES state.iron_condor (clobbering live broker tracking). Only
+        # build when the bar belongs to the wall-clock session.
+        if date_str != datetime.now(ET).strftime("%Y-%m-%d"):
+            return
         # Parse EOD_IC_BUILD_ET into hours/minutes
         try:
             hh, mm = settings.EOD_IC_BUILD_ET.split(":")
@@ -1471,6 +1477,13 @@ class Orchestrator:
           IC_DEFAULT_PCT_OTM  — % OTM for short strikes (default 1.0)
           IC_WING_WIDTH       — long-leg distance from short (0 = instrument default)
         """
+        # Stale-bar guard (see _maybe_build_eod_ic): never build/overwrite the IC
+        # from a bar that isn't today's session — covers the /icnow force path too.
+        _bar_et = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
+        if _bar_et.strftime("%Y-%m-%d") != datetime.now(ET).strftime("%Y-%m-%d"):
+            log.warning("IC build skipped: stale bar %s (today is %s)",
+                        _bar_et.strftime("%Y-%m-%d %H:%M"), datetime.now(ET).strftime("%Y-%m-%d"))
+            return
         ph = self.state.regime.proj_high
         pl = self.state.regime.proj_low
         if ph is None or pl is None:

@@ -122,6 +122,12 @@ class PaperTrade(BaseModel):
     # Broker order tracking (Alpaca paper trading)
     alpaca_order_id: str | None = None
     broker_status: str | None = None  # "submitted" / "filled" / "shadow" / "error"
+    # Dollar scale of the EXECUTED venue vs the SPX-notional ledger math: 0.1 when
+    # the trade executes as SPY (1/10 SPX). Sizing + P&L use it so `contracts` is
+    # the REAL executed contract count and `pnl` is REAL dollars. Default 1.0 keeps
+    # pre-existing trades' semantics. (Fix for the 6-15x undersizing bug: we sized
+    # against SPX-scale max loss ~$700/ct while executing SPY where risk ~$70/ct.)
+    exec_scale: float = 1.0
     # Wall-clock entry time (distinct from fired_at = the BAR timestamp). Lets us
     # detect backfill/restart phantom trades whose bar time is stale. (quant-audit)
     opened_wall_clock: str | None = None

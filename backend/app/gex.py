@@ -247,3 +247,25 @@ async def fetch_gex(symbol: str = "_SPX", timeout: float = 20.0) -> GexResult:
     except Exception as e:
         log.warning("fetch_gex(%s) failed: %s", symbol, e)
         return GexResult(ok=False, symbol=symbol, error=str(e))
+
+
+def chain_mids_for_expiry(chain: dict, expiry_yymmdd: str) -> dict:
+    """Adapt a CBOE delayed-quotes payload to {'calls': [{strike, mid}], 'puts': […]}
+    for ONE expiry — lets the IC breakeven stop-rule mark to market when the primary
+    feed has no options chain (Alpaca free tier / yfinance)."""
+    out = {"calls": [], "puts": []}
+    options = (chain.get("data") or {}).get("options") or []
+    for o in options:
+        sym = o.get("option", "")
+        if expiry_yymmdd not in sym:
+            continue
+        parsed = _parse_occ(sym)
+        if parsed is None:
+            continue
+        is_call, strike = parsed
+        bid, ask = o.get("bid") or 0.0, o.get("ask") or 0.0
+        if bid <= 0 and ask <= 0:
+            continue
+        out["calls" if is_call else "puts"].append(
+            {"strike": strike, "mid": (bid + ask) / 2.0})
+    return out

@@ -319,34 +319,6 @@ class AlpacaTrader:
             return None
 
 
-def order_net_cashflow(order: dict, multiplier: int = 100) -> float | None:
-    """Net signed $ cashflow of a FILLED multi-leg order: +received on sold legs,
-    −paid on bought legs. Returns None if no leg has a fill price yet (still
-    pending). Defensive about Alpaca's response shape — verify on first live fill."""
-    if not order:
-        return None
-    legs = order.get("legs") or [order]
-    total, any_fill = 0.0, False
-    for leg in legs:
-        px = leg.get("filled_avg_price")
-        if px in (None, "", "0", "0.0"):
-            continue
-        try:
-            price = float(px)
-        except (TypeError, ValueError):
-            continue
-        qty = leg.get("filled_qty") or leg.get("qty") or order.get("filled_qty") or 0
-        try:
-            qty = float(qty)
-        except (TypeError, ValueError):
-            qty = 0.0
-        if qty <= 0:
-            continue
-        any_fill = True
-        sign = 1.0 if (leg.get("side") == "sell") else -1.0
-        total += sign * price * qty * multiplier
-    return round(total, 2) if any_fill else None
-
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open
         orders in a single call (Alpaca DELETE /v2/positions?cancel_orders=true)."""
@@ -383,3 +355,31 @@ def order_net_cashflow(order: dict, multiplier: int = 100) -> float | None:
         # Strike in cents (×1000, 8 digits): 740.50 → 00740500
         strike_int = int(round(strike * 1000))
         return f"{root}{expiry}{cp}{strike_int:08d}"
+
+def order_net_cashflow(order: dict, multiplier: int = 100) -> float | None:
+    """Net signed $ cashflow of a FILLED multi-leg order: +received on sold legs,
+    −paid on bought legs. Returns None if no leg has a fill price yet (still
+    pending). Defensive about Alpaca's response shape — verify on first live fill."""
+    if not order:
+        return None
+    legs = order.get("legs") or [order]
+    total, any_fill = 0.0, False
+    for leg in legs:
+        px = leg.get("filled_avg_price")
+        if px in (None, "", "0", "0.0"):
+            continue
+        try:
+            price = float(px)
+        except (TypeError, ValueError):
+            continue
+        qty = leg.get("filled_qty") or leg.get("qty") or order.get("filled_qty") or 0
+        try:
+            qty = float(qty)
+        except (TypeError, ValueError):
+            qty = 0.0
+        if qty <= 0:
+            continue
+        any_fill = True
+        sign = 1.0 if (leg.get("side") == "sell") else -1.0
+        total += sign * price * qty * multiplier
+    return round(total, 2) if any_fill else None

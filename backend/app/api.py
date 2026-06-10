@@ -731,6 +731,21 @@ async def reconcile_endpoint():
     return await rec.reconcile(orch)
 
 
+@app.post("/api/ic/build_now", dependencies=[Depends(require_write_token)])
+async def ic_build_now():
+    """Force-build (and, if IC_EXECUTION_ENABLED, execute) today's iron condor —
+    same as the Telegram /icnow command. Per-day execution dedup applies."""
+    buf = list(orch.predictor._buffer)
+    if not buf:
+        raise HTTPException(status_code=409, detail="no bar data yet (warming up)")
+    orch._eod_ic_built_today = None
+    await orch._maybe_build_eod_ic_force(buf[-1])
+    ic = orch.state.iron_condor
+    return {"build_id": ic.build_id, "available": ic.available,
+            "credit": ic.total_credit_dollars, "broker_status": ic.broker_status,
+            "order_id": ic.alpaca_order_id}
+
+
 @app.get("/api/signals")
 async def get_signals():
     """The 'brain' cockpit payload — latest signal + tonight's sell zones + live

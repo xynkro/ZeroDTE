@@ -751,9 +751,19 @@ class Orchestrator:
             chain = await self._get_chain_cached(instr, instr_underlying)
         except Exception as e:
             log.warning("IC stop check: chain fetch failed: %s", e)
-            return
+            chain = None
         if not chain or "calls" not in chain or "puts" not in chain:
-            return
+            # Fallback: mark to market off the CBOE delayed chain (same source the
+            # build used) — the Alpaca/yfinance feeds have no options chain, which
+            # left the stop-rule blind on an EXECUTED position.
+            if instr == "SPX":
+                from . import gex as _gex
+                raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
+                if raw:
+                    exp = datetime.now(ET).strftime("%y%m%d")
+                    chain = _gex.chain_mids_for_expiry(raw, exp)
+            if not chain or not chain.get("calls") or not chain.get("puts"):
+                return
 
         # Find current mid for each leg
         def _mid(leg_data, target_strike):
@@ -1443,11 +1453,12 @@ class Orchestrator:
                 )
             except Exception as e:
                 log.warning("ping_iron_condor (CBOE) failed: %s", e)
-            # EXECUTE (northstar #1) — only the auto build, once per day, live bars.
-            # The CBOE path has real strikes + credit; the geometric fallback stays
-            # alert-only (placing market orders on estimated strikes is reckless).
-            if trigger == "auto":
-                asyncio.create_task(self._submit_alpaca_ic(new_ic))
+        # EXECUTE (northstar #1) — auto and /icnow builds alike; the per-day dedup
+        # inside _submit_alpaca_ic guarantees at most one placement/day. Runs
+        # OUTSIDE the _is_live_bar ping gate: forced builds can ride a stale buffer
+        # bar, and Alpaca itself rejects orders outside market hours. The CBOE path
+        # has real strikes + credit; the geometric fallback stays alert-only.
+        asyncio.create_task(self._submit_alpaca_ic(new_ic))
         return True
 
     async def _build_eod_iron_condor(self, bar: Bar):
@@ -2375,8 +2386,19 @@ class Orchestrator:
         to same-day expiry."""
         if not settings.IC_EXECUTION_ENABLED or settings.PAPER_BROKER != "alpaca" \
                 or getattr(self, "alpaca_trader", None) is None:
+            log.info("IC submit skipped (%s): exec=%s broker=%s trader=%s", ic.build_id,
+                     settings.IC_EXECUTION_ENABLED, settings.PAPER_BROKER,
+                     getattr(self, "alpaca_trader", None) is not None)
             return
-        if ic.broker_status:  # already handled (dedup per build)
+        if ic.broker_status in ("submitted", "shadow"):  # this build already placed
+            log.info("IC submit skipped (%s): already %s", ic.build_id, ic.broker_status)
+            return
+        # At most ONE IC placement per day, regardless of how many builds fire
+        # (auto + /icnow retries). Marked only after a successful submit, so an
+        # errored attempt can be retried via /icnow.
+        day_key = datetime.now(ET).strftime("%Y-%m-%d")
+        if dedup.already_done("ic_executed", day_key):
+            log.info("IC submit skipped (%s): already executed an IC today", ic.build_id)
             return
         try:
             def spy(strike: float) -> float:
@@ -2397,6 +2419,7 @@ class Orchestrator:
                 ic.alpaca_order_id = result.get("id")
                 ic.broker_status = "submitted"
                 ic.contracts = qty
+                dedup.mark_done("ic_executed", day_key)
                 log.info("IC EXECUTED on Alpaca: %s → SPY C%.0f/%.0f P%.0f/%.0f ×%d order %s",
                          ic.build_id, cs, cl, ps, pl, qty, ic.alpaca_order_id)
                 self._tg(tg.ping_eod_iron_condor,

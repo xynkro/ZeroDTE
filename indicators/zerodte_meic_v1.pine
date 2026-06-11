@@ -1,0 +1,85 @@
+//@version=6
+indicator("ZeroDTE MEIC v1", shorttitle="MEIC v1", overlay=true,
+          max_lines_count=64, max_labels_count=32, max_boxes_count=16)
+
+// ────────────────────────────────────────────────────────────────────────
+// ZeroDTE MEIC — Multiple-Entry Iron Condor ladder overlay (SPX/SPY/XSP)
+// Mirrors the live backend (backtested 2026-06-11: ladder 11/12/13/14 ET,
+// +$464/day SPX-scale per 1ct/slot, 73% green days, t=21.9):
+//   at each slot, sell a 16Δ call spread + 16Δ put spread, $25 SPX wings,
+//   skewed vol (puts 1.15× / calls 0.90×), per-condor BREAKEVEN stop.
+// This overlay approximates the backend's Black-Scholes strikes from chart
+// realized vol so you can FOLLOW ALONG: price between the two solid lines =
+// rung winning; price reaching a solid line ≈ stop territory.
+// THE BACKEND IS THE SOURCE OF TRUTH — Telegram/PWA show the real fills.
+// ────────────────────────────────────────────────────────────────────────
+
+g1 = "Ladder slots (ET)"
+s1h = input.int(11, "Slot 1 hour", group=g1, minval=9, maxval=15), s1m = input.int(0, "min", group=g1, inline="s1", minval=0, maxval=59)
+s2h = input.int(12, "Slot 2 hour", group=g1, minval=9, maxval=15), s2m = input.int(0, "min", group=g1, inline="s2", minval=0, maxval=59)
+s3h = input.int(13, "Slot 3 hour", group=g1, minval=9, maxval=15), s3m = input.int(0, "min", group=g1, inline="s3", minval=0, maxval=59)
+s4h = input.int(14, "Slot 4 hour", group=g1, minval=9, maxval=15), s4m = input.int(0, "min", group=g1, inline="s4", minval=0, maxval=59)
+
+g2 = "Strike model (matches live system)"
+zDelta     = input.float(0.994, "z for short delta (0.994 ≈ 16Δ)", group=g2, step=0.01,
+             tooltip="Inverse-normal of (1 − short delta). 16Δ → 0.994; 10Δ → 1.282.")
+wingSpx    = input.float(25.0, "Wing width (SPX pts)", group=g2, minval=1,
+             tooltip="Auto-scales ÷10 when chart price < 1000 (SPY/XSP).")
+premMult   = input.float(1.2,  "IV/RV premium mult", group=g2, step=0.05)
+useSkew    = input.bool(true,  "Skew (puts 1.15× / calls 0.90×)", group=g2)
+putSkew    = input.float(1.15, "Put vol mult",  group=g2, step=0.01)
+callSkew   = input.float(0.90, "Call vol mult", group=g2, step=0.01)
+volLb      = input.int(24, "Realized-vol lookback (bars)", group=g2, minval=6,
+             tooltip="Stdev of 5m log returns. Backend uses session-so-far; 24 bars ≈ 2h is a close proxy.")
+
+tzNY = "America/New_York"
+etH  = hour(time, tzNY)
+etM  = minute(time, tzNY)
+barMin = etH * 60 + etM
+closeMin = 16 * 60
+newDay = ta.change(dayofweek(time, tzNY)) != 0
+
+// scale wings for SPY/XSP charts (strikes derive from chart price directly)
+wing = close < 1000 ? wingSpx / 10.0 : wingSpx
+
+// per-5m realized vol → total vol to expiry (σ·√n·mult), like bs_pricing
+r5 = ta.stdev(math.log(close / close[1]), volLb)
+periodsLeft = math.max((closeMin - barMin) / 5.0, 1.0)
+tv = r5 * math.sqrt(periodsLeft) * premMult
+tvC = tv * (useSkew ? callSkew : 1.0)
+tvP = tv * (useSkew ? putSkew : 1.0)
+
+// 16Δ strikes via BS inversion: ln(S/K) = d1·tv − 0.5·tv² ; call d1 = −z, put d1 = +z
+callShort() => close * math.exp(0.5 * tvC * tvC + zDelta * tvC)
+putShort()  => close * math.exp(0.5 * tvP * tvP - zDelta * tvP)
+
+var fired = array.new_bool(4, false)
+if newDay
+    array.fill(fired, false)
+
+slotMin(i) => i == 0 ? s1h * 60 + s1m : i == 1 ? s2h * 60 + s2m : i == 2 ? s3h * 60 + s3m : s4h * 60 + s4m
+
+drawRung(int i) =>
+    cs = callShort()
+    ps = putShort()
+    cl = cs + wing
+    pl = ps - wing
+    endT = time + math.round((closeMin - barMin) * 60000.0)
+    line.new(time, cs, endT, cs, xloc=xloc.bar_time, color=color.new(color.red, 0),   width=2)
+    line.new(time, cl, endT, cl, xloc=xloc.bar_time, color=color.new(color.red, 70),  style=line.style_dotted)
+    line.new(time, ps, endT, ps, xloc=xloc.bar_time, color=color.new(color.green, 0), width=2)
+    line.new(time, pl, endT, pl, xloc=xloc.bar_time, color=color.new(color.green, 70), style=line.style_dotted)
+    label.new(time, cs, "MEIC #" + str.tostring(i + 1) + " " + str.tostring(etH, "00") + ":" + str.tostring(etM, "00") +
+              "\nC " + str.tostring(cs, format.mintick) + " / P " + str.tostring(ps, format.mintick),
+              xloc=xloc.bar_time, style=label.style_label_down, color=color.new(color.orange, 30),
+              textcolor=color.white, size=size.small)
+
+if barstate.isconfirmed and session.ismarket
+    for i = 0 to 3
+        sm = slotMin(i)
+        if not array.get(fired, i) and barMin >= sm and barMin <= sm + 25
+            array.set(fired, i, true)
+            drawRung(i)
+
+// breach shading: price beyond ANY live solid line ⇒ that rung is in stop territory
+bgcolor(na, title="(rungs draw their own lines)")

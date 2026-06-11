@@ -108,6 +108,56 @@ def _today_block(orch) -> dict:
     }
 
 
+def _meic_block(orch) -> dict:
+    """Today's iron-condor ladder for the dashboard: every scheduled slot with its
+    build (strikes/credit/broker status) or 'pending/missed' — so the PWA shows
+    exactly what the MEIC book is doing, rung by rung."""
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    now_min = now_et.hour * 60 + now_et.minute
+
+    def _ic_dict(b):
+        return {
+            "build_id": b.build_id,
+            "time": (b.build_id or "")[-4:][:2] + ":" + (b.build_id or "")[-2:],
+            "call_short": getattr(b.call_leg, "short_strike", None) if b.call_leg else None,
+            "call_long": getattr(b.call_leg, "long_strike", None) if b.call_leg else None,
+            "put_short": getattr(b.put_leg, "short_strike", None) if b.put_leg else None,
+            "put_long": getattr(b.put_leg, "long_strike", None) if b.put_leg else None,
+            "credit": b.total_credit_dollars,
+            "status": b.broker_status or ("alert_only" if b.available else "skipped"),
+            "stopped": b.broker_status == "closed_stop",
+        }
+
+    todays = [b for b in (orch.state.iron_condor_history or [])
+              if (b.build_id or "").startswith(f"ic_{today}")]
+    used = set()
+    rungs = []
+    raw = settings.MEIC_ENTRY_TIMES_ET if settings.MEIC_ENABLED else settings.EOD_IC_BUILD_ET
+    for s in str(raw).split(","):
+        s = s.strip()
+        try:
+            hh, mm = s.split(":")
+            smin = int(hh) * 60 + int(mm)
+        except ValueError:
+            continue
+        match = next((b for b in todays if b.build_id not in used and abs(
+            (int((b.build_id or "0000")[-4:][:2]) * 60 + int((b.build_id or "00")[-2:])) - smin) <= 25), None)
+        if match is not None:
+            used.add(match.build_id)
+            rungs.append({"slot": s, **_ic_dict(match)})
+        else:
+            state = "pending" if now_min < smin else ("window" if now_min <= smin + 25 else "missed")
+            if now_et.weekday() >= 5 or not getattr(orch, "_is_rth_now", lambda: False)():
+                state = "pending"
+            rungs.append({"slot": s, "status": state})
+    for b in todays:  # manual /icnow builds outside the schedule
+        if b.build_id not in used:
+            rungs.append({"slot": "manual", **_ic_dict(b)})
+    return {"enabled": settings.MEIC_ENABLED and settings.IC_EXECUTION_ENABLED,
+            "contracts": settings.IC_CONTRACTS, "rungs": rungs}
+
+
 def assemble(orch) -> dict:
     st = orch.state
     q = getattr(st, "quote", None)
@@ -129,6 +179,7 @@ def assemble(orch) -> dict:
             "obs_drift_pct": reg.obs_drift_pct,
         },
         "today": _today_block(orch),
+        "meic": _meic_block(orch),
         "latest_signal": _sig_dict(sigs[-1]) if sigs else None,
         "recent_signals": [_sig_dict(s) for s in reversed(sigs[-6:])],
         "open_positions": [_pos_dict(p) for p in open_pos],

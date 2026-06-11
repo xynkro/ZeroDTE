@@ -705,6 +705,30 @@ function TodayCard({ t }) {
   </${Card}>`;
 }
 
+const MEIC_STATUS = {
+  pending: ['neutral', 'pending'], window: ['warn', 'in window'], missed: ['neutral', 'missed'],
+  submitted: ['ok', 'LIVE'], closed_stop: ['bad', 'stopped'], alert_only: ['warn', 'alert only'],
+  error: ['bad', 'error'], shadow: ['neutral', 'shadow'], skipped: ['neutral', 'skipped'],
+};
+
+function MeicLadder({ m }) {
+  if (!m || !(m.rungs || []).length) return null;
+  return html`<${Card} title="MEIC ladder — iron condors" accent="var(--amber)"
+    actions=${html`<${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? `executing ×${m.contracts}` : 'alert-only'}</${Badge}>`}>
+    ${(m.rungs || []).map((r, i) => {
+      const [kind, label] = MEIC_STATUS[r.status] || ['neutral', r.status || '—'];
+      const legs = (r.call_short != null)
+        ? `C ${fmt(r.call_short, 0)}/${fmt(r.call_long, 0)} · P ${fmt(r.put_short, 0)}/${fmt(r.put_long, 0)}`
+        : 'awaiting build';
+      return html`<div class="sigrow" key=${i}>
+        <span class="s-side" style="color:var(--ink)">${r.slot}</span>
+        <span class="s-meta">${legs}${r.credit != null ? ` · credit ${money(r.credit, 0)}` : ''}</span>
+        <${Badge} kind=${kind}>${label}</${Badge}>
+      </div>`;
+    })}
+  </${Card}>`;
+}
+
 function SignalsView() {
   const res = useResource(loadSignals, STATIC ? 60000 : 5000);
   const now = useNow(1000);
@@ -721,6 +745,7 @@ function SignalsView() {
     <div ref=${staggerRef} class="grid" style="margin-top:16px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Snapshot</strong>${d._snapAt ? ' · ' + new Date(d._snapAt).toLocaleString() : ''} — live countdown / P&L update on the backend terminal.</span></div>`}
       ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
+      ${d.meic && html`<div data-stagger><${MeicLadder} m=${d.meic} /></div>`}
       <div data-stagger style="display:flex;justify-content:flex-end">
         <a class="btn" href=${tvUrl} target="_blank" rel="noopener noreferrer">\u{1F4C8} Open chart on TradingView</a>
       </div>

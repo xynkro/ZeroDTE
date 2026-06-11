@@ -204,6 +204,15 @@ def resolve_iron_condor(
         else:
             pnl = float(ic.total_credit_dollars)
 
+    # EXECUTED reality beats settlement fantasy: if this condor was closed LIVE
+    # by the breakeven stop, score THAT (≈ scratch), not where price settled
+    # hours after we were already out. (2026-06-10: scorer said −$2,005 'breached
+    # at settlement' for a position that realized −$23 at the stop.)
+    if getattr(ic, "broker_status", None) == "closed_stop":
+        outcome = "STOPPED_BE"
+        emoji = "🛑"
+        pnl = 0.0
+
     headroom_call = short_call - session_high
     cushion_put = session_low - short_put
 
@@ -314,6 +323,7 @@ def format_ic_summary(date_str: str, ic_result: dict) -> str:
         "GRAZE": "🤏 GRAZE — settled within 0.15% of a short strike",
         "BAAAAD_call_itm": "✗ BAAAAD — call wing breached at settlement",
         "BAAAAD_put_itm": "✗ BAAAAD — put wing breached at settlement",
+        "STOPPED_BE": "🛑 STOPPED at ~breakeven — closed LIVE before settlement (real fills logged)",
     }.get(out, f"{emoji} {out}")
 
     lines = [

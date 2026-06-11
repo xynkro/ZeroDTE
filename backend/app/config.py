@@ -257,6 +257,14 @@ class Settings:
     MEIC_ENABLED: bool = _b("MEIC_ENABLED", False)
     MEIC_ENTRY_TIMES_ET: str = os.getenv("MEIC_ENTRY_TIMES_ET", "10:15,11:15,12:15,13:30")
     MEIC_MAX_PER_DAY: int = _i("MEIC_MAX_PER_DAY", 6)
+    # Breakeven-stop hardening. At entry, buyback ≈ credit BY DEFINITION, so a
+    # zero-buffer stop trips on quote noise instantly (live slot-1 2026-06-11:
+    # filled 15:01:07, stopped 15:01:09). The backtest only evaluated stops from
+    # the NEXT 5-min bar on smooth model marks — mirror that: arm after N minutes,
+    # require buyback ≥ credit × buffer, confirmed on 2 consecutive marks.
+    IC_STOP_ARM_MIN: int = _i("IC_STOP_ARM_MIN", 5)
+    IC_STOP_BUFFER: float = _f("IC_STOP_BUFFER", 1.05)
+    IC_STOP_CONFIRM_SEC: int = _i("IC_STOP_CONFIRM_SEC", 45)
 
     # Directional VIX stand-aside threshold (decoupled from the IC builder's 22 line).
     # Validated on the put book (153-trade backtest, prior-day VIX): VIX 22-30 is the

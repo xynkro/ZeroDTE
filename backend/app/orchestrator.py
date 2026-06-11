@@ -763,6 +763,16 @@ class Orchestrator:
         # Edge-trigger: only fire once per IC build (use build_id + dedup)
         if dedup.already_done("ic_stop_fired", ic.build_id):
             return
+        # ARM DELAY: at entry buyback ≈ credit by definition — give the rung
+        # IC_STOP_ARM_MIN minutes before the stop is live (backtest parity).
+        try:
+            built = datetime.fromisoformat(ic.built_at)
+            if built.tzinfo is None:
+                built = built.replace(tzinfo=ET)
+            if (datetime.now(ET) - built).total_seconds() < settings.IC_STOP_ARM_MIN * 60:
+                return
+        except (ValueError, TypeError):
+            pass
 
         # Fetch current chain to mark IC to market
         instr = ic.call_leg.instrument
@@ -815,9 +825,26 @@ class Orchestrator:
         put_spread_cost  = max(0.0, (sp_mid - lp_mid)) * multiplier
         total_buyback = call_spread_cost + put_spread_cost
 
-        # Stop trigger: buyback cost ≥ original credit (= breakeven)
-        if total_buyback < ic.total_credit_dollars:
+        # Stop trigger: buyback ≥ credit × buffer (noise margin over pure
+        # breakeven), CONFIRMED on two consecutive marks ≥ IC_STOP_CONFIRM_SEC
+        # apart — one CBOE mid-tick can't fire it.
+        threshold = ic.total_credit_dollars * settings.IC_STOP_BUFFER
+        pend = getattr(self, "_ic_stop_pending", None)
+        if pend is None:
+            pend = self._ic_stop_pending = {}
+        if total_buyback < threshold:
+            pend.pop(ic.build_id, None)   # condition cleared — reset confirmation
             return
+        now_ts = datetime.now(timezone.utc).timestamp()
+        first = pend.get(ic.build_id)
+        if first is None:
+            pend[ic.build_id] = now_ts
+            log.info("IC stop PENDING (%s): buyback $%.0f ≥ $%.0f — awaiting confirm",
+                     ic.build_id, total_buyback, threshold)
+            return
+        if now_ts - first < settings.IC_STOP_CONFIRM_SEC:
+            return
+        pend.pop(ic.build_id, None)
 
         log.warning(
             "IC STOP triggered: buyback ${%.0f} ≥ credit ${%.0f} (call_cost=${%.0f}, put_cost=${%.0f})",

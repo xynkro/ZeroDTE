@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Literal
 
@@ -107,7 +108,22 @@ def send(
 
     try:
         with httpx.Client(timeout=6.0) as client:
-            r = client.post(url, json=payload)
+            # Transient-network retry: DNS failures / SSL timeouts / connection
+            # resets killed a whole evening of MEIC alerts (2026-06-11) because
+            # sends were one-shot. 3 attempts, short backoff; callers already run
+            # off the event loop so the worst case (~9s) blocks nothing.
+            r = None
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    r = client.post(url, json=payload)
+                    break
+                except (httpx.TransportError, httpx.TimeoutException) as e:
+                    last_exc = e
+                    log.warning("Telegram send attempt %d/3 failed: %s", attempt + 1, e)
+                    time.sleep(1.5 * (attempt + 1))
+            if r is None:
+                raise last_exc if last_exc else RuntimeError("telegram send failed")
             # Capture body BEFORE raise_for_status so we see Telegram's error detail
             try:
                 body = r.json()

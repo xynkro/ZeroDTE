@@ -381,5 +381,11 @@ def order_net_cashflow(order: dict, multiplier: int = 100) -> float | None:
             continue
         any_fill = True
         sign = 1.0 if (leg.get("side") == "sell") else -1.0
-        total += sign * price * qty * multiplier
+        # ×100 multiplier is for OPTION legs only (OCC symbols, e.g.
+        # SPY260611C00736000). Equity orders (e.g. the CasaaFinance robo buys
+        # sharing this paper account) are 1× — applying 100× made a $408 stock
+        # buy read as −$40,791.
+        sym = str(leg.get("symbol") or "")
+        mult = multiplier if len(sym) > 12 else 1.0
+        total += sign * price * qty * mult
     return round(total, 2) if any_fill else None

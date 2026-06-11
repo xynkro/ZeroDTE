@@ -250,6 +250,13 @@ class Settings:
     # via two reverse spreads. Held to expiry otherwise (0DTE — expires same day).
     IC_EXECUTION_ENABLED: bool = _b("IC_EXECUTION_ENABLED", False)
     IC_CONTRACTS: int = _i("IC_CONTRACTS", 1)
+    # MEIC — Multiple-Entry Iron Condor (the "Mech"): ladder several condors across
+    # the day instead of one 10:15 shot. Each slot builds+executes independently
+    # with its own breakeven stop; stop-checker manages ALL open condors. Default
+    # OFF = single-entry behaviour at EOD_IC_BUILD_ET.
+    MEIC_ENABLED: bool = _b("MEIC_ENABLED", False)
+    MEIC_ENTRY_TIMES_ET: str = os.getenv("MEIC_ENTRY_TIMES_ET", "10:15,11:15,12:15,13:30")
+    MEIC_MAX_PER_DAY: int = _i("MEIC_MAX_PER_DAY", 6)
 
     # Directional VIX stand-aside threshold (decoupled from the IC builder's 22 line).
     # Validated on the put book (153-trade backtest, prior-day VIX): VIX 22-30 is the

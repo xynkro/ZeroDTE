@@ -729,12 +729,33 @@ class Orchestrator:
             log.error("Flow scan at %s failed: %s", target_window, e)
 
     async def _check_ic_stop_loss(self, bar: Bar):
-        """If today's IC has been built, check current spread mid-price against
-        the original credit collected. If buyback-cost ≥ original credit, fire
-        a STOP alert (Theta Profits' Breakeven IC rule). Once-per-IC."""
+        """Breakeven stop across ALL of today's open iron condors (MEIC-aware).
+        The displayed state.iron_condor is just the LATEST build — with multiple
+        staggered entries, every executed condor needs its own mark-to-market and
+        its own stop. Each is edge-triggered once per build_id."""
         if not getattr(self, "_is_live_bar", False):
             return
-        ic = self.state.iron_condor
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        cands, seen = [], set()
+        ic0 = self.state.iron_condor
+        if ic0 is not None and ic0.available and ic0.build_id:
+            cands.append(ic0)
+            seen.add(ic0.build_id)
+        for b in list(self.state.iron_condor_history):
+            if (b.build_id and b.build_id not in seen and b.available
+                    and b.build_id.startswith(f"ic_{today}")
+                    and b.broker_status == "submitted"):
+                cands.append(b)
+                seen.add(b.build_id)
+        for ic in cands:
+            try:
+                await self._check_one_ic_stop(bar, ic)
+            except Exception as e:  # noqa: BLE001
+                log.warning("IC stop check failed for %s: %s", ic.build_id, e)
+
+    async def _check_one_ic_stop(self, bar: Bar, ic):
+        """Per-condor breakeven stop: if buyback-cost ≥ original credit, alert and
+        (if executed) close it. Theta Profits' Breakeven IC rule."""
         if not ic or not ic.available or not ic.call_leg or not ic.put_leg:
             return
         if not ic.total_credit_dollars or ic.total_credit_dollars <= 0:
@@ -758,7 +779,15 @@ class Orchestrator:
             # left the stop-rule blind on an EXECUTED position.
             if instr == "SPX":
                 from . import gex as _gex
-                raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
+                # TTL-cache the CBOE chain (multiple condors share one mark per ~90s)
+                cached = getattr(self, "_cboe_mark_cache", None)
+                now_ts = datetime.now(timezone.utc).timestamp()
+                if cached and (now_ts - cached[0]) < 90:
+                    raw = cached[1]
+                else:
+                    raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
+                    if raw:
+                        self._cboe_mark_cache = (now_ts, raw)
                 if raw:
                     exp = datetime.now(ET).strftime("%y%m%d")
                     chain = _gex.chain_mids_for_expiry(raw, exp)
@@ -1302,30 +1331,46 @@ class Orchestrator:
         # build when the bar belongs to the wall-clock session.
         if date_str != datetime.now(ET).strftime("%Y-%m-%d"):
             return
-        # Parse EOD_IC_BUILD_ET into hours/minutes
-        try:
-            hh, mm = settings.EOD_IC_BUILD_ET.split(":")
-            build_h, build_m = int(hh), int(mm)
-        except (ValueError, AttributeError):
-            build_h, build_m = 9, 45
-        build_minute = build_h * 60 + build_m
         bar_minute = et_time.hour * 60 + et_time.minute
-        # Window: bar at-or-past the build time, but only fire once per session
-        if bar_minute < build_minute:
-            return
         if not self.state.regime.classified or self.state.regime.regime != "non_volatile":
             return
-        if self._eod_ic_built_today == date_str:
-            return  # already built once today
 
-        log.info("EOD IC auto-build (target %s ET) for %s @ ET %s",
-                 settings.EOD_IC_BUILD_ET, date_str, et_time.strftime("%H:%M"))
-        # Mark as attempted FIRST so a failed build doesn't loop on every bar
-        self._eod_ic_built_today = date_str
-        try:
-            await self._build_eod_iron_condor(bar)
-        except Exception as e:
-            log.exception("EOD IC build failed: %s", e)
+        # MEIC (multiple-entry iron condor): staggered entries across the day —
+        # diversifies the single biggest IC risk (picking the wrong minute) and is
+        # the structure behind smooth IC equity curves. Each slot fires once
+        # (persistent dedup) and ONLY within 25 min of its time, so a restart at
+        # 14:00 can't machine-gun the whole morning ladder at one price.
+        def _slot_minutes() -> list[tuple[str, int]]:
+            if settings.MEIC_ENABLED:
+                raw = settings.MEIC_ENTRY_TIMES_ET
+            else:
+                raw = settings.EOD_IC_BUILD_ET
+            out = []
+            for s in str(raw).split(","):
+                s = s.strip()
+                try:
+                    hh, mm = s.split(":")
+                    out.append((s, int(hh) * 60 + int(mm)))
+                except (ValueError, AttributeError):
+                    continue
+            return out or [("10:15", 10 * 60 + 15)]
+
+        for slot, slot_min in _slot_minutes():
+            if not (slot_min <= bar_minute <= slot_min + 25):
+                continue
+            slot_key = f"{date_str}:{slot}"
+            if dedup.already_done("ic_slot_built", slot_key):
+                continue
+            dedup.mark_done("ic_slot_built", slot_key)  # mark FIRST: no per-bar retry loop
+            self._eod_ic_built_today = date_str
+            log.info("IC ladder build — slot %s ET (%s) @ bar %s",
+                     slot, "MEIC" if settings.MEIC_ENABLED else "single",
+                     et_time.strftime("%H:%M"))
+            try:
+                await self._build_eod_iron_condor(bar)
+            except Exception as e:
+                log.exception("IC build failed (slot %s): %s", slot, e)
+            break  # at most one build per bar
 
     async def _maybe_build_eod_ic_force(self, bar: Bar):
         """Force-build the IC right now, bypassing the 12:30 ET gate. Used by
@@ -2406,12 +2451,18 @@ class Orchestrator:
         if ic.broker_status in ("submitted", "shadow"):  # this build already placed
             log.info("IC submit skipped (%s): already %s", ic.build_id, ic.broker_status)
             return
-        # At most ONE IC placement per day, regardless of how many builds fire
-        # (auto + /icnow retries). Marked only after a successful submit, so an
-        # errored attempt can be retried via /icnow.
+        # Per-BUILD dedup (MEIC: each ladder slot places its own condor) + a hard
+        # daily ceiling so /icnow spam or a scheduler bug can't stack unlimited risk.
         day_key = datetime.now(ET).strftime("%Y-%m-%d")
-        if dedup.already_done("ic_executed", day_key):
-            log.info("IC submit skipped (%s): already executed an IC today", ic.build_id)
+        if dedup.already_done("ic_exec_build", ic.build_id):
+            log.info("IC submit skipped (%s): this build already placed", ic.build_id)
+            return
+        placed_today = sum(1 for b in self.state.iron_condor_history
+                           if b.build_id and b.build_id.startswith(f"ic_{day_key}")
+                           and b.broker_status == "submitted")
+        if placed_today >= settings.MEIC_MAX_PER_DAY:
+            log.warning("IC submit skipped (%s): daily ceiling %d reached",
+                        ic.build_id, settings.MEIC_MAX_PER_DAY)
             return
         try:
             def spy(strike: float) -> float:
@@ -2432,7 +2483,7 @@ class Orchestrator:
                 ic.alpaca_order_id = result.get("id")
                 ic.broker_status = "submitted"
                 ic.contracts = qty
-                dedup.mark_done("ic_executed", day_key)
+                dedup.mark_done("ic_exec_build", ic.build_id)
                 log.info("IC EXECUTED on Alpaca: %s → SPY C%.0f/%.0f P%.0f/%.0f ×%d order %s",
                          ic.build_id, cs, cl, ps, pl, qty, ic.alpaca_order_id)
                 self._tg(tg.ping_eod_iron_condor,

@@ -1,0 +1,44 @@
+# Cloud watchdog — the one alert the Mac CANNOT send: "the Mac is down."
+# The backend publishes monitor.json to the data branch every ~5 min while alive.
+# This cron (GitHub-hosted, Mac-independent) checks that heartbeat during US
+# market hours and Telegrams if it goes stale: initial alert at ~15-30 min of
+# silence, one reminder around the 4-hour mark. Borrowed from the CasaaFinance
+# cloud-cron pattern.
+name: backend-watchdog
+
+on:
+  schedule:
+    - cron: "*/15 13-20 * * 1-5"   # every 15 min, 13:00-20:59 UTC, Mon-Fri (covers RTH)
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check snapshot heartbeat
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -e
+          GEN=$(curl -s "https://raw.githubusercontent.com/xynkro/ZeroDTE/data/monitor.json?t=$(date +%s)" | python3 -c "import sys,json;print(json.load(sys.stdin).get('generated_at',''))" || echo "")
+          if [ -z "$GEN" ]; then STALE_MIN=9999; else
+            STALE_MIN=$(python3 -c "
+          from datetime import datetime,timezone
+          g=datetime.fromisoformat('$GEN'.replace('Z','+00:00'))
+          print(int((datetime.now(timezone.utc)-g).total_seconds()//60))")
+          fi
+          echo "snapshot staleness: ${STALE_MIN} min"
+          # Only RTH matters (13:30-20:00 UTC); outside it, stay silent.
+          NOW_MIN=$(( $(date -u +%H) * 60 + $(date -u +%M) ))
+          if [ "$NOW_MIN" -lt 810 ] || [ "$NOW_MIN" -gt 1200 ]; then echo "outside RTH"; exit 0; fi
+          # Alert window: first cross (15-29 min) + one ~4h reminder (240-254 min)
+          if { [ "$STALE_MIN" -ge 15 ] && [ "$STALE_MIN" -lt 30 ]; } || \
+             { [ "$STALE_MIN" -ge 240 ] && [ "$STALE_MIN" -lt 255 ]; } || \
+             [ "$STALE_MIN" -eq 9999 ]; then
+            curl -s "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              -d chat_id="${TG_CHAT}" \
+              --data-urlencode text="🚨 ZeroDTE WATCHDOG (cloud): backend heartbeat is ${STALE_MIN} min stale during market hours — the Mac is likely ASLEEP or OFFLINE. Open positions are UNMANAGED. Wake the Mac." >/dev/null
+            echo "alert sent"
+          fi

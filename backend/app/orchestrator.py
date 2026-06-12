@@ -914,6 +914,63 @@ class Orchestrator:
             return
         await self._fire_eod_summary(date_str)
 
+    async def _today_ic_real_book(self, date_str: str) -> dict | None:
+        """Sum today's REAL condor cashflow from Alpaca: 4-leg entries (credit in)
+        vs 2-leg closes (debit out). SPY-scale real $. None if no fills / not
+        alpaca. order_net_cashflow already separates option ×100 from equity ×1."""
+        if settings.PAPER_BROKER != "alpaca":
+            return None
+        try:
+            import httpx
+            from .alpaca_trader import order_net_cashflow
+            hdr = {"APCA-API-KEY-ID": settings.ALPACA_API_KEY,
+                   "APCA-API-SECRET-KEY": settings.ALPACA_SECRET_KEY}
+            async with httpx.AsyncClient(timeout=15) as c:
+                r = await c.get(f"{settings.ALPACA_BASE_URL}/v2/orders",
+                                params={"status": "all", "limit": 100, "nested": "true"}, headers=hdr)
+                orders = r.json()
+            entries = exits = 0.0
+            n_entry = 0
+            for o in orders:
+                if not str(o.get("submitted_at", "")).startswith(date_str):
+                    continue
+                legs = o.get("legs") or []
+                if not legs:           # equity (CasaaFinance) — not ours
+                    continue
+                cf = order_net_cashflow(o) or 0.0
+                if len(legs) >= 4:     # 4-leg condor entry
+                    entries += cf
+                    n_entry += 1
+                else:                  # 2-leg close (reverse spread)
+                    exits += cf
+            if n_entry == 0:
+                return None
+            return {"entries": n_entry, "entry_credit": round(entries, 2),
+                    "exit_cost": round(exits, 2), "net": round(entries + exits, 2)}
+        except Exception as e:  # noqa: BLE001
+            log.warning("IC real-book fetch failed: %s", e)
+            return None
+
+    def _write_debrief_md(self, date_str: str, wave_d: dict, ic_d: dict) -> None:
+        """Persist the full session debrief to docs/debriefs/YYYY-MM-DD.md — the
+        durable record the user asked for and the improvement loop can re-read."""
+        import os
+        try:
+            from . import debrief as _dbf
+            d = os.path.join(os.path.dirname(__file__), "..", "..", "docs", "debriefs")
+            os.makedirs(d, exist_ok=True)
+            parts = [f"# Session debrief — {date_str}\n"]
+            if ic_d.get("date"):
+                parts += ["## MEIC condor book\n", "```", _dbf.format_ic_debrief_telegram(ic_d), "```\n"]
+            if wave_d.get("date"):
+                parts += ["## Wave book\n", "```", _dbf.format_debrief_telegram(wave_d), "```\n"]
+            if not ic_d.get("date") and not wave_d.get("date"):
+                parts.append("_No trades this session._\n")
+            with open(os.path.join(d, f"{date_str}.md"), "w") as f:
+                f.write("\n".join(parts))
+        except Exception as e:  # noqa: BLE001
+            log.warning("debrief md write failed: %s", e)
+
     async def _fire_eod_summary(self, date_str: str):
         """Build + send the EOD summaries to both topics. Idempotent per date.
         Persistent dedup — backend restart won't re-fire today's summary.
@@ -955,6 +1012,19 @@ class Orchestrator:
                 _db = _dbf.build_debrief(self.paper_trades, date_str)
                 if _db.get("date"):
                     wave_msg = f"{wave_msg}\n\n{_dbf.format_debrief_telegram(_db)}"
+                # MEIC condor debrief — execution reality (slippage, stop-rate) vs
+                # the backtest's assumptions, on real Alpaca fills.
+                real_book = await self._today_ic_real_book(date_str)
+                _ic_db = _dbf.build_ic_debrief(self.state.iron_condor_history, date_str, real_book)
+                if _ic_db.get("date"):
+                    ic_msg = f"{ic_msg}\n\n{_dbf.format_ic_debrief_telegram(_ic_db)}"
+                # Persist measured reality to the rolling log the weekly improvement
+                # loop reads, and drop a full markdown debrief on disk.
+                import os
+                _data = os.path.join(os.path.dirname(__file__), "..", "data")
+                _dbf.log_assumptions(date_str, _ic_db, _db,
+                                     os.path.join(_data, "debrief_log.jsonl"))
+                self._write_debrief_md(date_str, _db, _ic_db)
             except Exception as e:
                 log.warning("EOD debrief render failed: %s", e)
             # Today's gate ledger — so Telegram and the app's Today card agree on

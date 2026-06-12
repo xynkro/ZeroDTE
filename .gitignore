@@ -29,3 +29,8 @@ backend/ruvector.db
 .claude/
 node_modules/
 *.log
+
+# debrief loop runtime artifacts (machine-local)
+backend/data/debrief_log.jsonl
+docs/debriefs/
+docs/improvements/

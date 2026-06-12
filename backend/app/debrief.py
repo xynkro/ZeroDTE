@@ -198,6 +198,160 @@ def build_debrief(trades, date: str | None = None) -> dict:
     }
 
 
+# ── MEIC / iron-condor book ──────────────────────────────────────────────────
+# Anchors from the honest MEIC backtest (scripts/meic_backtest.py, ladder
+# 11/12/13/14 ET): per-entry stop-rate 58%, 73% green NIGHTS, +$125/entry
+# expectancy at $50 SPX-scale round-trip cost. Edge thins as real cost rises.
+IC_BT_STOP_RATE = 58.0
+IC_BT_GREEN_NIGHTS = 73.0
+IC_BT_COST_RT_SPX = 50.0
+IC_SLIP_TOLERANCE_PCT = 15.0   # entry slippage above this = the audit's edge-thinning line
+
+
+def _ic_status(b) -> str:
+    s = getattr(b, "broker_status", None)
+    if s == "submitted":
+        return "executed"
+    if s == "closed_stop":
+        return "stopped"
+    if s in ("error", "rejected"):
+        return "error"
+    return "alert_only" if getattr(b, "available", False) else "skipped"
+
+
+def build_ic_debrief(ic_history, date: str, real_book: dict | None = None) -> dict:
+    """MEIC condor-book post-mortem for ONE session — the piece the wave debrief
+    was blind to. real_book (optional) = {entries, entry_credit, exit_cost, net}
+    in SPY-scale real $ from Alpaca fills; model-only when absent.
+
+    Measures execution reality vs the backtest's ASSUMPTIONS (slippage vs the
+    $50 cost model, stop-rate vs 58%) — these feed the weekly improvement loop.
+    It never judges strategy off one night; small N is reported, not alarmed."""
+    rungs = [b for b in (ic_history or [])
+             if (getattr(b, "build_id", "") or "").startswith(f"ic_{date}")]
+    if not rungs:
+        return {"date": None, "verdict": "No condors built this session.", "n": 0}
+
+    executed = stopped = 0
+    model_credit_spx = 0.0
+    rows = []
+    for b in rungs:
+        st = _ic_status(b)
+        if st in ("executed", "stopped"):
+            executed += 1
+            model_credit_spx += (b.total_credit_dollars or 0.0)
+        if st == "stopped":
+            stopped += 1
+        cl, pl = b.call_leg, b.put_leg
+        bid = b.build_id or ""
+        rows.append({
+            "slot": (bid[-4:][:2] + ":" + bid[-2:]) if len(bid) >= 4 else "—",
+            "status": st,
+            "call_short": getattr(cl, "short_strike", None) if cl else None,
+            "put_short": getattr(pl, "short_strike", None) if pl else None,
+            "model_credit": round(b.total_credit_dollars or 0.0, 2),
+        })
+    stop_rate = round(stopped / executed * 100, 1) if executed else None
+
+    out = {"date": date, "n": len(rungs), "rungs": rows,
+           "executed": executed, "stopped": stopped, "stop_rate": stop_rate,
+           "model_credit_spx": round(model_credit_spx, 2)}
+    flags: list[str] = []
+
+    # Execution quality — the number the audit said decides everything.
+    if real_book and real_book.get("entries"):
+        real_entry = real_book.get("entry_credit") or 0.0       # SPY-scale real $
+        real_net = real_book.get("net") or 0.0
+        model_entry_spy = model_credit_spx / 10.0               # SPX→SPY ×1ct
+        slip = model_entry_spy - real_entry
+        slip_pct = round(slip / model_entry_spy * 100, 1) if model_entry_spy else None
+        out["real"] = {"entry_credit": round(real_entry, 2), "net_pnl": round(real_net, 2),
+                       "entries": real_book.get("entries"),
+                       "model_entry_spy": round(model_entry_spy, 2), "slippage_pct": slip_pct}
+        if slip_pct is not None and slip_pct > IC_SLIP_TOLERANCE_PCT:
+            flags.append(f"⚠️ entry slippage {slip_pct:.0f}% (model ${model_entry_spy:.0f}→real "
+                         f"${real_entry:.0f}) — above the ~{IC_SLIP_TOLERANCE_PCT:.0f}% line where IC "
+                         f"edge thins; CBOE-mid limit orders are the fix, not a param change")
+        elif slip_pct is not None and slip_pct < -5:
+            flags.append(f"✅ fills RICHER than model by {abs(slip_pct):.0f}% (model ${model_entry_spy:.0f}"
+                         f"→real ${real_entry:.0f}) — the BS credit model is conservative; the backtest "
+                         f"understates this book's edge")
+        elif slip_pct is not None:
+            flags.append(f"entry slippage {slip_pct:.0f}% — within tolerance")
+    else:
+        out["real"] = {"note": "no real fills captured — model-only"}
+
+    if stop_rate is not None:
+        if executed >= 8 and stop_rate > IC_BT_STOP_RATE + 20:
+            flags.append(f"⚠️ stop-rate {stop_rate:.0f}% vs backtest {IC_BT_STOP_RATE:.0f}% — running "
+                         f"hot; likely a trend day or entry-timing issue, not the strategy")
+        else:
+            flags.append(f"stop-rate {stop_rate:.0f}% (backtest {IC_BT_STOP_RATE:.0f}%; N={executed} "
+                         f"— too few to judge)")
+
+    net = (out.get("real") or {}).get("net_pnl")
+    if net is not None:
+        green = net > 0
+        out["verdict"] = (
+            f"{'GREEN' if green else 'RED'} condor night — {executed} fired, {stopped} stopped, "
+            f"real {_money(net)}. " + (
+                f"In line with the {IC_BT_GREEN_NIGHTS:.0f}% green-night model."
+                if green else
+                f"A red night is expected ~{100-IC_BT_GREEN_NIGHTS:.0f}% of the time BY DESIGN — "
+                f"the stops capped it at {_money(net)} instead of the ~{_money(-(model_credit_spx/10*4))} "
+                f"max. Not a malfunction unless it repeats with low slippage."))
+    else:
+        out["verdict"] = f"{executed} condors fired, {stopped} stopped (model-only — no fills captured)."
+    out["flags"] = flags
+    return out
+
+
+def format_ic_debrief_telegram(d: dict) -> str:
+    if not d.get("date"):
+        return ""
+    lines = [f"🦅 MEIC DEBRIEF · {d['date']}"]
+    r = d.get("real") or {}
+    if r.get("net_pnl") is not None:
+        lines.append(f"book: {d['executed']} fired · {d['stopped']} stopped · "
+                     f"real {_money(r['net_pnl'])} (entry {_money(r.get('entry_credit'))})")
+    else:
+        lines.append(f"book: {d['executed']} fired · {d['stopped']} stopped · model-only")
+    for rg in d.get("rungs", []):
+        cs, ps = rg.get("call_short"), rg.get("put_short")
+        legs = f"C{cs:.0f}/P{ps:.0f}" if cs and ps else "(no build)"
+        lines.append(f"  {rg['slot']} {rg['status']:>9} {legs} · model {_money(rg['model_credit'])}")
+    for f in d.get("flags", []):
+        lines.append(f)
+    lines.append(f"verdict: {d['verdict']}")
+    return "\n".join(lines)
+
+
+def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
+    """Append one row of MEASURED reality to the rolling log the weekly
+    improvement loop reads. The sample accumulates HERE; the loop never retunes
+    off a single night — it waits for N and re-confirms against the backtest."""
+    import json
+    r = ic_d.get("real") or {}
+    row = {
+        "date": date,
+        "ic_executed": ic_d.get("executed", 0),
+        "ic_stopped": ic_d.get("stopped", 0),
+        "ic_stop_rate": ic_d.get("stop_rate"),
+        "ic_real_net": r.get("net_pnl"),
+        "ic_entry_credit": r.get("entry_credit"),
+        "ic_slippage_pct": r.get("slippage_pct"),
+        "wave_pnl": wave_d.get("session_pnl"),
+        "wave_n": len(wave_d.get("trades", [])),
+        "wave_wins": wave_d.get("wins"),
+    }
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+    return row
+
+
 def format_debrief_telegram(d: dict) -> str:
     """Compact Telegram rendering of a debrief dict."""
     if not d.get("date"):

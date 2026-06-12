@@ -20,6 +20,7 @@ For 0DTE SPY vertical spreads:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
@@ -212,6 +213,135 @@ class AlpacaTrader:
         except Exception as e:
             log.error("Alpaca IC order failed: %s", e)
             return None
+
+    async def place_iron_condor_limit_ladder(
+        self,
+        underlying: str,
+        expiry: str,
+        call_short: float, call_long: float,
+        put_short: float,  put_long: float,
+        mid_credit_per_share: float,    # CBOE-mid net credit per share (target $/SPY)
+        qty: int = 1,
+        tick_give_cents: int = 1,
+        ladder_steps_cents: list[int] | None = None,
+        wait_sec: int = 8,
+    ) -> dict | None:
+        """LIVE marketable-limit IC execution with a reprice ladder.
+
+        Scaffold — NOT invoked until shadow proves out. The orchestrator picks
+        market vs ladder via IC_LIMIT_LIVE_ENABLED; this function does not check
+        the flag itself so it stays unit-testable.
+
+        Sequence per rung:
+          1. submit mleg limit at (mid − give − step) cents
+          2. poll for `wait_sec`s; if filled → return
+          3. cancel and reprice to the next rung
+
+        After all rungs exhaust, submit a MARKET mleg as final fallback. We
+        cancel any stale limit before each new submit so we never have two
+        condor entries chasing each other (the leg-risk failure mode the user
+        flagged). Alpaca treats mleg as atomic — partial leg-fills are not
+        expected — but we defend in depth by checking status before reprice.
+        """
+        steps = list(ladder_steps_cents or [0])
+        if not steps:
+            steps = [0]
+
+        for rung_idx, extra_cents in enumerate(steps):
+            give = (tick_give_cents + extra_cents) / 100.0
+            limit_price = round(max(0.01, mid_credit_per_share - give), 2)
+            log.info("IC limit-ladder rung %d/%d: limit $%.2f (mid %.3f − give %.2f)",
+                     rung_idx + 1, len(steps), limit_price, mid_credit_per_share, give)
+            result = await self._submit_ic_limit(
+                underlying, expiry,
+                call_short, call_long, put_short, put_long,
+                qty=qty, limit_price=limit_price,
+            )
+            if not result or result.get("shadow"):
+                return result
+            order_id = result.get("id")
+            if not order_id:
+                continue
+            filled = await self._await_fill(order_id, wait_sec=wait_sec)
+            if filled and filled.get("status") == "filled":
+                log.info("IC limit-ladder rung %d FILLED at $%.2f → order %s",
+                         rung_idx + 1, limit_price, order_id)
+                return filled
+            # Cancel before reprice — defend against any partial leg-fill leaving
+            # naked risk (Alpaca says mleg is atomic, but we don't trust on faith).
+            await self.cancel_order(order_id)
+            status = (filled or {}).get("status") or "unknown"
+            log.warning("IC limit-ladder rung %d unfilled (status=%s) — repricing",
+                        rung_idx + 1, status)
+
+        log.warning("IC limit-ladder exhausted — falling back to MARKET mleg")
+        return await self.place_iron_condor(
+            underlying, expiry,
+            call_short=call_short, call_long=call_long,
+            put_short=put_short,   put_long=put_long,
+            qty=qty,
+        )
+
+    async def _submit_ic_limit(
+        self,
+        underlying: str, expiry: str,
+        call_short: float, call_long: float,
+        put_short: float,  put_long: float,
+        qty: int, limit_price: float,
+    ) -> dict | None:
+        """Submit a 4-leg mleg LIMIT order. Internal helper for the ladder."""
+        if not settings.TRADING_ENABLED:
+            return {"shadow": True, "would_place": {
+                "underlying": underlying, "limit_price": limit_price,
+                "call_short": call_short, "call_long": call_long,
+                "put_short": put_short, "put_long": put_long, "qty": qty,
+            }}
+        try:
+            client = await self._ensure_client()
+            expiry_fmt = expiry.replace("-", "")
+            cs = self._occ_symbol(underlying, expiry_fmt, "call", call_short)
+            cl = self._occ_symbol(underlying, expiry_fmt, "call", call_long)
+            ps = self._occ_symbol(underlying, expiry_fmt, "put", put_short)
+            pl = self._occ_symbol(underlying, expiry_fmt, "put", put_long)
+            order = {
+                "qty": str(qty),
+                "type": "limit",
+                "limit_price": f"{limit_price:.2f}",
+                "time_in_force": "day",
+                "order_class": "mleg",
+                "legs": [
+                    {"symbol": cs, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_open"},
+                    {"symbol": cl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
+                    {"symbol": ps, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_open"},
+                    {"symbol": pl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
+                ],
+            }
+            url = f"{settings.ALPACA_BASE_URL}/v2/orders"
+            resp = await client.post(url, json=order)
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            log.error("IC limit submit HTTP %d: %s",
+                      e.response.status_code, e.response.text[:300])
+            return None
+        except Exception as e:  # noqa: BLE001
+            log.error("IC limit submit failed: %s", e)
+            return None
+
+    async def _await_fill(self, order_id: str, wait_sec: int = 8,
+                          poll_interval: float = 1.0) -> dict | None:
+        """Poll a single order until status is terminal or wait_sec elapses."""
+        deadline = wait_sec
+        elapsed = 0.0
+        order = None
+        while elapsed < deadline:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+            order = await self.get_order(order_id)
+            status = (order or {}).get("status")
+            if status in ("filled", "canceled", "rejected", "expired"):
+                return order
+        return order
 
     # ──────────────────────────────────────────────────────────────
     # Close credit spread (reverse order)

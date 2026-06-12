@@ -2533,6 +2533,54 @@ class Orchestrator:
             log.exception("Alpaca entry failed for trade #%d: %s", pt.trade_no, e)
             _ping(executed=False, exec_note="submit failed (exception)")
 
+    async def _compute_ic_limit_shadow(self, ic) -> None:
+        """Stash the CBOE-mid net credit + would-be marketable-limit price on the
+        IC build (SHADOW only). Pure measurement — never affects the live submit.
+        Reuses the same 90-second CBOE chain cache as the breakeven stop-rule so
+        a ladder fire-burst (4 slots) shares one chain pull.
+
+        Strikes on `ic` are SPX. SPX-scale net credit per share is recorded raw;
+        SPY-scale per-share limit price is computed for direct comparison to
+        `order_net_cashflow / (qty*100)` in _capture_ic_fill."""
+        if not settings.IC_LIMIT_SHADOW_ENABLED:
+            return
+        cl, pl = getattr(ic, "call_leg", None), getattr(ic, "put_leg", None)
+        if cl is None or pl is None:
+            return
+        try:
+            from . import gex as _gex
+            cached = getattr(self, "_cboe_mark_cache", None)
+            now_ts = datetime.now(timezone.utc).timestamp()
+            if cached and (now_ts - cached[0]) < 90:
+                raw = cached[1]
+            else:
+                raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
+                if raw:
+                    self._cboe_mark_cache = (now_ts, raw)
+            if not raw:
+                return
+            exp = datetime.now(ET).strftime("%y%m%d")
+            chain_mids = _gex.chain_mids_for_expiry(raw, exp)
+            spx_credit = _gex.condor_net_credit_from_chain(
+                chain_mids,
+                cl.short_strike, cl.long_strike,
+                pl.short_strike, pl.long_strike,
+            )
+            if spx_credit is None or spx_credit <= 0:
+                return
+            # SPY mleg trades at 1/10 SPX strikes; the per-share credit scales the
+            # same way the build does (SPX$credit /10 ≈ SPY$credit). Subtract the
+            # tick give to make the limit marketable (round to nearest cent).
+            spy_mid = spx_credit / 10.0
+            spy_limit = round(spy_mid - settings.IC_LIMIT_TICK_GIVE_CENTS / 100.0, 2)
+            ic.limit_shadow_credit_per_share_spx = round(spx_credit, 4)
+            ic.limit_shadow_credit_per_share_spy = max(0.01, spy_limit)
+            ic.limit_shadow_computed_at = datetime.now(timezone.utc).isoformat()
+            log.info("IC limit-shadow %s: CBOE mid SPX %.2f → SPY limit %.2f/share",
+                     ic.build_id, spx_credit, spy_limit)
+        except Exception as e:  # noqa: BLE001
+            log.warning("IC limit-shadow compute failed for %s: %s", ic.build_id, e)
+
     async def _submit_alpaca_ic(self, ic):
         """EXECUTE the EOD iron condor on Alpaca paper (northstar strategy #1 —
         'set and forget'). Converts the SPX build to SPY (1/10, $1 grid, wings
@@ -2572,6 +2620,9 @@ class Orchestrator:
                 pl = ps - 1.0   # keep the put wing real after rounding
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
             qty = max(1, settings.IC_CONTRACTS)
+            # SHADOW: stash the CBOE-mid would-be limit BEFORE we submit, so the
+            # market fill we measure against is timestamped to the same chain pull.
+            await self._compute_ic_limit_shadow(ic)
             result = await self.alpaca_trader.place_iron_condor(
                 underlying="SPY", expiry=today_str,
                 call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
@@ -2600,7 +2651,13 @@ class Orchestrator:
             log.exception("IC execution failed for %s: %s", ic.build_id, e)
 
     async def _capture_ic_fill(self, ic):
-        """Best-effort: read the IC's real fill cashflow (instrumentation only)."""
+        """Best-effort: read the IC's real fill cashflow (instrumentation only).
+
+        If shadow is on, also resolve the would_fill / would_not_fill decision
+        against the limit price we stashed pre-submit. A marketable-credit limit
+        at $X fills iff the broker would have transacted at ≥ $X — the market
+        fill we got is exactly that benchmark, so real_per_share ≥ shadow_limit
+        ⇒ the limit would also have filled (at $X or better)."""
         if not settings.READ_BROKER_FILLS or not ic.alpaca_order_id:
             return
         try:
@@ -2608,9 +2665,24 @@ class Orchestrator:
             await asyncio.sleep(4.0)
             order = await self.alpaca_trader.get_order(ic.alpaca_order_id)
             cf = order_net_cashflow(order)
-            if cf is not None:
-                log.info("IC fill-read: %s real credit $%.2f | model credit $%.0f",
-                         ic.build_id, cf, ic.total_credit_dollars or 0)
+            if cf is None:
+                return
+            qty = max(1, ic.contracts or 1)
+            real_per_share = cf / (qty * 100.0)
+            log.info("IC fill-read: %s real credit $%.2f (%.3f/share) | model $%.0f",
+                     ic.build_id, cf, real_per_share, ic.total_credit_dollars or 0)
+            if settings.IC_LIMIT_SHADOW_ENABLED \
+                    and ic.limit_shadow_credit_per_share_spy is not None:
+                ic.limit_shadow_market_credit_per_share_spy = round(real_per_share, 4)
+                limit = ic.limit_shadow_credit_per_share_spy
+                ic.limit_shadow_decision = ("would_fill" if real_per_share >= limit
+                                            else "would_not_fill")
+                imp_per_share = real_per_share - limit
+                log.info("IC limit-shadow %s: %s (limit %.3f vs real %.3f /share, "
+                         "improve %+.3f/share = %+.2f $ total)",
+                         ic.build_id, ic.limit_shadow_decision, limit, real_per_share,
+                         imp_per_share, imp_per_share * qty * 100.0)
+            self._persist_state()
         except Exception as e:  # noqa: BLE001
             log.warning("IC fill-read failed for %s: %s", ic.build_id, e)
 

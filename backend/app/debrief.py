@@ -208,6 +208,48 @@ IC_BT_COST_RT_SPX = 50.0
 IC_SLIP_TOLERANCE_PCT = 15.0   # entry slippage above this = the audit's edge-thinning line
 
 
+def _limit_shadow_summary(rungs) -> dict | None:
+    """Per-night CBOE-mid marketable-limit SHADOW report — pure measurement.
+
+    For each condor where the limit shadow was computed AND the real fill landed,
+    classify would_fill vs would_not_fill and average the per-share improvement
+    (real − limit). Positive improvement = market got us BETTER than the limit
+    (so the limit ladder would still have captured at least the shadow price).
+    Negative = the limit wouldn't have triggered (or would have improved further
+    while sitting). We are NOT yet calling the limit ladder — this is the metric
+    that decides when we flip IC_LIMIT_LIVE_ENABLED on."""
+    measured = []
+    for b in rungs or ():
+        lim = getattr(b, "limit_shadow_credit_per_share_spy", None)
+        real = getattr(b, "limit_shadow_market_credit_per_share_spy", None)
+        if lim is None or real is None:
+            continue
+        qty = getattr(b, "contracts", None) or 1
+        measured.append({
+            "build_id": getattr(b, "build_id", ""),
+            "limit_per_share": float(lim),
+            "real_per_share": float(real),
+            "improve_per_share": round(float(real) - float(lim), 4),
+            "improve_total": round((float(real) - float(lim)) * qty * 100.0, 2),
+            "decision": getattr(b, "limit_shadow_decision", None) or "unknown",
+        })
+    if not measured:
+        return None
+    would_fill = sum(1 for m in measured if m["decision"] == "would_fill")
+    would_not = sum(1 for m in measured if m["decision"] == "would_not_fill")
+    mean_per_share = sum(m["improve_per_share"] for m in measured) / len(measured)
+    total_improve = sum(m["improve_total"] for m in measured)
+    return {
+        "n": len(measured),
+        "would_fill": would_fill,
+        "would_not_fill": would_not,
+        "would_fill_rate_pct": round(would_fill / len(measured) * 100, 1),
+        "mean_improve_per_share": round(mean_per_share, 4),
+        "total_improve_spy": round(total_improve, 2),
+        "rows": measured,
+    }
+
+
 def _ic_status(b) -> str:
     s = getattr(b, "broker_status", None)
     if s == "submitted":
@@ -257,6 +299,26 @@ def build_ic_debrief(ic_history, date: str, real_book: dict | None = None) -> di
            "executed": executed, "stopped": stopped, "stop_rate": stop_rate,
            "model_credit_spx": round(model_credit_spx, 2)}
     flags: list[str] = []
+
+    # CBOE-mid marketable-limit SHADOW — measurement only, never tunes anything.
+    shadow = _limit_shadow_summary(rungs)
+    out["limit_shadow"] = shadow
+    if shadow:
+        wf, wn = shadow["would_fill"], shadow["would_not_fill"]
+        mean_i = shadow["mean_improve_per_share"]
+        total_i = shadow["total_improve_spy"]
+        if wf and wn == 0:
+            flags.append(f"✅ limit-shadow: {wf}/{wf} would_fill at CBOE-mid limit · "
+                         f"mean improve {mean_i:+.3f} $/share (real over limit) · "
+                         f"total {total_i:+.2f} $ — limit ladder would capture this")
+        elif wf and wn:
+            flags.append(f"limit-shadow: {wf} would_fill, {wn} would_not_fill (rate "
+                         f"{shadow['would_fill_rate_pct']:.0f}%) · ladder will need its "
+                         f"reprice rungs to catch the non-fills")
+        elif wn and not wf:
+            flags.append(f"⚠️ limit-shadow: 0/{wn} would_fill — CBOE mid is below real fill "
+                         f"by mean {abs(mean_i):.3f} $/share. Live ladder must reprice or "
+                         f"market-fallback to clear; do NOT flip IC_LIMIT_LIVE_ENABLED yet")
 
     # Execution quality — the number the audit said decides everything.
     if real_book and real_book.get("entries"):
@@ -320,6 +382,11 @@ def format_ic_debrief_telegram(d: dict) -> str:
         cs, ps = rg.get("call_short"), rg.get("put_short")
         legs = f"C{cs:.0f}/P{ps:.0f}" if cs and ps else "(no build)"
         lines.append(f"  {rg['slot']} {rg['status']:>9} {legs} · model {_money(rg['model_credit'])}")
+    sh = d.get("limit_shadow")
+    if sh:
+        lines.append(f"limit-shadow: {sh['would_fill']}/{sh['n']} would_fill · "
+                     f"mean improve {sh['mean_improve_per_share']:+.3f} $/share · "
+                     f"total {_money(sh['total_improve_spy'])}")
     for f in d.get("flags", []):
         lines.append(f)
     lines.append(f"verdict: {d['verdict']}")
@@ -332,6 +399,7 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
     off a single night — it waits for N and re-confirms against the backtest."""
     import json
     r = ic_d.get("real") or {}
+    sh = ic_d.get("limit_shadow") or {}
     row = {
         "date": date,
         "ic_executed": ic_d.get("executed", 0),
@@ -340,6 +408,11 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
         "ic_real_net": r.get("net_pnl"),
         "ic_entry_credit": r.get("entry_credit"),
         "ic_slippage_pct": r.get("slippage_pct"),
+        # CBOE-mid limit-shadow — feeds the live-flip decision. None until enabled.
+        "ic_limit_shadow_n": sh.get("n"),
+        "ic_limit_shadow_would_fill_rate_pct": sh.get("would_fill_rate_pct"),
+        "ic_limit_shadow_mean_improve_per_share": sh.get("mean_improve_per_share"),
+        "ic_limit_shadow_total_improve_spy": sh.get("total_improve_spy"),
         "wave_pnl": wave_d.get("session_pnl"),
         "wave_n": len(wave_d.get("trades", [])),
         "wave_wins": wave_d.get("wins"),

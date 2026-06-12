@@ -269,3 +269,39 @@ def chain_mids_for_expiry(chain: dict, expiry_yymmdd: str) -> dict:
         out["calls" if is_call else "puts"].append(
             {"strike": strike, "mid": (bid + ask) / 2.0})
     return out
+
+
+def condor_net_credit_from_chain(
+    chain_mids: dict,
+    call_short: float, call_long: float,
+    put_short: float,  put_long: float,
+) -> float | None:
+    """Net per-share credit at CBOE mids for a 4-leg short iron condor.
+
+    `chain_mids` is the dict returned by chain_mids_for_expiry() — one expiry,
+    pre-split into {'calls': [...], 'puts': [...]}. Returns the SAME scale as
+    the chain's strikes (SPX strikes → SPX per-share credit). Returns None if
+    any leg's mid is unavailable — the caller decides how to fall back.
+
+    Net credit = (call_short_mid − call_long_mid) + (put_short_mid − put_long_mid)
+    i.e. premium collected on the sold legs minus premium paid for the wings.
+    """
+    if not chain_mids:
+        return None
+
+    def _mid(rows, target):
+        for r in rows or ():
+            if abs((r.get("strike") or 0.0) - target) < 0.01:
+                m = r.get("mid")
+                if m is None or m <= 0:
+                    return None
+                return float(m)
+        return None
+
+    sc = _mid(chain_mids.get("calls"), call_short)
+    lc = _mid(chain_mids.get("calls"), call_long)
+    sp = _mid(chain_mids.get("puts"),  put_short)
+    lp = _mid(chain_mids.get("puts"),  put_long)
+    if None in (sc, lc, sp, lp):
+        return None
+    return round((sc - lc) + (sp - lp), 4)

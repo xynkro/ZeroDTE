@@ -174,6 +174,15 @@ class IronCondorBuilder(BaseModel):
     alpaca_order_id: str | None = None
     broker_status: str | None = None    # "submitted" / "shadow" / "error" / "closed_stop"
     contracts: int = 1
+    # CBOE-mid marketable-limit SHADOW (IC_LIMIT_SHADOW_ENABLED). Pure measurement:
+    # we still submit the market mleg, but stash the limit-price we WOULD have used
+    # (net credit at CBOE mids minus IC_LIMIT_TICK_GIVE_CENTS) and after the fill
+    # judge would_fill vs would_not_fill. SPY-scale per-share unless _spx noted.
+    limit_shadow_credit_per_share_spx: float | None = None     # raw CBOE mid net credit (SPX)
+    limit_shadow_credit_per_share_spy: float | None = None     # marketable-limit price (SPY)
+    limit_shadow_computed_at: str | None = None
+    limit_shadow_decision: str | None = None                   # would_fill / would_not_fill / unknown
+    limit_shadow_market_credit_per_share_spy: float | None = None  # real Alpaca per-share for compare
 
 
 class DashboardState(BaseModel):

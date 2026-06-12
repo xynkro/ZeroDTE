@@ -266,6 +266,22 @@ class Settings:
     IC_STOP_BUFFER: float = _f("IC_STOP_BUFFER", 1.05)
     IC_STOP_CONFIRM_SEC: int = _i("IC_STOP_CONFIRM_SEC", 45)
 
+    # CBOE-mid marketable-limit execution for MEIC condors. SHADOW first: still
+    # submit market mleg, but stash the limit-price we WOULD have used (CBOE mid
+    # net credit − tick give) and judge would-fill vs the real fill in debrief.
+    # LIVE only flips after several sessions of reliable would-fill stats; until
+    # then `place_iron_condor_limit_ladder` is a scaffold, not the primary path.
+    IC_LIMIT_SHADOW_ENABLED: bool = _b("IC_LIMIT_SHADOW_ENABLED", False)
+    IC_LIMIT_LIVE_ENABLED: bool = _b("IC_LIMIT_LIVE_ENABLED", False)
+    # Per-share cents below CBOE mid to make the limit marketable (round nickel).
+    IC_LIMIT_TICK_GIVE_CENTS: int = _i("IC_LIMIT_TICK_GIVE_CENTS", 1)
+    # Reprice ladder: extra cent give per rung after a non-fill. Comma-separated,
+    # cents. "0,2,5" = try mid−give, then mid−(give+2c), then mid−(give+5c). After
+    # the last rung, the live executor falls back to a MARKET mleg so we never
+    # leave a half-filled condor exposed (an mleg partial leaves leg risk).
+    IC_LIMIT_LADDER_STEPS_CENTS: str = os.getenv("IC_LIMIT_LADDER_STEPS_CENTS", "0,2,5")
+    IC_LIMIT_REPRICE_WAIT_SEC: int = _i("IC_LIMIT_REPRICE_WAIT_SEC", 8)
+
     # Directional VIX stand-aside threshold (decoupled from the IC builder's 22 line).
     # Validated on the put book (153-trade backtest, prior-day VIX): VIX 22-30 is the
     # BEST regime (+$128/trade, 83% WR, 11% breach); only VIX>=30 is net-negative

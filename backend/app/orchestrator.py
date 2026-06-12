@@ -449,7 +449,7 @@ class Orchestrator:
                 # Check both in-memory and persistent dedup
                 if self._eod_summary_fired == date_str:
                     continue
-                if dedup.already_done("eod_summary_fired", date_str):
+                if dedup.eod_done(date_str):
                     # Persistent says done but in-memory doesn't — sync up
                     self._eod_summary_fired = date_str
                     continue
@@ -910,7 +910,12 @@ class Orchestrator:
         if et.hour < 16:
             return
         date_str = et.strftime("%Y-%m-%d")
-        if dedup.already_done("eod_summary_fired", date_str):
+        # TODAY only. A stale/replayed historical bar (old bar.time marked live)
+        # must never fire a PAST date's EOD — that was the Jun-10 ghost re-send.
+        if date_str != datetime.now(ET).strftime("%Y-%m-%d"):
+            log.debug("EOD trigger skipped: bar date %s != today (stale bar)", date_str)
+            return
+        if dedup.eod_done(date_str):
             return
         await self._fire_eod_summary(date_str)
 
@@ -982,7 +987,7 @@ class Orchestrator:
         saw the persistent dedup and returned immediately, permanently blocking
         the retry. Now we also check tg.ping_*() return values (None = failure).
         """
-        if dedup.already_done("eod_summary_fired", date_str):
+        if dedup.eod_done(date_str):
             return
         # In-memory flag to prevent concurrent fires within this process
         self._eod_summary_fired = date_str
@@ -1046,7 +1051,7 @@ class Orchestrator:
             # and return so the safety loop doesn't rebuild + retry every 60s all
             # day (the old behaviour, since both sends return None when muted).
             if tg.is_muted():
-                dedup.mark_done("eod_summary_fired", date_str)
+                dedup.eod_mark(date_str)
                 log.info("EOD summary suppressed (muted) for %s — not retrying", date_str)
                 return
             # Append the dashboard link so the EOD summaries match every other
@@ -1064,7 +1069,7 @@ class Orchestrator:
             if not ic_ok:
                 log.warning("EOD IC Telegram send failed for %s (wave ok)", date_str)
             # Mark persistent dedup ONLY after at least one send succeeded
-            dedup.mark_done("eod_summary_fired", date_str)
+            dedup.eod_mark(date_str)
             log.info("EOD summary fired for %s (%d signals, IC=%s, wave_ok=%s, ic_ok=%s)",
                      date_str, len(today_sigs),
                      "yes" if self.state.iron_condor.available else "no",

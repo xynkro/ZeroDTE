@@ -116,6 +116,22 @@ def _meic_block(orch) -> dict:
     today = now_et.strftime("%Y-%m-%d")
     now_min = now_et.hour * 60 + now_et.minute
 
+    def _shadow_dict(b):
+        """CBOE-mid marketable-limit SHADOW for this rung — None until a real fill
+        has been measured against the would-be limit (IC_LIMIT_SHADOW_ENABLED).
+        Pure projection of the backend measurement; the PWA never decides on it."""
+        dec = getattr(b, "limit_shadow_decision", None)
+        lim = getattr(b, "limit_shadow_credit_per_share_spy", None)
+        real = getattr(b, "limit_shadow_market_credit_per_share_spy", None)
+        if not dec or lim is None or real is None:
+            return None
+        return {
+            "decision": dec,                       # would_fill / would_not_fill
+            "limit": round(lim, 2),                # SPY per-share marketable limit
+            "real": round(real, 2),                # SPY per-share actual market fill
+            "improve_per_share": round(real - lim, 2),  # +ve = market beat the limit
+        }
+
     def _ic_dict(b):
         return {
             "build_id": b.build_id,
@@ -127,6 +143,7 @@ def _meic_block(orch) -> dict:
             "credit": b.total_credit_dollars,
             "status": b.broker_status or ("alert_only" if b.available else "skipped"),
             "stopped": b.broker_status == "closed_stop",
+            "shadow": _shadow_dict(b),
         }
 
     todays = [b for b in (orch.state.iron_condor_history or [])

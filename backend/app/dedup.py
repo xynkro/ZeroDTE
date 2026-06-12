@@ -68,3 +68,23 @@ def mark_done(key: str, value: Any) -> None:
 def all_state() -> dict:
     """Return a copy of the entire dedup state. For /status diagnostics."""
     return dict(_state)
+
+
+# ── EOD summary: PER-DATE dedup ──────────────────────────────────────────────
+# The old scheme stored ONE value under "eod_summary_fired" = the latest date,
+# overwritten each day. So once Jun-11 fired, already_done("eod_summary_fired",
+# "2026-06-10") compared "2026-06-11" == "2026-06-10" → False, letting a stale
+# Jun-10 "live" bar RE-FIRE Jun-10's summary (with contradictory recomputed
+# state). Per-date keys remember every fired session independently and make the
+# fire idempotent regardless of bar/restart ordering. Back-compat: the legacy
+# single slot still counts as "done" so we don't re-fire on the upgrade.
+def eod_done(date_str: str) -> bool:
+    if _state.get(f"eod_summary_fired_{date_str}"):
+        return True
+    return _state.get("eod_summary_fired") == date_str   # legacy single slot
+
+
+def eod_mark(date_str: str) -> None:
+    _state[f"eod_summary_fired_{date_str}"] = True
+    _state["eod_summary_fired"] = date_str               # keep for /status readers
+    _save(_state)

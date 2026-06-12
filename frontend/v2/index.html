@@ -287,6 +287,21 @@
   .gate-chip { font-size: 11px; color: var(--ink-dim); background: var(--bg-elev-2); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 3px 10px; font-family: var(--font-mono); }
   .gate-chip b { color: var(--amber); font-weight: 600; }
 
+  /* ── MEIC rung + CBOE-mid limit shadow read-out ── */
+  .mrung { border-bottom: 1px solid var(--line-soft); }
+  .mrung:last-child { border-bottom: none; }
+  .mrung .sigrow { border-bottom: none; }
+  .shadow-line { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-dim); padding: 0 2px 9px 74px; margin-top: -3px; }
+  .shadow-line .sh-mark { font-weight: 700; flex: none; }
+  .shadow-line.fill   { color: var(--green); }
+  .shadow-line.nofill { color: var(--amber); }
+  .shadow-line .sh-txt { letter-spacing: .02em; color: var(--ink-dim); }
+  .shadow-line.fill .sh-txt   { color: var(--green); }
+  .shadow-line.nofill .sh-txt { color: var(--amber); }
+  .shadow-line .sh-nums { margin-left: auto; color: var(--ink-faint); white-space: nowrap; }
+  .pill.sh-pill { padding: 4px 10px 4px 8px; font-size: 11px; gap: 6px; }
+  @media (max-width: 460px) { .shadow-line { padding-left: 12px; flex-wrap: wrap; gap: 5px 8px; } .shadow-line .sh-nums { margin-left: 0; } }
+
   /* ─────────────────────────── Mobile polish ─────────────────────────── */
   html { -webkit-text-size-adjust: 100%; }
   button, a, .nav button, .tog, .btn { -webkit-tap-highlight-color: transparent; }

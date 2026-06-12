@@ -711,19 +711,52 @@ const MEIC_STATUS = {
   error: ['bad', 'error'], shadow: ['neutral', 'shadow'], skipped: ['neutral', 'skipped'],
 };
 
+// Per-night roll-up of the CBOE-mid limit SHADOW across whatever rungs have a
+// measured fill. Mirrors debrief._limit_shadow_summary so the live ladder header
+// agrees with the nightly debrief. Returns null until at least one fill lands.
+function shadowSummary(rungs = []) {
+  const m = rungs.map(r => r.shadow).filter(Boolean);
+  if (!m.length) return null;
+  const wf = m.filter(s => s.decision === 'would_fill').length;
+  const totalImprove = m.reduce((a, s) => a + (s.improve_per_share || 0), 0) * 100;
+  return { n: m.length, wf, totalImprove };
+}
+
+// One rung's shadow read-out: would_fill ✓ / would_not_fill ✗ + limit→fill mids
+// and the $/share the market beat (or missed) the marketable limit by.
+function ShadowLine({ s }) {
+  if (!s) return null;
+  const fill = s.decision === 'would_fill';
+  const imp = s.improve_per_share || 0;
+  return html`<div class=${clsx('shadow-line', fill ? 'fill' : 'nofill')}>
+    <span class="sh-mark">${fill ? '✓' : '✗'}</span>
+    <span class="sh-txt">limit-shadow · ${fill ? 'would fill' : 'would NOT fill'}</span>
+    <span class="sh-nums num">${s.limit.toFixed(2)}→${s.real.toFixed(2)}/sh
+      <span class=${imp >= 0 ? 'pos' : 'neg'}>${imp >= 0 ? '+' : ''}${imp.toFixed(2)}</span></span>
+  </div>`;
+}
+
 function MeicLadder({ m }) {
   if (!m || !(m.rungs || []).length) return null;
-  return html`<${Card} title="MEIC ladder — iron condors" accent="var(--amber)"
-    actions=${html`<${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? `executing ×${m.contracts}` : 'alert-only'}</${Badge}>`}>
+  const sh = shadowSummary(m.rungs);
+  const header = html`<div style="display:flex;align-items:center;gap:8px">
+    ${sh && html`<span class="pill sh-pill" title="CBOE-mid marketable-limit shadow — measured vs real fills">
+      <span class="dot ${sh.wf === sh.n ? 'live' : 'warn'}"></span>limit ${sh.wf}/${sh.n} · <span class=${sh.totalImprove >= 0 ? 'pos' : 'neg'}>${signMoney(sh.totalImprove)}</span></span>`}
+    <${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? `executing ×${m.contracts}` : 'alert-only'}</${Badge}>
+  </div>`;
+  return html`<${Card} title="MEIC ladder — iron condors" accent="var(--amber)" actions=${header}>
     ${(m.rungs || []).map((r, i) => {
       const [kind, label] = MEIC_STATUS[r.status] || ['neutral', r.status || '—'];
       const legs = (r.call_short != null)
         ? `C ${fmt(r.call_short, 0)}/${fmt(r.call_long, 0)} · P ${fmt(r.put_short, 0)}/${fmt(r.put_long, 0)}`
         : 'awaiting build';
-      return html`<div class="sigrow" key=${i}>
-        <span class="s-side" style="color:var(--ink)">${r.slot}</span>
-        <span class="s-meta">${legs}${r.credit != null ? ` · credit ${money(r.credit, 0)}` : ''}</span>
-        <${Badge} kind=${kind}>${label}</${Badge}>
+      return html`<div class=${clsx('mrung', r.shadow && 'has-shadow')} key=${i}>
+        <div class="sigrow">
+          <span class="s-side" style="color:var(--ink)">${r.slot}</span>
+          <span class="s-meta">${legs}${r.credit != null ? ` · credit ${money(r.credit, 0)}` : ''}</span>
+          <${Badge} kind=${kind}>${label}</${Badge}>
+        </div>
+        <${ShadowLine} s=${r.shadow} />
       </div>`;
     })}
   </${Card}>`;

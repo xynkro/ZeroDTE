@@ -134,6 +134,23 @@ def build_debrief(trades, date: str | None = None) -> dict:
 
     date = date or days[-1]
     day = [t for t in ds if (t.fired_at or "")[:10] == date]
+    if not day:
+        # Historical trades exist, but NONE closed on the requested date. Do not
+        # fall through to the win/loss logic — with zero trades `losses` is empty
+        # and the verdict would read "Clean session — every trade closed green",
+        # which is nonsense for a day that never traded. Report it honestly.
+        return {
+            "date": date, "session_pnl": 0, "wins": 0, "losses": 0, "trades": [],
+            "flags": {},
+            "verdict": "No directional trades closed today — nothing to debrief.",
+            "discipline": (f"Edge validated on {BACKTEST_TRADES} trades (+${BACKTEST_TOTAL:.0f}, "
+                           f"positive 5/5 yrs). You have {len(ds)} closed — far too few to judge it."),
+            "cum_pnl": cum_all, "dd_vs_backtest_pct": dd_pct,
+            "available_dates": days,
+            "book_split": _book_split(ds),
+            "broker_realized": _broker_check(ds),
+            "no_trades_today": True,
+        }
     analyses = [_classify(t) for t in day]
     wins = [a for a in analyses if a["cat"] == "win"]
     losses = [a for a in analyses if a["cat"] != "win"]

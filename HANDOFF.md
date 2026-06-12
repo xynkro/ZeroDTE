@@ -1,3 +1,51 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 📍 CURRENT STATE — 2026-06-12 (read THIS first; history below is context)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# PORTFOLIO = TWO BOOKS, both live on Alpaca paper (SPY @ 1/10 SPX scale):
+#   1. MEIC (the "Mech") — multiple-entry iron condors, ladder 11:00/12:00/13:00/
+#      14:00 ET × 1 contract, each its own breakeven stop. Backtested
+#      (scripts/meic_backtest.py): +$464/day SPX-scale/1ct, 73% green nights,
+#      t=21.9. Modeled on "Math Makes Money / AI Robot Phil" (his ~10%/mo
+#      independently confirms our audit ceiling). MEIC_ENABLED=true.
+#   2. WAVE (the "Core") — directional credit spreads. Config from the money
+#      audit (docs/WAVE_AUDIT.md): conf≥2 · 30Δ · TP95 · 6 contracts ramp.
+#
+# LIVE TRACK RECORD (real Alpaca fills, managed red by design):
+#   Jun-10 IC −$23 · Jun-11 MEIC −$62 (4/4 stopped, trend day; stops capped it).
+#   Signal so far: fills run ~19% RICHER than the BS model (backtest UNDERSTATES
+#   the condor book). Wave gated on confluence both nights — picky, not broken.
+#
+# DEBRIEF + IMPROVEMENT LOOP (commit 13a00bf) — the discipline layer:
+#   - Nightly debrief auto-runs in EOD (backend/app/debrief.py build_ic_debrief):
+#     per-rung status + REAL book P&L + slippage-vs-model + stop-rate-vs-backtest.
+#     Writes docs/debriefs/YYYY-MM-DD.md + appends backend/data/debrief_log.jsonl.
+#   - scripts/improve_loop.py (WEEKLY, human-gated, applies NOTHING): SAMPLE GATE
+#     (≥20 condor nights / 25 wave trades) + BACKTEST GATE (change must beat live
+#     config on t-stat AND worst-day after credits rescaled to measured slippage).
+#     At N=2 it correctly REFUSES to tune. Do NOT bypass the gates.
+#
+# OPS — the whole engine runs ON THE MAC (launchd com.caspar.zerodte-backend,
+#   now wrapped in `caffeinate -i` so it holds the Mac awake; lid must stay open).
+#   Mac asleep = no trades, open condors UNMANAGED, no Telegram. Cloud watchdog
+#   (.github/workflows/watchdog.yml) Telegrams if the heartbeat goes stale.
+#   Claude is NOT in the trade loop — deterministic Python trades via Alpaca API;
+#   Claude = engineer (tune/backtest/debug) + optional once-a-day macro veto only.
+#
+# NEXT CHECKPOINTS:
+#   • Fri 2026-06-19 — first weekly loop review (read the assumption tracker, not P&L).
+#   • ~mid-July (≈20 clean condor nights) — first point the loop CAN propose a
+#     backtest-confirmed tuning change. The real decision fork.
+#   • Ramp MEIC 1→2 contracts only after clean fills validate over ~2-3 weeks.
+#   • Queued: CBOE-mid limit-order execution; reverse-reconcile 2 unexplained
+#     Jun-5 mlegs; VPS migration (uptime upgrade) once paper numbers earn it.
+#
+# SECURITY (verbatim, persist): .env is gitignored — NEVER commit it. The 21
+#   paper equity positions (AMD/AVGO/ENPH…) + casaa-* orders are CasaaFinance's,
+#   NOT ZeroDTE's — never close/touch them. paper-api.alpaca.markets ONLY, never
+#   real money. Never hit the kill-switch / close_all_positions in tests.
+# ═══════════════════════════════════════════════════════════════════════════
+
 # ZeroDTE Strategy Pivot — Context Handoff
 
 > ## ⚠️ CORRECTION (2026-05-29) — the DEPLOY verdict below is INVALID

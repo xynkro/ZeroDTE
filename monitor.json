@@ -1,0 +1,301 @@
+{
+  "generated_at": "2026-06-15T15:29:28+00:00",
+  "stats": {
+    "total": 0,
+    "wins": 0,
+    "losses": 0,
+    "wr_pct": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "max_drawdown": 0,
+    "profit_factor": 0,
+    "daily": [],
+    "equity_curve": [],
+    "open_trades": []
+  },
+  "trades": [],
+  "alpaca": {
+    "enabled": true,
+    "trading_enabled": true,
+    "open_orders": 0,
+    "base_url": "https://paper-api.alpaca.markets"
+  },
+  "telegram_prefs": {
+    "types": {
+      "entry": true,
+      "exit": true,
+      "iron_condor": true,
+      "ic_stop": true,
+      "daily_loss_limit": true,
+      "feed_stale": true,
+      "iv_gate_skip": true,
+      "session_open": true,
+      "morning_alive": true,
+      "midday_status": true,
+      "macro_blackout": true,
+      "macro_news": true,
+      "eod_wave": true,
+      "eod_iron_condor": true
+    },
+    "prefix": "",
+    "footer": "",
+    "link": {
+      "enabled": true,
+      "style": "plain"
+    },
+    "detail": {
+      "factors": true,
+      "plan": true,
+      "sizing": true
+    }
+  },
+  "telegram_types": [
+    {
+      "key": "entry",
+      "label": "Entry signals",
+      "group": "Trades"
+    },
+    {
+      "key": "exit",
+      "label": "Exit / TP / stop",
+      "group": "Trades"
+    },
+    {
+      "key": "iron_condor",
+      "label": "Iron Condor build",
+      "group": "Trades"
+    },
+    {
+      "key": "ic_stop",
+      "label": "IC breakeven stop",
+      "group": "Trades"
+    },
+    {
+      "key": "daily_loss_limit",
+      "label": "Daily loss-limit hit",
+      "group": "Risk"
+    },
+    {
+      "key": "feed_stale",
+      "label": "Feed-stale warning",
+      "group": "Risk"
+    },
+    {
+      "key": "iv_gate_skip",
+      "label": "IC skipped (VIX too high)",
+      "group": "Risk"
+    },
+    {
+      "key": "session_open",
+      "label": "Session open + regime",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "morning_alive",
+      "label": "Good-morning heartbeat",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "midday_status",
+      "label": "Midday status (quiet days)",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "macro_blackout",
+      "label": "Macro don't-trade",
+      "group": "Macro"
+    },
+    {
+      "key": "macro_news",
+      "label": "Macro news",
+      "group": "Macro"
+    },
+    {
+      "key": "eod_wave",
+      "label": "EOD wave summary",
+      "group": "Summaries"
+    },
+    {
+      "key": "eod_iron_condor",
+      "label": "EOD Iron Condor summary",
+      "group": "Summaries"
+    }
+  ],
+  "debrief": {
+    "date": null,
+    "session_pnl": 0,
+    "wins": 0,
+    "losses": 0,
+    "trades": [],
+    "flags": {},
+    "verdict": "No closed trades yet \u2014 nothing to debrief.",
+    "discipline": "Validated on 153 trades. You have 0.",
+    "cum_pnl": 0,
+    "dd_vs_backtest_pct": 0.0,
+    "book_split": {
+      "put": {
+        "n": 0,
+        "wins": 0,
+        "win_rate": null,
+        "total_pnl": 0,
+        "mean_pnl": null
+      },
+      "call": {
+        "n": 0,
+        "wins": 0,
+        "win_rate": null,
+        "total_pnl": 0,
+        "mean_pnl": null
+      },
+      "note": null
+    },
+    "broker_realized": {
+      "n": 0,
+      "note": "no real fills captured yet \u2014 P&L is model-only"
+    }
+  },
+  "signals": {
+    "generated_at": "2026-06-15T15:28:50.122624+00:00",
+    "underlying": 7550.2001953125,
+    "feed": "yfinance",
+    "backend_status": "ok",
+    "regime": {
+      "regime": "non_volatile",
+      "classified": true,
+      "proj_high": 7560.100402832031,
+      "proj_low": 7492.099914550781,
+      "obs_drift_pct": 0.13168202456343442
+    },
+    "today": {
+      "date": "2026-06-15",
+      "weekday": true,
+      "market_open": true,
+      "last_bar_et": "11:28 ET",
+      "evaluated": 0,
+      "fired": 0,
+      "gated": {},
+      "status": "Live \u2014 no qualifying signal yet"
+    },
+    "meic": {
+      "enabled": true,
+      "contracts": 1,
+      "rungs": [
+        {
+          "slot": "11:00",
+          "build_id": "ic_2026-06-15_1100",
+          "time": "11:00",
+          "call_short": 7575.0,
+          "call_long": 7600.0,
+          "put_short": 7515.0,
+          "put_long": 7490.0,
+          "credit": 335.0,
+          "status": "closed_stop",
+          "stopped": true,
+          "shadow": {
+            "decision": "would_not_fill",
+            "limit": 0.34,
+            "real": 0.3,
+            "improve_per_share": -0.04
+          }
+        },
+        {
+          "slot": "12:00",
+          "status": "pending"
+        },
+        {
+          "slot": "13:00",
+          "status": "pending"
+        },
+        {
+          "slot": "14:00",
+          "status": "pending"
+        }
+      ]
+    },
+    "latest_signal": {
+      "side": "sell_call_cs",
+      "triggered_at": "2026-06-04T11:15:00-04:00",
+      "underlying_price": 7571.1,
+      "confluence_score": 3,
+      "instrument": "XSP",
+      "short_strike": 760.0,
+      "long_strike": 765.0,
+      "credit": null,
+      "roi_pct": null
+    },
+    "recent_signals": [
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-04T11:15:00-04:00",
+        "underlying_price": 7571.1,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-02T11:20:00-04:00",
+        "underlying_price": 7588.099999999999,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-02T10:50:00-04:00",
+        "underlying_price": 7588.099999999999,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-02T11:20:00-04:00",
+        "underlying_price": 7588.099999999999,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-02T10:50:00-04:00",
+        "underlying_price": 7588.099999999999,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-06-02T13:05:00-04:00",
+        "underlying_price": 7597.6,
+        "confluence_score": 3,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 765.0,
+        "credit": null,
+        "roi_pct": null
+      }
+    ],
+    "open_positions": [],
+    "time_stop_at": "2026-06-15T15:45:00-04:00",
+    "time_stop_min": 15,
+    "tp_target_pct": 95.0,
+    "tv_chart_url": "https://www.tradingview.com/chart/?symbol=SP%3ASPX&interval=5"
+  }
+}

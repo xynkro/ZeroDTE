@@ -526,6 +526,19 @@ class Orchestrator:
                             "summary": res.summary(), "asof": res.asof,
                         }
                         log.info("GEX refresh: %s", res.summary())
+                        # Persist a timestamped snapshot so the GEX gate becomes
+                        # backtestable over time (no historical GEX feed exists).
+                        _et = datetime.now(ET)
+                        from .gex import append_history as _gex_append
+                        _gex_append({
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "date": _et.strftime("%Y-%m-%d"), "et": _et.strftime("%H:%M"),
+                            "symbol": settings.GEX_SYMBOL,
+                            "regime": res.regime, "net_ratio": res.net_ratio,
+                            "net_gex_b": res.net_gex_b, "spot": res.spot,
+                            "call_wall": res.call_wall, "put_wall": res.put_wall,
+                            "asof": res.asof,
+                        })
                     first = False
                 await asyncio.sleep(max(60, settings.GEX_REFRESH_MIN * 60))
             except asyncio.CancelledError:
@@ -2126,7 +2139,7 @@ class Orchestrator:
         self._today_evaluated += 1
         if gated_reason:
             r = (gated_reason or "").lower()
-            cat = ("VIX bucket" if "vix" in r else "macro blackout" if "blackout" in r
+            cat = ("VIX up-day" if "up-only" in r else "VIX bucket" if "vix" in r else "macro blackout" if "blackout" in r
                    else "confluence" if "confluence" in r else "daily cap" if "cap" in r
                    else "max concurrent" if "positions" in r else "vol spike" if "vol spike" in r
                    else "VWAP" if "vwap" in r else "loss limit" if "loss" in r
@@ -2209,6 +2222,19 @@ class Orchestrator:
         if not vix_ok:
             log.warning("Signal gated [VIX bucket]: %s", vix_rationale)
             return None, f"skipped: VIX bucket — {vix_rationale}"
+
+        # ── GATE 4a: VIX-up-at-open (WAVE only; staged flag, default OFF) ──
+        # MONITORED experiment: the wave edge concentrated on VIX-up days in-sample
+        # (t=4.25 vs −0.07) but decayed OOS (t=0.74 vs 0.50). Flag-gated so it's
+        # reversible, and surfaced in the today-ledger as 'VIX up-day'. Fails OPEN.
+        if settings.WAVE_VIX_UP_ONLY:
+            from .vix_gate import vix_up_at_open
+            is_up, v_open, v_pc, _src = vix_up_at_open()
+            if is_up is False:   # None (unavailable) → fail open, don't stand aside
+                detail = (f"{v_open:.1f}≤{v_pc:.1f}" if v_open is not None and v_pc is not None
+                          else "no gap up")
+                log.info("Signal gated [VIX up-only]: VIX-down at open (%s)", detail)
+                return None, f"skipped: VIX-down at open ({detail}) — up-only gate"
 
         # ── GATE 4b (Phase 2): Mid-session vol re-gate ──
         if settings.WAVE_MIDSESSION_REGATE and self._mid_session_volatile:

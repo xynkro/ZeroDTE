@@ -64,6 +64,49 @@ def _fetch_vix(symbol: str = "^VIX1D") -> float | None:
         return None
 
 
+_VIX_DAILY_CACHE: dict[str, tuple[float, float, float]] = {}  # sym → (open, prior_close, fetched_at)
+
+
+def vix_up_at_open(symbol: str = "^VIX") -> tuple[bool | None, float | None, float | None, str]:
+    """VIX-up-at-open signal: today's VIX OPEN vs the PRIOR day's CLOSE — both fixed
+    once the market opens, so the signal is stable all session and lookahead-safe at
+    any intraday entry. Uses ^VIX (NOT VIX1D) to match scripts/vix_up_validation.py,
+    which is the series the filter was validated on.
+
+    Returns (is_up, vix_open, prior_close, source). is_up is None when data is
+    unavailable — callers FAIL OPEN (treat None as 'up' = do not stand aside) so a
+    transient Yahoo outage never silently blocks the whole wave book.
+
+    Caveat: pre-09:30 ET the in-progress daily bar may be yesterday's; wave entries
+    only fire after the 09:45 obs window, so by entry time today's open exists."""
+    cached = _VIX_DAILY_CACHE.get(symbol)
+    if cached and (time.time() - cached[2]) < _CACHE_TTL:
+        o, pc, _ = cached
+        return (o > pc, o, pc, "cache")
+    try:
+        r = httpx.get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+            params={"interval": "1d", "range": "5d"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=5.0,
+        )
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+        q = res.get("indicators", {}).get("quote", [{}])[0]
+        rows = [(o, c) for o, c in zip(q.get("open", []), q.get("close", []))
+                if o is not None and c is not None]
+        if len(rows) < 2:
+            return None, None, None, "insufficient"
+        today_open, prior_close = rows[-1][0], rows[-2][1]
+        _VIX_DAILY_CACHE[symbol] = (today_open, prior_close, time.time())
+        log.info("%s up-at-open: open %.2f vs prior close %.2f → %s",
+                 symbol, today_open, prior_close, "UP" if today_open > prior_close else "down")
+        return (today_open > prior_close, today_open, prior_close, symbol)
+    except Exception as e:  # noqa: BLE001
+        log.warning("vix_up_at_open(%s) failed: %s", symbol, e)
+        return None, None, None, "unavailable"
+
+
 def check_iv_safe(threshold: float = 25.0) -> tuple[bool, float | None, str]:
     """Return (is_safe, current_vix, source_used).
 

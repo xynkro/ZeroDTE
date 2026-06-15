@@ -34,3 +34,6 @@ node_modules/
 backend/data/debrief_log.jsonl
 docs/debriefs/
 docs/improvements/
+
+# GEX history — accumulates from live refreshes (no historical feed exists)
+backend/data/gex_history.jsonl

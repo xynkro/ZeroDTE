@@ -20,14 +20,20 @@ sizing/regime — never as a directional trigger.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
 CBOE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
+# Rolling GEX snapshot history. CBOE serves CURRENT-DAY only — there is no
+# historical GEX feed to backfill — so this file IS the dataset that makes the
+# GEX regime/level gate backtestable, accumulating from first run forward.
+GEX_HISTORY_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "gex_history.jsonl")
 MULTIPLIER = 100
 # OCC tail: 6-digit YYMMDD, C/P, 8-digit strike×1000  e.g. SPXW260530C07500000
 _OCC = re.compile(r"(\d{6})([CP])(\d{8})$")
@@ -269,6 +275,20 @@ def chain_mids_for_expiry(chain: dict, expiry_yymmdd: str) -> dict:
         out["calls" if is_call else "puts"].append(
             {"strike": strike, "mid": (bid + ask) / 2.0})
     return out
+
+
+def append_history(rec: dict, path: str | None = None) -> None:
+    """Append one GEX snapshot (one JSON line) to the rolling history. Best-effort
+    instrumentation — NEVER raises (must not break the live refresh loop). This is
+    the only way the GEX gate ever becomes backtestable: no historical GEX source
+    exists, so we accumulate our own series from now forward."""
+    path = path or GEX_HISTORY_PATH
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:  # noqa: BLE001
+        log.debug("gex history append failed: %s", e)
 
 
 def condor_net_credit_from_chain(

@@ -290,6 +290,14 @@ class Settings:
     # VIX1D, which is more reactive than the 30d VIX used to calibrate this.)
     WAVE_VIX_STANDASIDE: float = _f("WAVE_VIX_STANDASIDE", 22.0)
 
+    # VIX-up-at-open filter (directional/WAVE book only; staged, default OFF). Stand
+    # aside on days VIX does NOT gap up vs the prior close. Backtest (scripts/
+    # vix_up_validation.py): in-sample the wave edge concentrates hard on VIX-up days
+    # (t=4.25 vs −0.07), but the effect DECAYS out-of-sample (t=0.74 vs 0.50) — so this
+    # is a MONITORED experiment, not a proven edge. Costs ~40% of entries (slows sample
+    # accumulation). Fully reversible; surfaced in the today-ledger as 'VIX up-day'.
+    WAVE_VIX_UP_ONLY: bool = _b("WAVE_VIX_UP_ONLY", False)
+
     # Dynamic stop-loss ladder — DISABLED. The honest backtest showed the ladder
     # ratchets you out of winners that recover; no-ladder beat ladder at every
     # delta. Only the initial -100% loss stop + time stop remain.

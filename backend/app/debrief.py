@@ -13,6 +13,8 @@ vacuum: 30Δ/TP90/no-ladder/BS = +$5,479 over 153 trades / 5 yrs, max DD −$1,5
 """
 from __future__ import annotations
 
+from .quant_utils import BetaBinomialWinRate, expected_shortfall
+
 # Validated-backtest anchors (honest BS re-validation, see .env / config).
 BACKTEST_MAX_DD = 1581.0
 BACKTEST_TRADES = 153
@@ -112,6 +114,85 @@ def _broker_check(ds) -> dict:
                      if abs(gap) >= 1 else "real ≈ model")}
 
 
+def _confidence_from_pnls(pnls, unit: str = "trades") -> dict:
+    """Posterior win-rate (Beta-Binomial, with a 95% LOWER bound) and realized tail
+    (Expected Shortfall) from a list of per-`unit` P&L numbers.
+
+    Two audit lessons, made explicit: (1) a small-sample win streak is NOT an edge —
+    the lower bound shows how little a hot run actually proves, so the validation gate
+    reads the floor, not the headline rate; (2) average P&L hides the negative-skew
+    tail — ES (mean of the worst 5%, in $) is the honest read for a premium-selling
+    book. Pure measurement: never gates or sizes a trade."""
+    pnls = [p for p in pnls if p is not None]
+    n = len(pnls)
+    if n == 0:
+        return {"n": 0, "note": f"no closed {unit} yet"}
+    wr = BetaBinomialWinRate()
+    for p in pnls:
+        wr.update(p > 0)
+    naive = sum(1 for p in pnls if p > 0) / n
+    block = {
+        "n": n,
+        "unit": unit,
+        "naive_win_rate_pct": round(naive * 100, 1),
+        "win_rate_posterior_pct": round(wr.mean * 100, 1),
+        "win_rate_lower95_pct": round(wr.lower_bound() * 100, 1),
+        "expected_shortfall": None,
+        "value_at_risk": None,
+    }
+    if n >= 20:
+        es, var = expected_shortfall(pnls, confidence=0.95)
+        block["expected_shortfall"] = round(es, 2)
+        block["value_at_risk"] = round(var, 2)
+        block["note"] = (
+            f"posterior win-rate {block['win_rate_posterior_pct']:.0f}% "
+            f"(95% floor {block['win_rate_lower95_pct']:.0f}%); "
+            f"worst-5% {unit} average {_money(es)}"
+        )
+    else:
+        block["note"] = (
+            f"{n} closed {unit} — posterior win-rate floor "
+            f"{block['win_rate_lower95_pct']:.0f}% vs naive "
+            f"{block['naive_win_rate_pct']:.0f}% (that gap IS the small-sample "
+            f"uncertainty); need ≥20 for an Expected-Shortfall tail read"
+        )
+    return block
+
+
+def _confidence_block(ds) -> dict:
+    """WAVE book confidence — over the same closed-trade set as cum_pnl / book_split.
+    Pure measurement; never gates or sizes a trade."""
+    return _confidence_from_pnls([t.pnl for t in ds if t.pnl is not None], unit="trades")
+
+
+def load_ic_night_nets(log_path: str, exclude_date: str | None = None) -> list[float]:
+    """Per-night real net P&L for EXECUTED condor nights, from the rolling
+    debrief_log.jsonl the improvement loop reads — the cross-night series the
+    single-session MEIC debrief is otherwise blind to. De-dup by date (last wins,
+    matching improve_loop); `exclude_date` drops tonight so the caller can append
+    its fresh net without double-counting on an EOD re-run."""
+    import json
+    nets: dict[str, float] = {}
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                d = r.get("date", "")
+                if exclude_date is not None and d == exclude_date:
+                    continue
+                if (r.get("ic_executed") or 0) > 0 and r.get("ic_real_net") is not None:
+                    nets[d] = float(r["ic_real_net"])
+    except OSError:
+        return []
+    return [nets[d] for d in sorted(nets)]
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""
@@ -130,6 +211,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
             "cum_pnl": cum_all, "dd_vs_backtest_pct": dd_pct,
             "book_split": _book_split(ds),
             "broker_realized": _broker_check(ds),
+            "confidence": _confidence_block(ds),
         }
 
     date = date or days[-1]
@@ -149,6 +231,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
             "available_dates": days,
             "book_split": _book_split(ds),
             "broker_realized": _broker_check(ds),
+            "confidence": _confidence_block(ds),
             "no_trades_today": True,
         }
     analyses = [_classify(t) for t in day]
@@ -212,6 +295,9 @@ def build_debrief(trades, date: str | None = None) -> dict:
         # Cumulative put-book vs call-book economics (quant-audit: the headline cut).
         "book_split": _book_split(ds),
         "broker_realized": _broker_check(ds),
+        # Posterior win-rate floor + realized tail (Expected Shortfall) — reads the
+        # lower bound and the tail, not the headline rate. Pure measurement.
+        "confidence": _confidence_block(ds),
     }
 
 
@@ -278,7 +364,8 @@ def _ic_status(b) -> str:
     return "alert_only" if getattr(b, "available", False) else "skipped"
 
 
-def build_ic_debrief(ic_history, date: str, real_book: dict | None = None) -> dict:
+def build_ic_debrief(ic_history, date: str, real_book: dict | None = None,
+                     night_nets: list[float] | None = None) -> dict:
     """MEIC condor-book post-mortem for ONE session — the piece the wave debrief
     was blind to. real_book (optional) = {entries, entry_credit, exit_cost, net}
     in SPY-scale real $ from Alpaca fills; model-only when absent.
@@ -381,6 +468,14 @@ def build_ic_debrief(ic_history, date: str, real_book: dict | None = None) -> di
                 f"max. Not a malfunction unless it repeats with low slippage."))
     else:
         out["verdict"] = f"{executed} condors fired, {stopped} stopped (model-only — no fills captured)."
+
+    # Cross-night posterior green-night rate + tail (ES over per-night net P&L):
+    # prior nights from the rolling log + tonight's net. Pure measurement.
+    _series = list(night_nets or [])
+    if net is not None:
+        _series.append(net)
+    out["confidence"] = _confidence_from_pnls(_series, unit="nights")
+
     out["flags"] = flags
     return out
 
@@ -406,6 +501,14 @@ def format_ic_debrief_telegram(d: dict) -> str:
                      f"total {_money(sh['total_improve_spy'])}")
     for f in d.get("flags", []):
         lines.append(f)
+    cf = d.get("confidence") or {}
+    if cf.get("n"):
+        es = cf.get("expected_shortfall")
+        tail = f" · worst-5% {_money(es)}" if es is not None else ""
+        lines.append(
+            f"edge: green-night {cf['win_rate_posterior_pct']:.0f}% "
+            f"(95% floor {cf['win_rate_lower95_pct']:.0f}%, N={cf['n']}){tail}"
+        )
     lines.append(f"verdict: {d['verdict']}")
     return "\n".join(lines)
 
@@ -466,6 +569,14 @@ def format_debrief_telegram(d: dict) -> str:
                      f"CALL {ca.get('n',0)} ({_money(ca.get('total_pnl'))})")
         if bs.get("note"):
             lines.append(bs["note"])
+    cf = d.get("confidence") or {}
+    if cf.get("n"):
+        es = cf.get("expected_shortfall")
+        tail = f" · worst-5% {_money(es)}" if es is not None else ""
+        lines.append(
+            f"edge: post WR {cf['win_rate_posterior_pct']:.0f}% "
+            f"(95% floor {cf['win_rate_lower95_pct']:.0f}%, N={cf['n']}){tail}"
+        )
     lines.append(f"verdict: {d['verdict']}")
     lines.append(d["discipline"])
     return "\n".join(lines)

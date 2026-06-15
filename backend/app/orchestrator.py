@@ -1033,15 +1033,20 @@ class Orchestrator:
                 # MEIC condor debrief — execution reality (slippage, stop-rate) vs
                 # the backtest's assumptions, on real Alpaca fills.
                 real_book = await self._today_ic_real_book(date_str)
-                _ic_db = _dbf.build_ic_debrief(self.state.iron_condor_history, date_str, real_book)
+                import os
+                _data = os.path.join(os.path.dirname(__file__), "..", "data")
+                _log = os.path.join(_data, "debrief_log.jsonl")
+                # Cross-night MEIC history (prior nights; tonight appended inside
+                # build_ic_debrief) so the condor debrief shows a posterior green-night
+                # rate + tail, not just one night.
+                _prior_nets = _dbf.load_ic_night_nets(_log, exclude_date=date_str)
+                _ic_db = _dbf.build_ic_debrief(self.state.iron_condor_history, date_str,
+                                               real_book, night_nets=_prior_nets)
                 if _ic_db.get("date"):
                     ic_msg = f"{ic_msg}\n\n{_dbf.format_ic_debrief_telegram(_ic_db)}"
                 # Persist measured reality to the rolling log the weekly improvement
                 # loop reads, and drop a full markdown debrief on disk.
-                import os
-                _data = os.path.join(os.path.dirname(__file__), "..", "data")
-                _dbf.log_assumptions(date_str, _ic_db, _db,
-                                     os.path.join(_data, "debrief_log.jsonl"))
+                _dbf.log_assumptions(date_str, _ic_db, _db, _log)
                 self._write_debrief_md(date_str, _db, _ic_db)
             except Exception as e:
                 log.warning("EOD debrief render failed: %s", e)

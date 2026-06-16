@@ -39,20 +39,21 @@ async function loadMonitor() {
     return {
       mode: 'static', generatedAt: s.generated_at,
       stats: s.stats || {}, debrief: s.debrief || {}, trades: s.trades || [], alpaca: s.alpaca || null,
-      today: (s.signals || {}).today || null,
+      today: (s.signals || {}).today || null, meicHistory: s.meic_history || null,
     };
   }
-  const [stats, debrief, trades, alpaca, today] = await Promise.all([
+  const [stats, debrief, trades, alpaca, today, meicHistory] = await Promise.all([
     fetch(`${API}/api/monitor/stats`).then(r => r.json()),
     fetch(`${API}/api/debrief`).then(r => r.json()).catch(() => ({})),
     fetch(`${API}/api/paper_trades`).then(r => r.json()).catch(() => []),
     fetch(`${API}/api/alpaca/status`).then(r => r.json()).catch(() => null),
     fetch(`${API}/api/signals`).then(r => r.json()).then(d => d.today).catch(() => null),
+    fetch(`${API}/api/meic/history`).then(r => r.json()).catch(() => null),
   ]);
   return {
     mode: 'live', generatedAt: null,
     stats: stats || {}, debrief: debrief || {},
-    trades: (trades || []).filter(t => t.strategy === 'directional_spread'), alpaca, today,
+    trades: (trades || []).filter(t => t.strategy === 'directional_spread'), alpaca, today, meicHistory,
   };
 }
 
@@ -454,6 +455,44 @@ function MonitorSkeleton() {
   </div>`;
 }
 
+// MEIC condor track record — the cumulative real-P&L picture the app was missing.
+// Shows EVERY night (green + red) so the loud red Telegram pings aren't the only
+// thing the operator sees. Judge the cumulative, not any single night.
+function MeicTrackRecord({ h }) {
+  const nights = (h && h.nights) || [];
+  const sm = (h && h.summary) || {};
+  if (!nights.length) return html`<${Card} title="MEIC Track Record" accent="var(--amber)">
+    <${EmptyState} glyph="\u{1F985}" title="No condor nights recorded yet"
+      hint="Each night's real Alpaca-fill P&L lands here after the close." /></${Card}>`;
+  const total = sm.total || 0;
+  const tone = total >= 0 ? 'var(--green)' : 'var(--red)';
+  const curve = nights.map(n => ({ cum: n.cumulative }));
+  return html`<${Card} title="MEIC Track Record" accent=${tone}
+    actions=${html`<span class="muted" style="font-size:12px"><b style=${{ color: total >= 0 ? 'var(--green)' : 'var(--red)' }}>${signMoney(total)}</b> · ${sm.green}/${sm.n} green nights</span>`}>
+    <div class="stats" style="margin-bottom:14px">
+      <${StatTile} k="Net (real $)" value=${total} tone=${tone} hl=${true} format=${v => signMoney(v)} />
+      <${StatTile} k="Green / Nights" value=${sm.green || 0} format=${() => `${sm.green || 0} / ${sm.n || 0}`} />
+      <${StatTile} k="Best night" value=${sm.best || 0} tone="var(--green)" format=${v => signMoney(v)} />
+      <${StatTile} k="Worst night" value=${sm.worst || 0} tone="var(--red)" format=${v => signMoney(v)} />
+    </div>
+    <${Sparkline} curve=${curve} height=${96} />
+    <div style="overflow-x:auto;margin-top:10px">
+    <table class="tbl"><thead><tr>
+      <th>Night</th><th class="r">Fired</th><th class="r">Stop%</th><th class="r">P&L</th><th class="r">Cumul.</th><th class="r">Slip</th>
+    </tr></thead><tbody>
+      ${[...nights].reverse().map(n => html`<tr key=${n.date} class=${n.real_net > 0 ? 'win' : n.real_net < 0 ? 'lose' : ''}>
+        <td>${fmtDay(n.date)}</td>
+        <td class="r">${n.executed}</td>
+        <td class="r muted">${n.stop_rate != null ? Math.round(n.stop_rate) + '%' : '—'}</td>
+        <td class=${clsx('r', n.real_net >= 0 ? 'pos' : 'neg')} style="font-weight:600">${signMoney(n.real_net)}</td>
+        <td class=${clsx('r', n.cumulative >= 0 ? 'pos' : 'neg')}>${signMoney(n.cumulative)}</td>
+        <td class="r faint">${n.slippage_pct != null ? (n.slippage_pct > 0 ? '+' : '') + Math.round(n.slippage_pct) + '%' : '—'}</td>
+      </tr>`)}
+    </tbody></table></div>
+    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5">Real Alpaca-fill P&L · SPY-scale @ 1ct/slot. Many small reds + occasional bigger greens = the condor asymmetry working as designed — judge the cumulative, not one night.</div>
+  </${Card}>`;
+}
+
 function MonitorView() {
   const res = useResource(loadMonitor, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || res.data?.stats?.total) : null);
@@ -464,7 +503,11 @@ function MonitorView() {
     <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
       ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
-      <div data-stagger><${StatsRow} s=${d.stats || {}} /></div>
+      <div data-stagger><${MeicTrackRecord} h=${d.meicHistory} /></div>
+      <div data-stagger>
+        <div class="faint" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin:6px 2px 8px">Wave (directional) book</div>
+        <${StatsRow} s=${d.stats || {}} />
+      </div>
       <div class="grid cols-2">
         <${DebriefCard} d=${d.debrief} />
         <${Card} title="Equity Curve" accent="var(--blue)"><${Sparkline} curve=${(d.stats || {}).equity_curve || []} /></${Card}>

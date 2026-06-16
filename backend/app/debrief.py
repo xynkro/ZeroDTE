@@ -193,6 +193,52 @@ def load_ic_night_nets(log_path: str, exclude_date: str | None = None) -> list[f
     return [nets[d] for d in sorted(nets)]
 
 
+def meic_history(log_path: str) -> dict:
+    """Full per-night condor TRACK RECORD from debrief_log.jsonl, for the app — so
+    the operator SEES the cumulative MEIC P&L and the green nights, not just
+    tonight's loud red ping. De-dup by date (last wins). Returns
+    {nights:[{date, executed, stopped, stop_rate, real_net, slippage_pct,
+    cumulative}], summary:{n, total, green, green_rate, best, worst}}."""
+    import json
+    by_date: dict[str, dict] = {}
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                d = r.get("date", "")
+                if (r.get("ic_executed") or 0) > 0 and r.get("ic_real_net") is not None:
+                    by_date[d] = r
+    except OSError:
+        by_date = {}
+    nights, cum = [], 0.0
+    for d in sorted(by_date):
+        r = by_date[d]
+        net = float(r["ic_real_net"])
+        cum = round(cum + net, 2)
+        nights.append({
+            "date": d, "executed": r.get("ic_executed", 0), "stopped": r.get("ic_stopped", 0),
+            "stop_rate": r.get("ic_stop_rate"), "real_net": round(net, 2),
+            "slippage_pct": r.get("ic_slippage_pct"), "cumulative": cum,
+        })
+    green = sum(1 for n in nights if n["real_net"] > 0)
+    nets = [n["real_net"] for n in nights]
+    return {
+        "nights": nights,
+        "summary": {
+            "n": len(nights), "total": round(cum, 2), "green": green,
+            "green_rate": round(green / len(nights) * 100) if nights else None,
+            "best": round(max(nets), 2) if nets else None,
+            "worst": round(min(nets), 2) if nets else None,
+        },
+    }
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""

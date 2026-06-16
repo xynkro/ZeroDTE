@@ -723,6 +723,17 @@ async def debrief(date: str | None = None):
     return dbf.build_debrief(orch.paper_trades, date)
 
 
+@app.get("/api/meic/history")
+async def meic_history_endpoint():
+    """Per-night MEIC condor track record (real Alpaca P&L) — the cumulative
+    picture the app was missing, so the operator sees the green nights too, not
+    just the loud red Telegram pings. Sourced from the rolling debrief log."""
+    import os
+    from . import debrief as dbf
+    log = os.path.join(os.path.dirname(__file__), "..", "data", "debrief_log.jsonl")
+    return dbf.meic_history(log)
+
+
 @app.get("/api/reconcile")
 async def reconcile_endpoint():
     """Ledger ⇄ Alpaca reconciliation — flags any recorded trade the broker

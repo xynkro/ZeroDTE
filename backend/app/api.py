@@ -723,6 +723,45 @@ async def debrief(date: str | None = None):
     return dbf.build_debrief(orch.paper_trades, date)
 
 
+@app.get("/api/playbook")
+async def playbook_endpoint():
+    """Live strategy config for the PWA 'Playbook' explainer — reads straight from
+    settings so the explanation can never drift from what the engine actually runs."""
+    s = settings
+    def gv(*names, default=None):
+        for n in names:
+            if hasattr(s, n):
+                return getattr(s, n)
+        return default
+    return {
+        "meic": {
+            "enabled": bool(gv("MEIC_ENABLED") and gv("IC_EXECUTION_ENABLED")),
+            "slots": gv("MEIC_ENTRY_TIMES_ET"),
+            "contracts_per_slot": gv("IC_CONTRACTS"),
+            "max_per_day": gv("MEIC_MAX_PER_DAY"),
+            "instrument": gv("IC_INSTRUMENT"),
+            "short_delta": gv("EOD_IC_SHORT_DELTA"),
+            "wing_spx": gv("IC_WING_WIDTH"), "wing_spy": gv("SPY_WING_DOLLARS"),
+            "min_credit_pct": gv("EOD_IC_MIN_CREDIT_PCT"),
+            "stop_buffer": gv("IC_STOP_BUFFER"),
+        },
+        "wave": {
+            "enabled": bool(gv("DIRECTIONAL_SPREAD_ENABLED")),
+            "short_delta": gv("DIRECTIONAL_SHORT_DELTA"),
+            "wing_spx": gv("DIRECTIONAL_WING_DOLLARS"), "wing_spy": gv("SPY_WING_DOLLARS"),
+            "tp_target": gv("DIRECTIONAL_TP_TARGET"),
+            "min_confluence": gv("WAVE_MIN_CONFLUENCE_SCORE"),
+            "full_size_confluence": gv("WAVE_FULL_SIZE_CONFLUENCE"),
+            "risk_pct": gv("RISK_PER_TRADE_PCT"), "size_cap": gv("SIZE_CAP_USD"),
+            "account": gv("ACCOUNT_SIZE_USD"),
+            "vix_standaside": gv("WAVE_VIX_STANDASIDE"), "vix_up_only": bool(gv("WAVE_VIX_UP_ONLY")),
+            "time_stop_min": gv("WAVE_TIME_STOP_MIN_BEFORE_CLOSE", "WAVE_TIME_STOP_MIN"),
+            "cutoff_et": gv("WAVE_NO_NEW_ENTRY_AFTER_ET"),
+            "max_per_day": gv("MAX_TRADES_PER_DAY"),
+        },
+    }
+
+
 @app.get("/api/meic/history")
 async def meic_history_endpoint():
     """Per-night MEIC condor track record (real Alpaca P&L) — the cumulative

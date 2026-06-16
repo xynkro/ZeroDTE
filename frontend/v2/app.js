@@ -67,6 +67,15 @@ async function loadSignals() {
   return { mode: 'live', ...d };
 }
 
+async function loadPlaybook() {
+  if (STATIC) {
+    const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => { if (!r.ok) throw new Error('snapshot HTTP ' + r.status); return r.json(); });
+    return s.playbook || {};
+  }
+  return fetch(`${API}/api/playbook`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
+}
+
 // useResource — the loading/error/data state machine every view shares.
 function useResource(loader, pollMs) {
   const [state, setState] = useState({ status: 'loading', data: null, error: null });
@@ -403,7 +412,7 @@ function KillButton() {
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
-const VIEWS = [['monitor', 'Monitor'], ['signals', 'Signals'], ['backtest', 'Backtest'], ['macro', 'Macro']];
+const VIEWS = [['monitor', 'Monitor'], ['signals', 'Signals'], ['playbook', 'Playbook'], ['backtest', 'Backtest'], ['macro', 'Macro']];
 
 const Nav = ({ view, setView }) => html`
   <nav class="nav" aria-label="Views">
@@ -836,6 +845,55 @@ function SignalsView() {
     </div>`;
 }
 
+// ── Playbook (strategy explainer, fed live from /api/playbook) ───────────────
+const ParamRow = ({ k, v }) => html`<div class="pb-row"><span class="pb-k">${k}</span><span class="pb-v">${v}</span></div>`;
+
+function PlaybookView() {
+  const res = useResource(loadPlaybook, 0);
+  if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
+  if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not load the playbook. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
+  const d = res.data || {};
+  const m = d.meic || {}, w = d.wave || {};
+  const dlt = v => v == null ? '—' : ((v < 1 ? Math.round(v * 100) : Math.round(v)) + 'Δ');
+  const slotList = (m.slots || '').split(',').map(s => s.trim()).filter(Boolean);
+  const slots = slotList.join(' · ');
+  const slotCount = slotList.length || 4;
+  const riskBudget = (w.account && w.risk_pct) ? Math.round(w.account * w.risk_pct / 100) : null;
+  const cutoff = w.cutoff_et || '15:30';
+  return html`<div class="grid" style="margin-top:16px">
+    <div class="banner">\u{1F4D6} <span>Exactly what the engine is running — pulled live from its config, so it never drifts from reality.</span></div>
+
+    <${Card} title="MEIC — Multiple-Entry Iron Condor" accent="var(--amber)"
+      actions=${html`<${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? 'live' : 'off'}</${Badge}>`}>
+      <p class="pb-lead">Sells <b>${slotCount} iron condors</b> across the day at fixed times — pure premium-selling. Each one profits if SPX simply <b>stays range-bound</b> into the 4:00 PM expiry. Laddering the entries spreads timing risk instead of betting the whole day on one moment.</p>
+      <div class="pb-params">
+        <${ParamRow} k="Entries" v=${(slots || '11:00 · 12:00 · 13:00 · 14:00') + ' ET'} />
+        <${ParamRow} k="Size" v=${`${m.contracts_per_slot ?? 1} contract / slot · SPX built, SPY-executed (1/10)`} />
+        <${ParamRow} k="Shorts" v=${dlt(m.short_delta) + ' call spread + ' + dlt(m.short_delta) + ' put spread'} />
+        <${ParamRow} k="Wings" v=${`SPX ${m.wing_spx ?? 10}pt → SPY $${m.wing_spy ?? 1}`} />
+        <${ParamRow} k="Min credit" v=${(m.min_credit_pct ?? 10) + '% of wing (else skip)'} />
+        <${ParamRow} k="Stop" v=${`breakeven — buy-back ≥ ${m.stop_buffer ?? 1.05}× credit, or a short-strike touch · else 16:00 expiry`} />
+      </div>
+      <p class="pb-note"><b>No early take-profit</b> — the backtest showed it caps the full-credit winners that ARE the edge. Expect many small scratched reds + occasional bigger green nights (the asymmetry). ≈ <b>$250–300/day defined risk</b> at 1 contract/slot.</p>
+    </${Card}>
+
+    <${Card} title="WAVE — Directional Credit Spread" accent="var(--green)"
+      actions=${html`<${Badge} kind=${w.enabled ? 'ok' : 'neutral'}>${w.enabled ? 'live' : 'off'}</${Badge}>`}>
+      <p class="pb-lead">After the morning, when price <b>over-extends</b>, it fades the move — selling a credit spread <b>against</b> the stretch (price up → sell a call spread, price down → sell a put spread). A mean-reversion bet that the move exhausts before your short strike.</p>
+      <div class="pb-params">
+        <${ParamRow} k="Shorts" v=${dlt(w.short_delta)} />
+        <${ParamRow} k="Wings" v=${`SPX $${w.wing_spx ?? 10} → SPY $${w.wing_spy ?? 1}`} />
+        <${ParamRow} k="Take-profit" v=${(w.tp_target ?? 95) + '% of credit (≈ ride to near-expiry)'} />
+        <${ParamRow} k="Sizing" v=${`risk-based: ${w.risk_pct ?? 4.5}% of $${(w.account || 10000).toLocaleString()}${riskBudget ? ` ($${riskBudget})` : ''}, cap $${w.size_cap ?? 500} → ~5–6 SPY contracts`} />
+        <${ParamRow} k="Confluence" v=${`≥${w.min_confluence ?? 2} to fire · full size at ${w.full_size_confluence ?? 4}`} />
+        <${ParamRow} k="Time stop" v=${(w.time_stop_min ?? 15) + ' min before the close'} />
+        <${ParamRow} k="Max / day" v=${`${w.max_per_day ?? 3} entries`} />
+      </div>
+      <p class="pb-note">Fires only when confluence ≥${w.min_confluence ?? 2}, VIX below ${w.vix_standaside ?? 30}${w.vix_up_only ? ', and VIX is UP at the open' : ''}, outside macro-event blackouts, and before ${cutoff} ET. <b>Picky by design</b> — most days it stands aside, which is why the book is often flat.</p>
+    </${Card}>
+  </div>`;
+}
+
 function App() {
   const [view, setView] = useState('monitor');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -845,6 +903,7 @@ function App() {
       <${Topbar} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
       ${view === 'monitor' && html`<${MonitorView} />`}
       ${view === 'signals' && html`<${SignalsView} />`}
+      ${view === 'playbook' && html`<${PlaybookView} />`}
       ${view === 'backtest' && html`<${BacktestView} />`}
       ${view === 'macro' && html`<${MacroView} />`}
     </div>`;

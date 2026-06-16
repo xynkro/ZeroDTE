@@ -62,6 +62,7 @@ def build_snapshot() -> dict:
     debrief = _get("/api/debrief", {}) or {}
     signals = _get("/api/signals", {}) or {}
     meic_history = _get("/api/meic/history", {}) or {}
+    playbook = _get("/api/playbook", {}) or {}
     ds = [t for t in trades_raw if t.get("strategy") == "directional_spread"]
     trades = [{k: t.get(k) for k in TRADE_FIELDS} for t in ds]
     alpaca = {
@@ -87,6 +88,8 @@ def build_snapshot() -> dict:
         # Per-night MEIC condor track record (real Alpaca P&L) — so the phone shows
         # the cumulative picture + the GREEN nights, not just the red Telegram pings.
         "meic_history": meic_history,
+        # Live strategy config so the phone Playbook explains exactly what's running.
+        "playbook": playbook,
     }
 
 

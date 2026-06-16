@@ -120,9 +120,6 @@ class Settings:
     # set MWF_ONLY=true in .env to restrict.
     MWF_ONLY: bool = _b("MWF_ONLY", False)
 
-    # FOMC-specific tighter blackout (lesson from CBOE Henry Schwartz article):
-    # general blackout = ±15min, FOMC announcements get ±30min for safety.
-    BLACKOUT_FOMC_MIN: int = _i("BLACKOUT_FOMC_MIN", 30)
 
     # Iron Condor strike-picker — geometric default (matches what backtest
     # validated at 96.1% WR), with optional delta-targeted upgrade when
@@ -163,10 +160,6 @@ class Settings:
     # 25 is a more conservative default; raise to 30 for less restrictive gating.
     IC_MAX_VIX: float = _f("IC_MAX_VIX", 25.0)
 
-    # Wave strike-picker — Phase 3 canonical: 1.5% OTM / 10-15Δ short.
-    # Backtest evidence: 0.5% OTM was negative EV; 1.5% OTM was best at +$3.4k/60d.
-    WAVE_DEFAULT_PCT_OTM: float = _f("WAVE_DEFAULT_PCT_OTM", 1.5)
-    WAVE_TARGET_DELTA: float = _f("WAVE_TARGET_DELTA", 0.12)             # 10-15Δ canonical
 
     # ═══════════════════════════════════════════════════════════════════════
     # Directional Spread Strategy (May 2026 pivot — unified IC + Wave replacement)
@@ -335,7 +328,6 @@ class Settings:
     # Server
     BACKEND_HOST: str = os.getenv("BACKEND_HOST", "0.0.0.0")
     BACKEND_PORT: int = _i("BACKEND_PORT", 8765)
-    FRONTEND_ORIGIN: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:5179")
 
     # Telegram (cross-device alerts; shared bot with FinancePWA)
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "")

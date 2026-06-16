@@ -1043,7 +1043,13 @@ class Orchestrator:
                 _ic_db = _dbf.build_ic_debrief(self.state.iron_condor_history, date_str,
                                                real_book, night_nets=_prior_nets)
                 if _ic_db.get("date"):
-                    ic_msg = f"{ic_msg}\n\n{_dbf.format_ic_debrief_telegram(_ic_db)}"
+                    _meic_block = _dbf.format_ic_debrief_telegram(_ic_db)
+                    # MEIC is THE live condor book — emit ONLY the MEIC debrief.
+                    # The legacy single-IC "EOD IC" score (build_eod_summaries) is
+                    # vestigial: it scored just the last build, double-reported the
+                    # book, and mislabeled auto MEIC slots as a manual /icnow override.
+                    # Single-IC mode (MEIC_ENABLED=false) keeps the old combined view.
+                    ic_msg = _meic_block if settings.MEIC_ENABLED else f"{ic_msg}\n\n{_meic_block}"
                 # Persist measured reality to the rolling log the weekly improvement
                 # loop reads, and drop a full markdown debrief on disk.
                 _dbf.log_assumptions(date_str, _ic_db, _db, _log)

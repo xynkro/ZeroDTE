@@ -495,13 +495,16 @@ def ping_iron_condor(
         lines.append(" · ".join(money))
     else:
         lines.append("credit: chain unavailable (geometric strikes)")
-    # Management plan — concrete TP / SL (only when we have a real credit)
-    if tp_dollars is not None:
-        cap = f"{tp_pct:.0f}% of credit" if tp_pct else "target"
-        lines.append(f"🎯 TP: buy back ~${tp_dollars:.0f} (capture {cap})")
-    if sl_dollars is not None:
-        mult = f"{sl_mult:.0f}× credit" if sl_mult else "stop"
-        lines.append(f"🛑 SL: −${sl_dollars:.0f} ({mult}) or a short-strike touch (${short_put:.0f} / ${short_call:.0f})")
+    # Management plan — the ACTUAL rule the engine runs (_check_ic_stop_loss): a
+    # per-condor BREAKEVEN stop (close when buy-back ≥ credit collected) or a
+    # short-strike touch; otherwise set-and-forget to 16:00 ET expiry. There is NO
+    # 50% TP / 2× SL in the code — that was a stale template advertising management
+    # the engine never executed (the tp_/sl_ params remain for signature compat).
+    if total_credit is not None:
+        lines.append(
+            f"🛑 STOP: breakeven — close if buy-back ≥ credit ${total_credit:.0f}, "
+            f"or a short-strike touch (${short_put:.0f} / ${short_call:.0f})")
+        lines.append("🎯 else set-and-forget → rides to 16:00 ET expiry")
     chat_id, thread_id = _route_iron_condor()
     return _emit(lines, "iron_condor", pwa_url, chat_id, thread_id)
 

@@ -35,7 +35,8 @@ CALL_SK = settings.DIRECTIONAL_SKEW_CALL_MULT      # 0.90
 MULT = 100
 
 
-def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max"):
+def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
+             stop_buffer: float = 1.0):
     ctx = _prepare(data_window)
     if ctx is None:
         raise SystemExit("no data")
@@ -99,12 +100,20 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max"):
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
                 bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
                       + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT
-                if bb >= credit:  # breakeven stop
+                if bb >= credit * stop_buffer:  # stop at buffer×credit (1.0=breakeven, ∞=hold)
                     exit_val = bb
                     outcome = "stop"
                     break
             if exit_val is None:
-                exit_val = 0.0
+                # Held to session end without stopping. The data ends ~15:55 ET (no
+                # 16:00 print, so the bm>=16:00 branch above NEVER fires) — settle at
+                # REAL intrinsic at the last bar, NOT 0. The old `exit_val = 0.0`
+                # fake-won EVERY held condor (worst day went POSITIVE, 100% green),
+                # grossly inflating wide-/no-stop configs in the buffer sweep.
+                lc = sb[-1].close
+                exit_val = (bs.spread_value("sell_call_cs", lc, cs, cl, 0.0)
+                            + bs.spread_value("sell_put_cs", lc, ps, pl, 0.0)) * MULT
+                outcome = "expiry"
             pnl = credit - exit_val - cost_rt
             entries.append({"date": str(date), "slot": slot, "credit": credit,
                             "outcome": outcome, "pnl": pnl})

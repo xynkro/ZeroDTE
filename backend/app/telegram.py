@@ -450,6 +450,7 @@ def ping_iron_condor(
     sl_dollars: float | None = None,    # loss-stop $ amount
     tp_pct: float | None = None,        # % of credit captured at TP (label)
     sl_mult: float | None = None,       # SL as multiple of credit (label)
+    label: str = "IRON CONDOR",         # header label — caller passes "MEIC HH:MM" per rung
 ) -> dict | None:
     """Fire once when end-of-day IC is built (~12:30 ET / 00:30 SGT).
 
@@ -472,8 +473,8 @@ def ping_iron_condor(
         skew_badge = f" · {arrow} {skew_direction} skew"
 
     lines = [
-        f"🦅 IRON CONDOR · {instrument} · {exp_pretty}{skew_badge}",
-        f"deploy ~13:00 ET · expire 16:00 ET",
+        f"🦅 {label} · {instrument} · {exp_pretty}{skew_badge}",
+        f"0DTE · expire 16:00 ET",
         f"underlying ${underlying_price:.2f}",
         f"CALL leg: short ${short_call:.0f} / long ${long_call:.0f}",
         f"PUT  leg: short ${short_put:.0f} / long ${long_put:.0f}",
@@ -504,7 +505,7 @@ def ping_iron_condor(
         lines.append(
             f"🛑 STOP: breakeven — close if buy-back ≥ credit ${total_credit:.0f}, "
             f"or a short-strike touch (${short_put:.0f} / ${short_call:.0f})")
-        lines.append("🎯 else set-and-forget → rides to 16:00 ET expiry")
+        lines.append("🎯 else rides to 16:00 ET expiry")
     chat_id, thread_id = _route_iron_condor()
     return _emit(lines, "iron_condor", pwa_url, chat_id, thread_id)
 

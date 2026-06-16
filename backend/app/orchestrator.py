@@ -904,9 +904,11 @@ class Orchestrator:
             ic.broker_status = "closed_stop" if ok else "close_error"
             log.info("IC stop close %s: call=%s put=%s", ic.build_id,
                      (r1 or {}).get("id", "?"), (r2 or {}).get("id", "?"))
+            _bid = (ic.build_id or "")[-4:]
+            _lbl = f"MEIC {_bid[:2]}:{_bid[2:]}" if settings.MEIC_ENABLED and len(_bid) == 4 else "IC"
             self._tg(tg.ping_eod_iron_condor,
-                     "🦅 IC STOP — closed both spreads on Alpaca paper"
-                     if ok else "⚠️ IC stop close FAILED — check Alpaca (position may still be open)")
+                     f"🦅 {_lbl} stopped — closed both spreads at breakeven on Alpaca paper"
+                     if ok else f"⚠️ {_lbl} stop close FAILED — check Alpaca (position may still be open)")
             self._persist_state()
         except Exception as e:  # noqa: BLE001
             ic.broker_status = "close_error"
@@ -1616,9 +1618,12 @@ class Orchestrator:
         tp_dollars = round(credit_usd * (1 - settings.EOD_IC_TP_PCT / 100.0))
         sl_dollars = round(min(credit_usd * settings.EOD_IC_SL_MULT, ic["max_loss_usd"]))
         if getattr(self, "_is_live_bar", False):
+            _bid = (new_ic.build_id or "")[-4:]
+            _label = (f"MEIC {_bid[:2]}:{_bid[2:]}"
+                      if settings.MEIC_ENABLED and len(_bid) == 4 else "IRON CONDOR")
             try:
                 tg.ping_iron_condor(
-                    expiry=ic["expiry"], underlying_price=bar.close, instrument="SPX",
+                    expiry=ic["expiry"], underlying_price=bar.close, instrument="SPX", label=_label,
                     short_call=ic["short_call"], long_call=ic["long_call"],
                     short_put=ic["short_put"], long_put=ic["long_put"],
                     total_credit=ic["total_credit_usd"], max_loss=ic["max_loss_usd"],
@@ -1912,11 +1917,14 @@ class Orchestrator:
         # when options chain was unavailable. The user sees nothing → "no telegram
         # prompts". Now pings always fire; credit shown as "unknown" if unavailable.
         if getattr(self, "_is_live_bar", False):
+            _bid = (new_ic.build_id or "")[-4:]
+            _label = (f"MEIC {_bid[:2]}:{_bid[2:]}"
+                      if settings.MEIC_ENABLED and len(_bid) == 4 else "IRON CONDOR")
             try:
                 tg.ping_iron_condor(
                     expiry=chain.get("expiry", "") if chain_ok else "",
                     underlying_price=bar.close,
-                    instrument=instr,
+                    instrument=instr, label=_label,
                     short_call=call_pair.short_strike,
                     long_call=call_pair.long_strike,
                     short_put=put_pair.short_strike,
@@ -2676,9 +2684,11 @@ class Orchestrator:
                 dedup.mark_done("ic_exec_build", ic.build_id)
                 log.info("IC EXECUTED on Alpaca: %s → SPY C%.0f/%.0f P%.0f/%.0f ×%d order %s",
                          ic.build_id, cs, cl, ps, pl, qty, ic.alpaca_order_id)
+                _bid = (ic.build_id or "")[-4:]
+                _lbl = f"MEIC {_bid[:2]}:{_bid[2:]}" if settings.MEIC_ENABLED and len(_bid) == 4 else "IC"
                 self._tg(tg.ping_eod_iron_condor,
-                         f"🦅 IC EXECUTED · Alpaca paper · SPY C{cs:.0f}/{cl:.0f} P{ps:.0f}/{pl:.0f} "
-                         f"×{qty} · set-and-forget (stop rule armed, else expiry)")
+                         f"🦅 {_lbl} filled · Alpaca paper · SPY C{cs:.0f}/{cl:.0f} P{ps:.0f}/{pl:.0f} "
+                         f"×{qty} · breakeven stop armed (else 16:00 expiry)")
                 asyncio.create_task(self._capture_ic_fill(ic))
             elif result and result.get("shadow"):
                 ic.broker_status = "shadow"

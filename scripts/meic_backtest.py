@@ -36,7 +36,11 @@ MULT = 100
 
 
 def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
-             stop_buffer: float = 1.0):
+             stop_buffer: float = 1.0, take_profit_pct: float | None = None,
+             time_stop_min: int | None = None):
+    """stop_buffer: stop when buy-back >= buffer×credit (1.0=breakeven, ∞=no stop).
+    take_profit_pct: close early when buy-back <= (1-tp/100)×credit (None=no TP).
+    time_stop_min: close N minutes after entry at the current mark (None=ride to expiry)."""
     ctx = _prepare(data_window)
     if ctx is None:
         raise SystemExit("no data")
@@ -84,6 +88,8 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             if credit / (WING * MULT) * 100.0 < MIN_CREDIT_PCT:
                 continue  # thin-premium gate (live skips these)
 
+            eb_et = eb.time.astimezone(ET) if eb.time.tzinfo else eb.time
+            eb_min = eb_et.hour * 60 + eb_et.minute
             outcome, exit_val = "expiry", None
             for b in sb:
                 if b.time <= eb.time:
@@ -100,9 +106,18 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
                 bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
                       + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT
+                # exit priority each bar: take-profit (winner) → stop (loser) → time exit
+                if take_profit_pct is not None and bb <= credit * (1 - take_profit_pct / 100.0):
+                    exit_val = bb
+                    outcome = "tp"
+                    break
                 if bb >= credit * stop_buffer:  # stop at buffer×credit (1.0=breakeven, ∞=hold)
                     exit_val = bb
                     outcome = "stop"
+                    break
+                if time_stop_min is not None and (bm - eb_min) >= time_stop_min:
+                    exit_val = bb
+                    outcome = "time"
                     break
             if exit_val is None:
                 # Held to session end without stopping. The data ends ~15:55 ET (no

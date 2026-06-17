@@ -22,6 +22,15 @@ ET = ZoneInfo("America/New_York")
 
 FINNHUB_BASE = "https://finnhub.io/api/v1"
 
+# Economic calendar source: ForexFactory's free, keyless JSON feed (via the
+# faireconomy CDN). Finnhub's /calendar/economic is paid-tier (403 on free keys),
+# so we source the calendar here instead. ~this-week + next-week of events with
+# impact (High/Medium/Low), forecast, previous, actual.
+FF_CALENDAR_URLS = [
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+]
+
 # Refresh intervals
 NEWS_REFRESH_SEC = 5 * 60        # 5 min
 CALENDAR_REFRESH_SEC = 15 * 60   # 15 min
@@ -167,53 +176,49 @@ class MacroFeed:
             log.error("news fetch failed: %s", e)
 
     async def _refresh_calendar(self):
-        # Known-unavailable (e.g. paid endpoint) → don't keep hammering it.
-        if not self._client or self._calendar_disabled_reason:
+        """Pull the US economic calendar from ForexFactory's free JSON feed and map
+        it to our schema. Finnhub's calendar is paid-tier, so this is the source."""
+        if not self._client:
             return
         try:
-            today = datetime.now(ET).date()
-            end = today + timedelta(days=14)
-            r = await self._client.get(
-                f"{FINNHUB_BASE}/calendar/economic",
-                params={
-                    "token": self.api_key,
-                    "from": today.isoformat(),
-                    "to": end.isoformat(),
-                },
-            )
-            if r.status_code in (401, 403):
-                # Finnhub's economic calendar is a premium endpoint; the free key
-                # is valid (news/quote work) but has no access here. Disable it so
-                # we stop spamming the log every 15 min, and surface WHY.
-                self._calendar_disabled_reason = (
-                    "Finnhub economic calendar is a paid-tier endpoint "
-                    f"(HTTP {r.status_code}); the free plan can't access it — "
-                    "macro events are NOT being tracked")
-                self._last_calendar_fetch = datetime.now(timezone.utc)
-                log.warning("Economic calendar disabled: %s", self._calendar_disabled_reason)
-                return
-            r.raise_for_status()
-            raw = r.json()
-            events = []
-            for e in raw.get("economicCalendar", []) or []:
-                # We mostly care about US events
-                if (e.get("country") or "") != "US":
+            events, ok_any = [], False
+            for url in FF_CALENDAR_URLS:
+                try:
+                    r = await self._client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                    r.raise_for_status()
+                    raw = r.json()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("calendar fetch %s failed: %s", url.rsplit("/", 1)[-1], e)
                     continue
-                events.append({
-                    "country": e.get("country"),
-                    "event": e.get("event", ""),
-                    "impact": e.get("impact", "low"),  # high / medium / low
-                    "time": e.get("time", ""),       # "YYYY-MM-DD HH:MM:SS"
-                    "estimate": e.get("estimate"),
-                    "actual": e.get("actual"),
-                    "prev": e.get("prev"),
-                    "unit": e.get("unit"),
-                })
+                ok_any = True
+                for e in (raw or []):
+                    if (e.get("country") or "") != "USD":   # US events only
+                        continue
+                    t = self._parse_ff_time(e.get("date", ""))
+                    if t is None:
+                        continue
+                    events.append({
+                        "country": "US",
+                        "event": e.get("title", ""),
+                        "impact": (e.get("impact") or "low").lower(),  # High/Medium/Low → lower
+                        "time": t,                                     # UTC "YYYY-MM-DD HH:MM:SS"
+                        "estimate": (e.get("forecast") or None),
+                        "actual": (e.get("actual") or None),
+                        "prev": (e.get("previous") or None),
+                        "unit": None,
+                    })
+            if not ok_any:
+                # Both feeds unreachable — degrade honestly (don't imply a clear week).
+                self._calendar_disabled_reason = "economic-calendar feed unreachable (ForexFactory) — events not tracked"
+                self._last_calendar_fetch = datetime.now(timezone.utc)
+                log.warning("Economic calendar unavailable: %s", self._calendar_disabled_reason)
+                return
+            self._calendar_disabled_reason = None   # recovered
             events.sort(key=lambda x: x["time"])
             self._calendar = events
             self._last_calendar_fetch = datetime.now(timezone.utc)
-            log.info("MacroFeed calendar refreshed: %d US events (next 14d)", len(events))
-        except Exception as e:
+            log.info("MacroFeed calendar (ForexFactory): %d US events", len(events))
+        except Exception as e:  # noqa: BLE001
             log.error("calendar fetch failed: %s", e)
 
     @property
@@ -272,6 +277,17 @@ class MacroFeed:
                     "_blackout_window": f"±{before_min}min" + (" (FOMC)" if is_fomc else ""),
                 }
         return False, None
+
+    @staticmethod
+    def _parse_ff_time(s: str) -> str | None:
+        """ForexFactory date "2026-06-15T08:30:00-04:00" → UTC "YYYY-MM-DD HH:MM:SS"
+        (the format _parse_event_time consumes). All-day / unparseable → None."""
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_event_time(s: str) -> datetime | None:

@@ -37,3 +37,7 @@ docs/improvements/
 
 # GEX history — accumulates from live refreshes (no historical feed exists)
 backend/data/gex_history.jsonl
+
+# .env backups (contain secrets — never commit)
+.env.bak*
+.env-*.bak

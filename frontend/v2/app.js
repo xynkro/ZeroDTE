@@ -538,15 +538,15 @@ function MacroView() {
   const load = useCallback(async () => {
     const [n, c] = await Promise.all([
       fetch(`${API}/api/macro/news`).then(r => r.json()).then(x => x.news || []),
-      fetch(`${API}/api/macro/calendar`).then(r => r.json()).then(x => x.calendar || []),
+      fetch(`${API}/api/macro/calendar`).then(r => r.json()).catch(() => ({})),
     ]);
-    return { news: n, calendar: c };
+    return { news: n, calendar: c.calendar || [], calStatus: c.status || null };
   }, []);
   const res = useResource(load, 120000);
   if (res.status === 'loading') return html`<div class="grid cols-2" style="margin-top:16px">
     ${[0, 1].map(i => html`<div class="card" key=${i}><div class="card-b">${Array.from({ length: 6 }).map((_, j) => html`<div key=${j} style="margin:10px 0"><${Skeleton} w=${`${85 - j * 6}%`} h=13 /></div>`)}</div></div>`)}</div>`;
   if (res.status === 'error') return html`<div style="margin-top:16px"><${ErrorState} message=${res.error} onRetry=${res.reload} /></div>`;
-  const { news = [], calendar = [] } = res.data || {};
+  const { news = [], calendar = [], calStatus = null } = res.data || {};
   return html`<div class="grid cols-2" style="margin-top:16px">
     <${Card} title="Market News" accent="var(--blue)">
       ${!news.length ? html`<${EmptyState} glyph="\u{1F4F0}" title="No recent headlines." />`
@@ -557,7 +557,9 @@ function MacroView() {
           </div>`)}
     </${Card}>
     <${Card} title="Economic Calendar" accent="var(--amber)">
-      ${!calendar.length ? html`<${EmptyState} glyph="\u{1F5D3}" title="No upcoming US events." />`
+      ${(calStatus && !calStatus.available)
+        ? html`<${EmptyState} glyph="\u{1F512}" title="Calendar unavailable" hint=${calStatus.reason || 'the economic-calendar source is not accessible'} />`
+        : !calendar.length ? html`<${EmptyState} glyph="\u{1F5D3}" title="No upcoming US events." />`
         : html`<div><div class="cal-h"><span>When</span><span>Impact</span><span>Event</span><span class="r">Est</span><span class="r">Prev</span></div>
           ${calendar.slice(0, 40).map((e, i) => html`<div class=${clsx('cal-row', e.impact || 'low')} key=${i}>
             <span class="muted">${(e.time || '').slice(5, 16)}</span>

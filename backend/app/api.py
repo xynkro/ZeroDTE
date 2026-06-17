@@ -414,7 +414,7 @@ async def macro_news():
 
 @app.get("/api/macro/calendar")
 async def macro_calendar():
-    return {"calendar": orch.macro.calendar}
+    return {"calendar": orch.macro.calendar, "status": orch.macro.calendar_status}
 
 
 @app.get("/api/backtest/iron_condor")

@@ -62,6 +62,10 @@ class MacroFeed:
         self._calendar: list[dict] = []
         self._last_news_fetch: datetime | None = None
         self._last_calendar_fetch: datetime | None = None
+        # When the calendar endpoint is unavailable (e.g. Finnhub's economic
+        # calendar is a PAID-tier endpoint → 403 on the free plan), record the
+        # reason ONCE and stop hammering it every 15 min. None = available.
+        self._calendar_disabled_reason: str | None = None
         self._client: httpx.AsyncClient | None = None
         self._task: asyncio.Task | None = None
         # Edge-tracking for Telegram pushes — we only ping NEW hot headlines,
@@ -163,7 +167,8 @@ class MacroFeed:
             log.error("news fetch failed: %s", e)
 
     async def _refresh_calendar(self):
-        if not self._client:
+        # Known-unavailable (e.g. paid endpoint) → don't keep hammering it.
+        if not self._client or self._calendar_disabled_reason:
             return
         try:
             today = datetime.now(ET).date()
@@ -176,6 +181,17 @@ class MacroFeed:
                     "to": end.isoformat(),
                 },
             )
+            if r.status_code in (401, 403):
+                # Finnhub's economic calendar is a premium endpoint; the free key
+                # is valid (news/quote work) but has no access here. Disable it so
+                # we stop spamming the log every 15 min, and surface WHY.
+                self._calendar_disabled_reason = (
+                    "Finnhub economic calendar is a paid-tier endpoint "
+                    f"(HTTP {r.status_code}); the free plan can't access it — "
+                    "macro events are NOT being tracked")
+                self._last_calendar_fetch = datetime.now(timezone.utc)
+                log.warning("Economic calendar disabled: %s", self._calendar_disabled_reason)
+                return
             r.raise_for_status()
             raw = r.json()
             events = []
@@ -207,6 +223,17 @@ class MacroFeed:
     @property
     def calendar(self) -> list[dict]:
         return self._calendar
+
+    @property
+    def calendar_status(self) -> dict:
+        """Honest calendar health for the UI — distinguishes 'no events' from
+        'calendar unavailable' so the Macro view doesn't imply a clear week when
+        we simply can't see the events."""
+        return {
+            "available": self._calendar_disabled_reason is None,
+            "reason": self._calendar_disabled_reason,
+            "events": len(self._calendar),
+        }
 
     def next_high_impact(self, within_hours: float = 24.0) -> dict | None:
         """Return the soonest high-impact US event within `within_hours`."""

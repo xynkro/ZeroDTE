@@ -42,8 +42,13 @@ newDay = ta.change(dayofweek(time, tzNY)) != 0
 // scale wings for SPY/XSP charts (strikes derive from chart price directly)
 wing = close < 1000 ? wingSpx / 10.0 : wingSpx
 
-// per-5m realized vol → total vol to expiry (σ·√n·mult), like bs_pricing
-r5 = ta.stdev(math.log(close / close[1]), volLb)
+// per-5m realized vol → total vol to expiry (σ·√n·mult), like bs_pricing.
+// ALWAYS sample on 5-MINUTE bars via request.security so the strikes are the SAME
+// on any chart timeframe. Before this, r5 used the CHART's own bar returns while
+// periodsLeft below assumes 5m periods — they only agreed on a 5m chart, so the
+// strikes drifted when you switched to 2m/3m. The backend is 5m; this matches it.
+r5 = request.security(syminfo.tickerid, "5", ta.stdev(math.log(close / close[1]), volLb),
+                      lookahead=barmerge.lookahead_off)
 periodsLeft = math.max((closeMin - barMin) / 5.0, 1.0)
 tv = r5 * math.sqrt(periodsLeft) * premMult
 tvC = tv * (useSkew ? callSkew : 1.0)

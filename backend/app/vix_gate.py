@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import httpx
+
+_ET = ZoneInfo("America/New_York")
 
 
 log = logging.getLogger(__name__)
@@ -64,7 +68,7 @@ def _fetch_vix(symbol: str = "^VIX1D") -> float | None:
         return None
 
 
-_VIX_DAILY_CACHE: dict[str, tuple[float, float, float]] = {}  # sym → (open, prior_close, fetched_at)
+_VIX_DAILY_CACHE: dict[str, tuple[str, float, float]] = {}  # sym → (date_str, open, prior_close)
 
 
 def vix_up_at_open(symbol: str = "^VIX") -> tuple[bool | None, float | None, float | None, str]:
@@ -77,11 +81,13 @@ def vix_up_at_open(symbol: str = "^VIX") -> tuple[bool | None, float | None, flo
     unavailable — callers FAIL OPEN (treat None as 'up' = do not stand aside) so a
     transient Yahoo outage never silently blocks the whole wave book.
 
-    Caveat: pre-09:30 ET the in-progress daily bar may be yesterday's; wave entries
-    only fire after the 09:45 obs window, so by entry time today's open exists."""
+    Cache is keyed on the trading date (not a rolling TTL) so the HTTP call fires
+    at most once per session. Pre-market (today's open bar not yet printed) the
+    function returns None → fail-open rather than comparing the wrong date's rows."""
+    today = datetime.now(_ET).strftime("%Y-%m-%d")
     cached = _VIX_DAILY_CACHE.get(symbol)
-    if cached and (time.time() - cached[2]) < _CACHE_TTL:
-        o, pc, _ = cached
+    if cached and cached[0] == today:
+        _, o, pc = cached
         return (o > pc, o, pc, "cache")
     try:
         r = httpx.get(
@@ -93,12 +99,25 @@ def vix_up_at_open(symbol: str = "^VIX") -> tuple[bool | None, float | None, flo
         r.raise_for_status()
         res = r.json()["chart"]["result"][0]
         q = res.get("indicators", {}).get("quote", [{}])[0]
-        rows = [(o, c) for o, c in zip(q.get("open", []), q.get("close", []))
-                if o is not None and c is not None]
+        timestamps = res.get("timestamp", [])
+        # Zip timestamps so we can validate which date each bar belongs to
+        rows = [
+            (ts, o, c)
+            for ts, o, c in zip(timestamps, q.get("open", []), q.get("close", []))
+            if o is not None and c is not None
+        ]
         if len(rows) < 2:
             return None, None, None, "insufficient"
-        today_open, prior_close = rows[-1][0], rows[-2][1]
-        _VIX_DAILY_CACHE[symbol] = (today_open, prior_close, time.time())
+        # Validate that the most recent row is actually today, not yesterday's bar
+        # (pre-market, today's open bar may not yet be published by Yahoo)
+        last_date = datetime.fromtimestamp(rows[-1][0], tz=_ET).strftime("%Y-%m-%d")
+        if last_date != today:
+            log.info("vix_up_at_open: last bar is %s, not today %s — pre-market, fail-open",
+                     last_date, today)
+            return None, None, None, "pre-market"
+        today_open = rows[-1][1]
+        prior_close = rows[-2][2]
+        _VIX_DAILY_CACHE[symbol] = (today, today_open, prior_close)
         log.info("%s up-at-open: open %.2f vs prior close %.2f → %s",
                  symbol, today_open, prior_close, "UP" if today_open > prior_close else "down")
         return (today_open > prior_close, today_open, prior_close, symbol)

@@ -2673,10 +2673,23 @@ class Orchestrator:
             # SHADOW: stash the CBOE-mid would-be limit BEFORE we submit, so the
             # market fill we measure against is timestamped to the same chain pull.
             await self._compute_ic_limit_shadow(ic)
-            result = await self.alpaca_trader.place_iron_condor(
-                underlying="SPY", expiry=today_str,
-                call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
-            )
+            if (settings.IC_LIMIT_LIVE_ENABLED
+                    and ic.limit_shadow_credit_per_share_spy is not None):
+                steps = [int(x.strip()) for x in
+                         settings.IC_LIMIT_LADDER_STEPS_CENTS.split(",") if x.strip()]
+                result = await self.alpaca_trader.place_iron_condor_limit_ladder(
+                    underlying="SPY", expiry=today_str,
+                    call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+                    mid_credit_per_share=ic.limit_shadow_credit_per_share_spy,
+                    tick_give_cents=settings.IC_LIMIT_TICK_GIVE_CENTS,
+                    ladder_steps_cents=steps,
+                    wait_sec=settings.IC_LIMIT_REPRICE_WAIT_SEC,
+                )
+            else:
+                result = await self.alpaca_trader.place_iron_condor(
+                    underlying="SPY", expiry=today_str,
+                    call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+                )
             if result and not result.get("shadow"):
                 ic.alpaca_order_id = result.get("id")
                 ic.broker_status = "submitted"

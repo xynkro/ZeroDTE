@@ -94,10 +94,11 @@ def expected_shortfall(
         raise ValueError("confidence must be in (0, 1)")
 
     sorted_r = np.sort(r)
-    cutoff = int(np.floor((1 - confidence) * len(sorted_r)))
-    cutoff = max(cutoff, 0)
-    var = float(sorted_r[cutoff])
-    tail = sorted_r[: cutoff + 1]
+    # Number of observations in the worst (1-confidence) tail; floor guarantees at
+    # least 0, but we clamp to 1 so the tail is never empty (mean of 0 values).
+    n_tail = max(1, int(np.floor((1 - confidence) * len(sorted_r))))
+    var = float(sorted_r[n_tail - 1])
+    tail = sorted_r[:n_tail]
     es = float(np.mean(tail))
     return es, var
 

@@ -213,6 +213,17 @@ class MacroFeed:
                 self._last_calendar_fetch = datetime.now(timezone.utc)
                 log.warning("Economic calendar unavailable: %s", self._calendar_disabled_reason)
                 return
+            if not events:
+                # HTTP succeeded but 0 US events survived the USD filter — possible
+                # ForexFactory country-field encoding change. Don't silently appear green:
+                # in_blackout_window() would return (False, None) on an empty calendar,
+                # bypassing the FOMC blackout gate.
+                self._calendar_disabled_reason = (
+                    "economic-calendar returned 0 US events — possible ForexFactory encoding mismatch"
+                )
+                self._last_calendar_fetch = datetime.now(timezone.utc)
+                log.warning("Calendar: fetch succeeded but 0 events passed USD filter")
+                return
             self._calendar_disabled_reason = None   # recovered
             events.sort(key=lambda x: x["time"])
             self._calendar = events

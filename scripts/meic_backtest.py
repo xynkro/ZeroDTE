@@ -91,6 +91,11 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             eb_et = eb.time.astimezone(ET) if eb.time.tzinfo else eb.time
             eb_min = eb_et.hour * 60 + eb_et.minute
             outcome, exit_val = "expiry", None
+            # Excursion tracking over the REALIZED holding window (entry → exit bar).
+            # bb = mark-to-market buy-back cost; anchored at entry where bb≈credit
+            # (unrealized P&L ≈ 0). min_bb = cheapest buy-back = peak profit available
+            # (MFE); max_bb = priciest buy-back = closest to breach (MAE).
+            min_bb = max_bb = credit
             for b in sb:
                 if b.time <= eb.time:
                     continue
@@ -106,6 +111,8 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
                 bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
                       + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT
+                min_bb = min(min_bb, bb)
+                max_bb = max(max_bb, bb)
                 # exit priority each bar: take-profit (winner) → stop (loser) → time exit
                 if take_profit_pct is not None and bb <= credit * (1 - take_profit_pct / 100.0):
                     exit_val = bb
@@ -129,9 +136,16 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 exit_val = (bs.spread_value("sell_call_cs", lc, cs, cl, 0.0)
                             + bs.spread_value("sell_put_cs", lc, ps, pl, 0.0)) * MULT
                 outcome = "expiry"
+            # Fold the realized exit into the excursion window so a same-bar
+            # stop/expiry that never traversed an intraday repricing still scores.
+            min_bb = min(min_bb, exit_val)
+            max_bb = max(max_bb, exit_val)
+            mfe = credit - min_bb            # peak unrealized profit available ($)
+            mae = credit - max_bb            # deepest unrealized drawdown ($, ≤0)
             pnl = credit - exit_val - cost_rt
             entries.append({"date": str(date), "slot": slot, "credit": credit,
-                            "outcome": outcome, "pnl": pnl})
+                            "outcome": outcome, "pnl": pnl,
+                            "gross": credit - exit_val, "mfe": mfe, "mae": mae})
     return entries
 
 

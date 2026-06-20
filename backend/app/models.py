@@ -183,6 +183,12 @@ class IronCondorBuilder(BaseModel):
     limit_shadow_computed_at: str | None = None
     limit_shadow_decision: str | None = None                   # would_fill / would_not_fill / unknown
     limit_shadow_market_credit_per_share_spy: float | None = None  # real Alpaca per-share for compare
+    # MAE/MFE excursion telemetry — running extremes of mark-to-market unrealized
+    # P&L, updated each breakeven-stop mark (~90s) over the hold. Forward-looking
+    # confirmation that winners capture full decay (mfe→+credit) and aren't dipping
+    # into stop territory first (mae). Position-scale $; None until the first mark.
+    mfe_dollars: float | None = None   # peak unrealized profit = credit − min(buyback)
+    mae_dollars: float | None = None   # deepest drawdown        = credit − max(buyback)
 
 
 class DashboardState(BaseModel):

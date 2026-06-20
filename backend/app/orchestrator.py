@@ -838,6 +838,12 @@ class Orchestrator:
         put_spread_cost  = max(0.0, (sp_mid - lp_mid)) * multiplier
         total_buyback = call_spread_cost + put_spread_cost
 
+        # MAE/MFE excursion telemetry — pure measurement, never affects the stop.
+        # upnl = unrealized P&L at this mark; track running peak (MFE) and trough (MAE).
+        upnl = ic.total_credit_dollars - total_buyback
+        ic.mfe_dollars = upnl if ic.mfe_dollars is None else max(ic.mfe_dollars, upnl)
+        ic.mae_dollars = upnl if ic.mae_dollars is None else min(ic.mae_dollars, upnl)
+
         # Stop trigger: buyback ≥ credit × buffer (noise margin over pure
         # breakeven), CONFIRMED on two consecutive marks ≥ IC_STOP_CONFIRM_SEC
         # apart — one CBOE mid-tick can't fire it.

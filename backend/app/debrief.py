@@ -357,6 +357,32 @@ IC_BT_COST_RT_SPX = 50.0
 IC_SLIP_TOLERANCE_PCT = 15.0   # entry slippage above this = the audit's edge-thinning line
 
 
+def _excursion_summary(rungs) -> dict | None:
+    """Per-night MAE/MFE excursion roll-up over the executed condors — the live,
+    forward-looking version of scripts/meic_excursion.py. mfe/mae are stored as
+    position-scale $ on each builder; we normalise to % of that rung's credit so
+    rungs of different richness compare. None until at least one rung was marked."""
+    import statistics as _st
+    mfes, maes = [], []
+    for b in rungs or ():
+        if _ic_status(b) not in ("executed", "stopped"):
+            continue
+        cr = getattr(b, "total_credit_dollars", None) or 0.0
+        mfe, mae = getattr(b, "mfe_dollars", None), getattr(b, "mae_dollars", None)
+        if cr <= 0 or mfe is None or mae is None:
+            continue
+        mfes.append(mfe / cr * 100.0)
+        maes.append(mae / cr * 100.0)
+    if not mfes:
+        return None
+    return {
+        "n": len(mfes),
+        "mfe_med_pct": round(_st.median(mfes), 1),   # peak profit captured (% credit)
+        "mae_med_pct": round(_st.median(maes), 1),    # typical worst dip (% credit, ≤0)
+        "mae_min_pct": round(min(maes), 1),           # deepest single dip toward breach
+    }
+
+
 def _limit_shadow_summary(rungs) -> dict | None:
     """Per-night CBOE-mid marketable-limit SHADOW report — pure measurement.
 
@@ -449,6 +475,17 @@ def build_ic_debrief(ic_history, date: str, real_book: dict | None = None,
            "executed": executed, "stopped": stopped, "stop_rate": stop_rate,
            "model_credit_spx": round(model_credit_spx, 2)}
     flags: list[str] = []
+
+    # MAE/MFE excursion roll-up — did the book capture full decay (mfe→+100%)
+    # and stay clear of breach (mae shallow)? Pure measurement.
+    exc = _excursion_summary(rungs)
+    out["excursion"] = exc
+    if exc:
+        flags.append(
+            f"excursion: peak-profit med {exc['mfe_med_pct']:+.0f}% credit · "
+            f"worst-dip med {exc['mae_med_pct']:+.0f}% (deepest {exc['mae_min_pct']:+.0f}%) "
+            f"· {exc['n']} marked"
+        )
 
     # CBOE-mid marketable-limit SHADOW — measurement only, never tunes anything.
     shadow = _limit_shadow_summary(rungs)
@@ -566,6 +603,7 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
     import json
     r = ic_d.get("real") or {}
     sh = ic_d.get("limit_shadow") or {}
+    exc = ic_d.get("excursion") or {}
     row = {
         "date": date,
         "ic_executed": ic_d.get("executed", 0),
@@ -574,6 +612,10 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
         "ic_real_net": r.get("net_pnl"),
         "ic_entry_credit": r.get("entry_credit"),
         "ic_slippage_pct": r.get("slippage_pct"),
+        # MAE/MFE excursion — forward-looking stop-quality + decay-capture telemetry.
+        "ic_mfe_med_pct": exc.get("mfe_med_pct"),
+        "ic_mae_med_pct": exc.get("mae_med_pct"),
+        "ic_mae_min_pct": exc.get("mae_min_pct"),
         # CBOE-mid limit-shadow — feeds the live-flip decision. None until enabled.
         "ic_limit_shadow_n": sh.get("n"),
         "ic_limit_shadow_would_fill_rate_pct": sh.get("would_fill_rate_pct"),

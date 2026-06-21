@@ -225,6 +225,9 @@ def meic_history(log_path: str) -> dict:
             "date": d, "executed": r.get("ic_executed", 0), "stopped": r.get("ic_stopped", 0),
             "stop_rate": r.get("ic_stop_rate"), "real_net": round(net, 2),
             "slippage_pct": r.get("ic_slippage_pct"), "cumulative": cum,
+            # MAE/MFE excursion (None on nights logged before the telemetry shipped)
+            "mfe_med_pct": r.get("ic_mfe_med_pct"), "mae_med_pct": r.get("ic_mae_med_pct"),
+            "mae_min_pct": r.get("ic_mae_min_pct"),
         })
     green = sum(1 for n in nights if n["real_net"] > 0)
     nets = [n["real_net"] for n in nights]

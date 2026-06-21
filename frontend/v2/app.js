@@ -487,7 +487,7 @@ function MeicTrackRecord({ h }) {
     <${Sparkline} curve=${curve} height=${96} />
     <div style="overflow-x:auto;margin-top:10px">
     <table class="tbl"><thead><tr>
-      <th>Night</th><th class="r">Fired</th><th class="r">Stop%</th><th class="r">P&L</th><th class="r">Cumul.</th><th class="r">Slip</th>
+      <th>Night</th><th class="r">Fired</th><th class="r">Stop%</th><th class="r">P&L</th><th class="r">Cumul.</th><th class="r">Peak/Dip</th><th class="r">Slip</th>
     </tr></thead><tbody>
       ${[...nights].reverse().map(n => html`<tr key=${n.date} class=${n.real_net > 0 ? 'win' : n.real_net < 0 ? 'lose' : ''}>
         <td>${fmtDay(n.date)}</td>
@@ -495,10 +495,11 @@ function MeicTrackRecord({ h }) {
         <td class="r muted">${n.stop_rate != null ? Math.round(n.stop_rate) + '%' : '—'}</td>
         <td class=${clsx('r', n.real_net >= 0 ? 'pos' : 'neg')} style="font-weight:600">${signMoney(n.real_net)}</td>
         <td class=${clsx('r', n.cumulative >= 0 ? 'pos' : 'neg')}>${signMoney(n.cumulative)}</td>
+        <td class="r faint">${n.mfe_med_pct != null ? html`<span class="pos">+${Math.round(n.mfe_med_pct)}%</span>/<span class="neg">${Math.round(n.mae_med_pct)}%</span>` : '—'}</td>
         <td class="r faint">${n.slippage_pct != null ? (n.slippage_pct > 0 ? '+' : '') + Math.round(n.slippage_pct) + '%' : '—'}</td>
       </tr>`)}
     </tbody></table></div>
-    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5">Real Alpaca-fill P&L · SPY-scale @ 1ct/slot. Many small reds + occasional bigger greens = the condor asymmetry working as designed — judge the cumulative, not one night.</div>
+    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5">Real Alpaca-fill P&L · SPY-scale @ 1ct/slot. Many small reds + occasional bigger greens = the condor asymmetry working as designed — judge the cumulative, not one night.<br/><b>Peak/Dip</b> = median MFE/MAE per night (% of credit): how much profit the book reached vs how deep it dipped toward breach. Healthy = peak near +100%, dip shallow — winners capture full decay and the breakeven stop stays clear of recoverable trades.</div>
   </${Card}>`;
 }
 

@@ -751,7 +751,11 @@ class Orchestrator:
         today = datetime.now(ET).strftime("%Y-%m-%d")
         cands, seen = [], set()
         ic0 = self.state.iron_condor
-        if ic0 is not None and ic0.available and ic0.build_id:
+        if (ic0 is not None and ic0.available and ic0.build_id
+                and ic0.broker_status == "submitted"):
+            # broker_status guard: the latest build may be a rejected/errored/shadow
+            # rung that never reached the broker — marking it fires a PHANTOM stop on
+            # a position that doesn't exist (seen on the 2026-06-23 14:00 reject).
             cands.append(ic0)
             seen.add(ic0.build_id)
         for b in list(self.state.iron_condor_history):
@@ -2674,6 +2678,45 @@ class Orchestrator:
                 cl = cs + 1.0   # keep the call wing real after rounding
             if pl >= ps:
                 pl = ps - 1.0   # keep the put wing real after rounding
+
+            # Strike-collision avoidance (MEIC laddering): Alpaca rejects an mleg with
+            # HTTP 422 "position intent mismatch" when a buy_to_open leg lands on a
+            # strike where we're already net SHORT (or sell_to_open where net long) —
+            # i.e. a later rung's wing overlaps an earlier rung's short. Seen on the
+            # 2026-06-23 14:00 rung. Collect today's open opposite-intent strikes and
+            # nudge our colliding legs one $ further OTM until clear (wings only when
+            # possible, so the short deltas — the alpha — are preserved).
+            short_calls, long_calls, short_puts, long_puts = set(), set(), set(), set()
+            for b in self.state.iron_condor_history:
+                if (not b.build_id or not b.build_id.startswith(f"ic_{day_key}")
+                        or b.broker_status != "submitted" or b is ic
+                        or not b.call_leg or not b.put_leg):
+                    continue
+                short_calls.add(spy(b.call_leg.short_strike)); long_calls.add(spy(b.call_leg.long_strike))
+                short_puts.add(spy(b.put_leg.short_strike));   long_puts.add(spy(b.put_leg.long_strike))
+
+            def _nudge(val, blocked, step, tries=6):
+                for _ in range(tries):
+                    if val not in blocked:
+                        break
+                    val = float(round(val + step))
+                return val
+
+            cs0, cl0, ps0, pl0 = cs, cl, ps, pl
+            cl = _nudge(cl, short_calls, +1.0)        # call long wing: buy_to_open, push up
+            pl = _nudge(pl, short_puts, -1.0)         # put long wing: buy_to_open, push down
+            if cs in long_calls:                      # short call collides with an open long
+                cs = float(round(cs + 1.0)); cl = max(cl, cs + 1.0)
+            if ps in long_puts:                       # short put collides with an open long
+                ps = float(round(ps - 1.0)); pl = min(pl, ps - 1.0)
+            if cl <= cs:
+                cl = cs + 1.0
+            if pl >= ps:
+                pl = ps - 1.0
+            if (cs0, cl0, ps0, pl0) != (cs, cl, ps, pl):
+                log.info("IC strike-collision nudge %s: C%.0f/%.0f P%.0f/%.0f → C%.0f/%.0f P%.0f/%.0f",
+                         ic.build_id, cs0, cl0, ps0, pl0, cs, cl, ps, pl)
+
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
             qty = max(1, settings.IC_CONTRACTS)
             # SHADOW: stash the CBOE-mid would-be limit BEFORE we submit, so the

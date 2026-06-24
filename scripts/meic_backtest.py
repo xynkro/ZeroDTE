@@ -37,10 +37,21 @@ MULT = 100
 
 def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
              stop_buffer: float = 1.0, take_profit_pct: float | None = None,
-             time_stop_min: int | None = None):
+             time_stop_min: int | None = None,
+             credit_richness: float = 1.0, stop_anchor: str = "real"):
     """stop_buffer: stop when buy-back >= buffer×credit (1.0=breakeven, ∞=no stop).
     take_profit_pct: close early when buy-back <= (1-tp/100)×credit (None=no TP).
-    time_stop_min: close N minutes after entry at the current mark (None=ride to expiry)."""
+    time_stop_min: close N minutes after entry at the current mark (None=ride to expiry).
+
+    credit_richness (R): live Alpaca fills land R× richer than the BS model credit
+    (measured ~1.5-1.9× over Jun nights). We scale BOTH the collected credit AND the
+    intraday CBOE-marked buy-back by R; the EXPIRY intrinsic is NOT scaled (richness is
+    time-premium, gone at settlement). R=1.0 reproduces the pure-model backtest.
+    stop_anchor: which credit the stop threshold uses —
+      'real'  → buffer × (R×credit): a true breakeven on the credit actually collected.
+      'model' → buffer × credit (un-scaled BS): RECREATES THE LIVE BUG, where the
+                threshold is anchored to the model while the buy-back marks off the
+                richer CBOE chain — firing the stop at ~buffer/R of real credit."""
     ctx = _prepare(data_window)
     if ctx is None:
         raise SystemExit("no data")
@@ -84,18 +95,21 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             pl = ps - WING
             credit_ps = (bs.spread_value("sell_call_cs", S0, cs, cl, c_tv0)
                          + bs.spread_value("sell_put_cs", S0, ps, pl, p_tv0))
-            credit = credit_ps * MULT
-            if credit / (WING * MULT) * 100.0 < MIN_CREDIT_PCT:
-                continue  # thin-premium gate (live skips these)
+            model_credit = credit_ps * MULT          # BS model credit (gate + 'model' anchor)
+            if model_credit / (WING * MULT) * 100.0 < MIN_CREDIT_PCT:
+                continue  # thin-premium gate (live skips these) — gates on model credit, like live
+            R = credit_richness
+            real_credit = model_credit * R           # credit actually collected (rich fills)
+            # Stop threshold: 'real' anchors to collected credit (true breakeven);
+            # 'model' anchors to the un-scaled BS credit (recreates the live bug).
+            stop_thresh = (real_credit if stop_anchor == "real" else model_credit) * stop_buffer
 
             eb_et = eb.time.astimezone(ET) if eb.time.tzinfo else eb.time
             eb_min = eb_et.hour * 60 + eb_et.minute
             outcome, exit_val = "expiry", None
-            # Excursion tracking over the REALIZED holding window (entry → exit bar).
-            # bb = mark-to-market buy-back cost; anchored at entry where bb≈credit
-            # (unrealized P&L ≈ 0). min_bb = cheapest buy-back = peak profit available
-            # (MFE); max_bb = priciest buy-back = closest to breach (MAE).
-            min_bb = max_bb = credit
+            # Excursion over the realized holding window; entry mark ≈ real_credit
+            # (unrealized P&L ≈ 0). Intraday buy-backs are CBOE-rich (×R); expiry is not.
+            min_bb = max_bb = real_credit
             for b in sb:
                 if b.time <= eb.time:
                     continue
@@ -104,21 +118,21 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 if bm >= 16 * 60:
                     iv_c = bs.spread_value("sell_call_cs", b.close, cs, cl, 0.0)
                     iv_p = bs.spread_value("sell_put_cs", b.close, ps, pl, 0.0)
-                    exit_val = (iv_c + iv_p) * MULT
+                    exit_val = (iv_c + iv_p) * MULT     # intrinsic — no richness at settlement
                     outcome = "expiry"
                     break
                 pr = _periods_remaining(b.time)
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
                 bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
-                      + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT
+                      + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT * R
                 min_bb = min(min_bb, bb)
                 max_bb = max(max_bb, bb)
                 # exit priority each bar: take-profit (winner) → stop (loser) → time exit
-                if take_profit_pct is not None and bb <= credit * (1 - take_profit_pct / 100.0):
+                if take_profit_pct is not None and bb <= real_credit * (1 - take_profit_pct / 100.0):
                     exit_val = bb
                     outcome = "tp"
                     break
-                if bb >= credit * stop_buffer:  # stop at buffer×credit (1.0=breakeven, ∞=hold)
+                if bb >= stop_thresh:  # stop at threshold (anchor-dependent)
                     exit_val = bb
                     outcome = "stop"
                     break
@@ -140,12 +154,12 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             # stop/expiry that never traversed an intraday repricing still scores.
             min_bb = min(min_bb, exit_val)
             max_bb = max(max_bb, exit_val)
-            mfe = credit - min_bb            # peak unrealized profit available ($)
-            mae = credit - max_bb            # deepest unrealized drawdown ($, ≤0)
-            pnl = credit - exit_val - cost_rt
-            entries.append({"date": str(date), "slot": slot, "credit": credit,
+            mfe = real_credit - min_bb       # peak unrealized profit available ($)
+            mae = real_credit - max_bb       # deepest unrealized drawdown ($, ≤0)
+            pnl = real_credit - exit_val - cost_rt
+            entries.append({"date": str(date), "slot": slot, "credit": real_credit,
                             "outcome": outcome, "pnl": pnl,
-                            "gross": credit - exit_val, "mfe": mfe, "mae": mae})
+                            "gross": real_credit - exit_val, "mfe": mfe, "mae": mae})
     return entries
 
 

@@ -433,11 +433,23 @@ function KillButton() {
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
-const VIEWS = [['monitor', 'Monitor'], ['wave', 'Wave'], ['signals', 'Signals'], ['playbook', 'Playbook'], ['backtest', 'Backtest'], ['macro', 'Macro']];
+// Per-book tab sets. The two books (MEIC condors, Wave directional spreads) share
+// one backend/account/Telegram but get fully separate UIs via the top-level switch.
+const TABS = {
+  meic: [['dashboard', 'Dashboard'], ['signals', 'Signals'], ['backtest', 'Backtest'], ['playbook', 'Playbook'], ['macro', 'Macro']],
+  wave: [['dashboard', 'Dashboard'], ['signals', 'Signals'], ['backtest', 'Backtest'], ['playbook', 'Playbook'], ['macro', 'Macro']],
+};
 
-const Nav = ({ view, setView }) => html`
+const BookSwitch = ({ book, setBook }) => html`
+  <div class="seg bookseg" role="tablist" aria-label="Strategy book">
+    ${[['meic', '🦅 MEIC'], ['wave', '🌊 Wave']].map(([k, label]) => html`<button key=${k}
+      class=${book === k ? 'on' : ''} role="tab" aria-selected=${book === k}
+      onClick=${() => setBook(k)}>${label}</button>`)}
+  </div>`;
+
+const Nav = ({ book, view, setView }) => html`
   <nav class="nav" aria-label="Views">
-    ${VIEWS.map(([k, label]) => html`<button key=${k} class=${view === k ? 'on' : ''}
+    ${TABS[book].map(([k, label]) => html`<button key=${k} class=${view === k ? 'on' : ''}
       aria-current=${view === k ? 'page' : null} onClick=${() => setView(k)}>${label}</button>`)}
   </nav>`;
 
@@ -445,12 +457,13 @@ const ModePill = () => STATIC
   ? html`<span class="pill"><span class="dot"></span>snapshot</span>`
   : html`<span class="pill"><span class="dot live"></span>live</span>`;
 
-function Topbar({ view, setView, onSettings }) {
+function Topbar({ book, setBook, view, setView, onSettings }) {
   return html`
     <header class="topbar">
       <div class="brand"><img class="wordmark" src="./wordmark.png" alt="ZeroDTE" /><span class="tag">terminal</span></div>
+      <${BookSwitch} book=${book} setBook=${setBook} />
       <div class="spacer"></div>
-      <${Nav} view=${view} setView=${setView} />
+      <${Nav} book=${book} view=${view} setView=${setView} />
       <${ModePill} />
       ${!STATIC && html`<${KillButton} />`}
       <button class="btn ghost icon-btn" onClick=${onSettings} aria-label="Telegram settings" title="Telegram settings">⚙</button>
@@ -605,9 +618,10 @@ function WaveView() {
     </div>`;
 }
 
-function MonitorView() {
+// MEIC dashboard — the condor book only (Wave moved to its own book).
+function MeicDashboard() {
   const res = useResource(loadMonitor, STATIC ? 60000 : 8000);
-  const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || res.data?.stats?.total) : null);
+  const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || res.data?.meicHistory?.summary?.total) : null);
   if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
   if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not reach the backend. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
   const d = res.data;
@@ -616,18 +630,6 @@ function MonitorView() {
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
       ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
       <div data-stagger><${MeicTrackRecord} h=${d.meicHistory} /></div>
-      <div data-stagger>
-        <div class="faint" style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;margin:6px 2px 8px">Wave (directional) book</div>
-        <${StatsRow} s=${d.stats || {}} />
-      </div>
-      <div class="grid cols-2">
-        <${DebriefCard} d=${d.debrief} />
-        <${Card} title="Equity Curve" accent="var(--blue)"><${Sparkline} curve=${(d.stats || {}).equity_curve || []} /></${Card}>
-      </div>
-      <${Card} title="Trade Log" accent="var(--violet)"
-        actions=${d.alpaca && html`<${Badge} kind=${d.alpaca.enabled ? 'ok' : 'neutral'}>${d.alpaca.enabled ? 'broker active' : 'broker off'}</${Badge}>`}>
-        <${TradeTable} trades=${d.trades} />
-      </${Card}>
     </div>`;
 }
 
@@ -725,6 +727,27 @@ function BacktestView() {
             <td class=${clsx('r', (y.pnl || 0) >= 0 ? 'pos' : 'neg')} style="font-weight:600">${signMoney(y.pnl)}</td>
             <td class="r">${(y.wr || 0).toFixed(0)}%</td></tr>`)}</tbody></table>
       </${Card}>`}
+  </div>`;
+}
+
+// MEIC backtest — the honest engine (scripts/meic_backtest.py) is CLI-only; the
+// HTTP /api/backtest/iron_condor is the DISCREDITED legacy proxy (per CLAUDE.md),
+// so we surface the validated anchors here instead of wiring the bad endpoint.
+function MeicBacktestView() {
+  const A = [
+    ['Net / day', '+$464', 'SPX-scale, 1ct/slot'],
+    ['Green nights', '73%', 'ladder 11/12/13/14 ET'],
+    ['t-stat', '21.9', 'per-day, full history'],
+    ['Stop rate', '58%', 'per-entry breakeven'],
+  ];
+  return html`<div class="grid" style="margin-top:16px">
+    <${Card} title="MEIC honest backtest — validated anchors" accent="var(--green)">
+      <div class="banner" style="margin-bottom:14px">\u{1F9EA} <span>The MEIC honest engine runs offline (<span class="mono">scripts/meic_backtest.py</span> / <span class="mono">meic_excursion.py</span>, Black-Scholes repricing). The live HTTP iron-condor backtest is the legacy proxy that inflated win-rate — deliberately not shown here.</span></div>
+      <div class="stats">
+        ${A.map(([k, v, sub]) => html`<div class="stat" key=${k}><div class="k">${k}</div><div class="v">${v}</div><div class="faint" style="font-size:10px;margin-top:2px">${sub}</div></div>`)}
+      </div>
+      <div class="faint" style="font-size:11.5px;margin-top:13px;line-height:1.55">Config: 16Δ short, $25 SPX wings, skew (puts 1.15× / calls 0.90×), per-condor breakeven stop, ride-to-expiry. To re-run or sweep, use the CLI: <span class="mono">PYTHONPATH=. .venv/bin/python scripts/meic_backtest.py</span>. Excursion (MAE/MFE) + stop-anchor experiments live in the sibling scripts.</div>
+    </${Card}>
   </div>`;
 }
 
@@ -919,7 +942,30 @@ function MeicLadder({ m }) {
   </${Card}>`;
 }
 
-function SignalsView() {
+// MEIC signals — the condor ladder (each slot's strikes + CBOE-mid limit shadow).
+function MeicSignals() {
+  const res = useResource(loadSignals, STATIC ? 60000 : 5000);
+  const staggerRef = useStagger(res.status === 'ready' ? (res.data?.meic?.builds?.length || 0) : null);
+  if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
+  if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not load signals. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
+  const d = res.data || {};
+  const tvUrl = d.tv_chart_url || 'https://www.tradingview.com/chart/?symbol=SP%3ASPX&interval=5';
+  return html`
+    <div ref=${staggerRef} class="grid" style="margin-top:16px" aria-busy=${res.status === 'refreshing'}>
+      ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Snapshot</strong>${d._snapAt ? ' · ' + new Date(d._snapAt).toLocaleString() : ''} — live updates on the backend terminal.</span></div>`}
+      ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
+      ${d.meic
+        ? html`<div data-stagger><${MeicLadder} m=${d.meic} /></div>`
+        : html`<div data-stagger><${Card} title="MEIC Ladder"><${EmptyState} glyph="\u{1F985}" title="No condor ladder yet"
+            hint="The 11/12/13/14 ET ladder rungs appear here as each slot builds." /></${Card}></div>`}
+      <div data-stagger style="display:flex;justify-content:flex-end">
+        <a class="btn" href=${tvUrl} target="_blank" rel="noopener noreferrer">\u{1F4C8} Open chart on TradingView</a>
+      </div>
+    </div>`;
+}
+
+// Wave signals — the directional cockpit (live signal, open position, sell zones).
+function WaveSignals() {
   const res = useResource(loadSignals, STATIC ? 60000 : 5000);
   const now = useNow(1000);
   const staggerKey = res.status === 'ready'
@@ -935,7 +981,6 @@ function SignalsView() {
     <div ref=${staggerRef} class="grid" style="margin-top:16px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Snapshot</strong>${d._snapAt ? ' · ' + new Date(d._snapAt).toLocaleString() : ''} — live countdown / P&L update on the backend terminal.</span></div>`}
       ${d.today && html`<div data-stagger><${TodayCard} t=${d.today} /></div>`}
-      ${d.meic && html`<div data-stagger><${MeicLadder} m=${d.meic} /></div>`}
       <div data-stagger style="display:flex;justify-content:flex-end">
         <a class="btn" href=${tvUrl} target="_blank" rel="noopener noreferrer">\u{1F4C8} Open chart on TradingView</a>
       </div>
@@ -1000,17 +1045,25 @@ function PlaybookView() {
 }
 
 function App() {
-  const [view, setView] = useState('monitor');
+  // book = which strategy (meic | wave); view = tab within that book. Both persist.
+  const [book, setBookRaw] = useState(() => localStorage.getItem('zdt_book') || 'meic');
+  const [view, setViewRaw] = useState(() => localStorage.getItem('zdt_view') || 'dashboard');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const setBook = (b) => { setBookRaw(b); localStorage.setItem('zdt_book', b);
+    // reset to dashboard when switching books unless the tab exists in both
+    if (!TABS[b].some(([k]) => k === view)) { setViewRaw('dashboard'); localStorage.setItem('zdt_view', 'dashboard'); } };
+  const setView = (v) => { setViewRaw(v); localStorage.setItem('zdt_view', v); };
   return html`
     <div class="app">
       ${settingsOpen && html`<${SettingsSheet} onClose=${() => setSettingsOpen(false)} />`}
-      <${Topbar} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
-      ${view === 'monitor' && html`<${MonitorView} />`}
-      ${view === 'wave' && html`<${WaveView} />`}
-      ${view === 'signals' && html`<${SignalsView} />`}
+      <${Topbar} book=${book} setBook=${setBook} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
+      ${book === 'meic' && view === 'dashboard' && html`<${MeicDashboard} />`}
+      ${book === 'meic' && view === 'signals' && html`<${MeicSignals} />`}
+      ${book === 'meic' && view === 'backtest' && html`<${MeicBacktestView} />`}
+      ${book === 'wave' && view === 'dashboard' && html`<${WaveView} />`}
+      ${book === 'wave' && view === 'signals' && html`<${WaveSignals} />`}
+      ${book === 'wave' && view === 'backtest' && html`<${BacktestView} />`}
       ${view === 'playbook' && html`<${PlaybookView} />`}
-      ${view === 'backtest' && html`<${BacktestView} />`}
       ${view === 'macro' && html`<${MacroView} />`}
     </div>`;
 }

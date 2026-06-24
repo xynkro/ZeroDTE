@@ -216,6 +216,11 @@
   .seg { display: flex; gap: 4px; }
   .seg button { flex: 1; padding: 7px; border: 1px solid var(--line); background: var(--bg-elev-2); color: var(--ink-dim); border-radius: var(--r-xs); font-size: 12px; cursor: pointer; }
   .seg button.on { background: var(--green-bg); border-color: var(--green-line); color: var(--green); }
+  /* Top-level MEIC|Wave book switch — prominent, sits next to the brand */
+  .bookseg { flex: none; gap: 3px; background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--r-pill); padding: 3px; }
+  .bookseg button { flex: none; padding: 6px 14px; border: 1px solid transparent; background: transparent; color: var(--ink-dim); border-radius: var(--r-pill); font-family: var(--font-display); font-weight: 700; font-size: 13px; letter-spacing: -.01em; cursor: pointer; transition: color .15s, background .15s; }
+  .bookseg button.on { background: var(--bg-elev-2); color: var(--ink); box-shadow: var(--shadow-1); }
+  .bookseg button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; font-size: 14px; }
 
   /* ─────────────────────────── Nav ─────────────────────────── */

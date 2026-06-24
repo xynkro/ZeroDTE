@@ -540,6 +540,11 @@ class Orchestrator:
                             "asof": res.asof,
                         })
                     first = False
+                # Piggyback the broker-truth P&L refresh on this slow loop so the
+                # kill-switch's cross-check stays current without a blocking call in
+                # the trade path. Best-effort; never blocks GEX.
+                if in_window:
+                    await self._refresh_broker_today_pnl()
                 await asyncio.sleep(max(60, settings.GEX_REFRESH_MIN * 60))
             except asyncio.CancelledError:
                 break
@@ -1083,6 +1088,30 @@ class Orchestrator:
                     wave_msg = f"{wave_msg}\n{_rec.summarize(_rc)}"
             except Exception as e:
                 log.warning("EOD reconcile failed: %s", e)
+            # P&L SELF-CONSISTENCY — does REPORTED P&L match the broker's real fills?
+            # This is the check that would have caught the Jun-23 +$180-vs-−$5 fiction.
+            # Compares today's net of real option fills (MEIC+Wave) against the model
+            # P&L the debrief reports; flags any divergence beyond tolerance so the
+            # cheerful number can never go out unchallenged.
+            try:
+                from . import broker_ledger as _bl
+                _bt = await _bl.fetch_realized(self.alpaca_trader, days_back=1)
+                _broker = (_bt.get(date_str) or {}).get("realized")
+                if _broker is not None:
+                    _rb = locals().get("real_book") or {}
+                    _model_ic = _rb.get("net")
+                    _model = self._today_realized_pnl() + (_model_ic or 0.0)  # wave model + MEIC real
+                    _gap = _broker - _model
+                    _tol = max(20.0, 0.20 * abs(_model))
+                    _m = lambda v: f"{'+' if v >= 0 else '-'}${abs(v):,.0f}"
+                    if abs(_gap) >= _tol:
+                        wave_msg = (f"{wave_msg}\n⚠️ P&L CHECK: broker fills {_m(_broker)} vs "
+                                    f"reported {_m(_model)} (Δ {_m(_gap)}) — model P&L is "
+                                    f"OVERSTATED; trust the broker number, not the screen")
+                    else:
+                        wave_msg = f"{wave_msg}\n✓ P&L check: broker {_m(_broker)} ≈ reported {_m(_model)}"
+            except Exception as e:
+                log.warning("EOD P&L self-consistency check failed: %s", e)
             # Muted == the user WANTS silence, not a transport failure. Mark dedup
             # and return so the safety loop doesn't rebuild + retry every 60s all
             # day (the old behaviour, since both sends return None when muted).
@@ -1964,7 +1993,11 @@ class Orchestrator:
         return self._trade_seq_today
 
     def _today_realized_pnl(self) -> float:
-        """Sum of P&L across today's CLOSED paper trades (signed dollars)."""
+        """Sum of MODEL P&L across today's CLOSED paper trades (signed dollars).
+
+        NOTE: this is MODEL P&L (trade.pnl), which can diverge sharply from the
+        broker (Jun-23: model +$60 vs broker −$5). The kill-switch cross-checks it
+        against _broker_today_pnl_cached() and trips on the WORSE of the two."""
         from datetime import datetime as _dt
         from zoneinfo import ZoneInfo as _ZI
         _ET = _ZI("America/New_York")
@@ -1973,6 +2006,35 @@ class Orchestrator:
             (t.pnl or 0.0) for t in self.paper_trades
             if t.closed and t.fired_at and t.fired_at.startswith(today_iso)
         )
+
+    async def _refresh_broker_today_pnl(self):
+        """Best-effort: pull TODAY's realized P&L from real Alpaca option fills and
+        stash (date, value). Read-only; never throws. Feeds the kill-switch's
+        broker cross-check so the circuit breaker trips on real dollars, not model
+        P&L. Stale/failed fetch → cache left as-is; the kill-switch falls back to
+        model alone (fail-safe: never LESS protective than before)."""
+        trader = getattr(self, "alpaca_trader", None)
+        if trader is None:
+            return
+        try:
+            from . import broker_ledger as _bl
+            today = datetime.now(ET).strftime("%Y-%m-%d")
+            by_day = await _bl.fetch_realized(trader, days_back=1)
+            rec = by_day.get(today)
+            if rec is not None:
+                self._broker_today_pnl = (today, float(rec["realized"]),
+                                          datetime.now(ET).timestamp())
+        except Exception as e:  # noqa: BLE001
+            log.warning("broker today-pnl refresh failed: %s", e)
+
+    def _broker_today_pnl_cached(self) -> float | None:
+        """Return today's broker-realized P&L if the cache is for TODAY, else None
+        (so the caller fails safe to the model number rather than a stale day)."""
+        cache = getattr(self, "_broker_today_pnl", None)
+        if not cache:
+            return None
+        d, val, _ts = cache
+        return val if d == datetime.now(ET).strftime("%Y-%m-%d") else None
 
     def _trades_opened_today(self) -> int:
         """Count today's opened paper trades (regardless of close state).
@@ -2144,11 +2206,19 @@ class Orchestrator:
 
     def _daily_loss_limit_breached(self) -> tuple[bool, float, float]:
         """Returns (breached, today_pnl, limit_dollars). Breached when net P&L
-        for today ≤ -DAILY_LOSS_LIMIT_PCT × ACCOUNT_SIZE_USD."""
+        for today ≤ -DAILY_LOSS_LIMIT_PCT × ACCOUNT_SIZE_USD.
+
+        Trips on the WORSE (more negative) of MODEL P&L and BROKER-realized P&L.
+        Model P&L can hide a real loss (Jun-23: model +$60 while broker −$5), so a
+        model-only circuit breaker is blind to the very fiction we found. When the
+        broker cache is fresh (today), use min(model, broker); when it's stale or
+        unavailable, fall back to model alone — never LESS protective than before."""
         if settings.DAILY_LOSS_LIMIT_PCT <= 0:
             return False, 0.0, 0.0
         limit_dollars = -abs(settings.ACCOUNT_SIZE_USD * settings.DAILY_LOSS_LIMIT_PCT / 100.0)
-        today_pnl = self._today_realized_pnl()
+        model_pnl = self._today_realized_pnl()
+        broker_pnl = self._broker_today_pnl_cached()
+        today_pnl = min(model_pnl, broker_pnl) if broker_pnl is not None else model_pnl
         return today_pnl <= limit_dollars, today_pnl, limit_dollars
 
     def _note_signal(self, gated_reason: str | None = None):

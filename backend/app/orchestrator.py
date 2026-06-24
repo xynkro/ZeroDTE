@@ -2622,6 +2622,32 @@ class Orchestrator:
             return
 
         try:
+            # Strike-collision avoidance: two Wave trades at the SAME SPY strike net
+            # into ONE Alpaca position, so their per-trade closes collide (seen
+            # 2026-06-22: two P741/740 spreads → one 12-lot → both marked
+            # close_error even though the position flattened). Nudge THIS trade's
+            # short strike $1 (SPY) further OTM until it's distinct from any open
+            # same-side Wave position. We nudge pt.short_strike itself so the close
+            # path (which re-derives strikes from it) stays consistent.
+            def _spy_short(s):
+                return float(round(s / 10.0))
+            open_shorts = {
+                _spy_short(t.short_strike) for t in self.paper_trades
+                if t is not pt and getattr(t, "strategy", None) == "directional_spread"
+                and not t.closed and t.broker_status == "submitted"
+                and t.side == pt.side and t.short_strike is not None
+            }
+            if open_shorts and pt.short_strike is not None:
+                is_call = pt.side == "sell_call_cs"
+                orig = pt.short_strike
+                for _ in range(6):
+                    if _spy_short(pt.short_strike) not in open_shorts:
+                        break
+                    pt.short_strike += 10.0 if is_call else -10.0   # $1 SPY, further OTM
+                if pt.short_strike != orig:
+                    log.info("Wave strike-collision nudge trade #%d: SPX short %.0f → %.0f "
+                             "(avoid netting with an open %s position)",
+                             pt.trade_no, orig, pt.short_strike, pt.side)
             # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale).
             params = spy_strike_params(
                 side=pt.side,

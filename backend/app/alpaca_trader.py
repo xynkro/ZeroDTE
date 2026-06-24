@@ -449,6 +449,37 @@ class AlpacaTrader:
             return None
 
 
+    async def get_fill_activities(self, after_iso: str, until_iso: str) -> list[dict]:
+        """READ-ONLY broker truth: every FILL activity in [after, until).
+
+        Hits /v2/account/activities/FILL — the canonical record of what actually
+        transacted, independent of how we stored our orders. Paginates via page_token.
+        Returns raw fill dicts: {symbol, side, price, qty, transaction_time, type, ...}.
+        Callers MUST filter to ZeroDTE's own instruments (option OCC symbols) so we
+        never read CasaaFinance's equity fills on this shared paper account."""
+        out: list[dict] = []
+        try:
+            client = await self._ensure_client()
+            url = f"{settings.ALPACA_BASE_URL}/v2/account/activities/FILL"
+            page_token = None
+            for _ in range(50):  # hard page cap
+                params = {"after": after_iso, "until": until_iso, "page_size": "100"}
+                if page_token:
+                    params["page_token"] = page_token
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                out.extend(batch)
+                if len(batch) < 100:
+                    break
+                page_token = batch[-1].get("id")
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.error("Alpaca get_fill_activities failed: %s", e)
+            return out
+
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open
         orders in a single call (Alpaca DELETE /v2/positions?cancel_orders=true)."""

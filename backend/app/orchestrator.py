@@ -1096,7 +1096,8 @@ class Orchestrator:
             try:
                 from . import broker_ledger as _bl
                 _bt = await _bl.fetch_realized(self.alpaca_trader, days_back=1)
-                _broker = (_bt.get(date_str) or {}).get("realized")
+                _rec = _bt.get(date_str) or {}
+                _broker = _rec.get("realized_net", _rec.get("realized"))
                 if _broker is not None:
                     _rb = locals().get("real_book") or {}
                     _model_ic = _rb.get("net")
@@ -2022,7 +2023,9 @@ class Orchestrator:
             by_day = await _bl.fetch_realized(trader, days_back=1)
             rec = by_day.get(today)
             if rec is not None:
-                self._broker_today_pnl = (today, float(rec["realized"]),
+                # realized_net = fills + fees (true net cash; fees make it slightly
+                # worse → strictly more conservative for the loss-limit breaker).
+                self._broker_today_pnl = (today, float(rec.get("realized_net", rec["realized"])),
                                           datetime.now(ET).timestamp())
         except Exception as e:  # noqa: BLE001
             log.warning("broker today-pnl refresh failed: %s", e)

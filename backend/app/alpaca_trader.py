@@ -480,6 +480,33 @@ class AlpacaTrader:
             log.error("Alpaca get_fill_activities failed: %s", e)
             return out
 
+    async def get_fee_activities(self, after_iso: str, until_iso: str) -> list[dict]:
+        """READ-ONLY: every FEE activity in [after, until) — OCC clearing, ORF, TAF,
+        CAT, etc. Real cash that FILL-only netting misses. Returns raw fee dicts:
+        {net_amount, description, date, ...}. Same pagination as fills."""
+        out: list[dict] = []
+        try:
+            client = await self._ensure_client()
+            url = f"{settings.ALPACA_BASE_URL}/v2/account/activities/FEE"
+            page_token = None
+            for _ in range(50):
+                params = {"after": after_iso, "until": until_iso, "page_size": "100"}
+                if page_token:
+                    params["page_token"] = page_token
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                batch = resp.json()
+                if not batch:
+                    break
+                out.extend(batch)
+                if len(batch) < 100:
+                    break
+                page_token = batch[-1].get("id")
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.error("Alpaca get_fee_activities failed: %s", e)
+            return out
+
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open
         orders in a single call (Alpaca DELETE /v2/positions?cancel_orders=true)."""

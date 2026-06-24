@@ -65,8 +65,20 @@ def _fill_cashflow(fill: dict, multiplier: int = 100) -> float | None:
     return sign * price * qty * multiplier
 
 
-def realized_by_day(fills: list[dict]) -> dict:
-    """Net realized $ per ET trading day, from OUR option fills only.
+def _activity_day(a: dict) -> str | None:
+    """ET trading-day for an activity. FILLs carry `transaction_time`; non-trade
+    activities (FEE) carry `date`. Returns 'YYYY-MM-DD' or None."""
+    t = a.get("transaction_time") or a.get("date") or ""
+    try:
+        if "T" in t or "Z" in t or "+" in t:
+            return datetime.fromisoformat(t.replace("Z", "+00:00")).astimezone(ET).strftime("%Y-%m-%d")
+        return t[:10] or None       # bare 'YYYY-MM-DD'
+    except (ValueError, TypeError):
+        return None
+
+
+def realized_by_day(fills: list[dict], fees: list[dict] | None = None) -> dict:
+    """Net realized $ per ET trading day, from OUR option fills (+ fees if given).
 
     A day's realized P&L = sum of signed cashflow across all our option fills that
     day (sells positive, buys negative). For a same-day-expiry book where every
@@ -74,9 +86,15 @@ def realized_by_day(fills: list[dict]) -> dict:
     realized P&L. Expiry of a short with no buy-to-close fill correctly contributes
     only its opening credit (you keep it).
 
-    Returns {date_str: {"realized": float, "fills": int, "symbols": int}}.
+    `realized` is FILL-only (back-compat). `fees` is the summed FEE net_amount
+    (OCC/ORF/TAF/CAT — always ≤0, and they POST a day late, so they attach to the
+    posting day, not the trade day). `realized_net` = realized + fees is the true
+    net cash and is what the kill-switch + reconciler should read.
+
+    Returns {date_str: {realized, fees, realized_net, fills, symbols}}.
     """
-    by_day: dict[str, dict] = defaultdict(lambda: {"realized": 0.0, "fills": 0, "_syms": set()})
+    by_day: dict[str, dict] = defaultdict(
+        lambda: {"realized": 0.0, "fees": 0.0, "fills": 0, "_syms": set()})
     skipped_non_option = 0
     for f in fills:
         sym = f.get("symbol", "")
@@ -86,26 +104,36 @@ def realized_by_day(fills: list[dict]) -> dict:
         cf = _fill_cashflow(f)
         if cf is None:
             continue
-        t = f.get("transaction_time") or ""
-        try:
-            d = datetime.fromisoformat(t.replace("Z", "+00:00")).astimezone(ET).strftime("%Y-%m-%d")
-        except (ValueError, TypeError):
+        d = _activity_day(f)
+        if d is None:
             continue
         rec = by_day[d]
         rec["realized"] += cf
         rec["fills"] += 1
         rec["_syms"].add(sym)
+    for fee in (fees or []):
+        try:
+            amt = float(fee.get("net_amount"))
+        except (TypeError, ValueError):
+            continue
+        d = _activity_day(fee)
+        if d is None:
+            continue
+        by_day[d]["fees"] += amt
     if skipped_non_option:
         log.info("broker_ledger: skipped %d non-option fills (CasaaFinance equities)", skipped_non_option)
-    return {d: {"realized": round(v["realized"], 2), "fills": v["fills"], "symbols": len(v["_syms"])}
+    return {d: {"realized": round(v["realized"], 2), "fees": round(v["fees"], 2),
+                "realized_net": round(v["realized"] + v["fees"], 2),
+                "fills": v["fills"], "symbols": len(v["_syms"])}
             for d, v in sorted(by_day.items())}
 
 
 async def fetch_realized(trader, days_back: int = 7, now: datetime | None = None) -> dict:
-    """Pull our option fills for the last `days_back` ET days and net them per day.
-    `trader` is an AlpacaTrader. Read-only. Returns realized_by_day()."""
+    """Pull our option fills + fees for the last `days_back` ET days and net them
+    per day. `trader` is an AlpacaTrader. Read-only. Returns realized_by_day()."""
     now = now or datetime.now(ET)
     after = (now - timedelta(days=days_back)).astimezone(ET).replace(hour=0, minute=0, second=0)
     until = now
     fills = await trader.get_fill_activities(after.isoformat(), until.isoformat())
-    return realized_by_day(fills)
+    fees = await trader.get_fee_activities(after.isoformat(), until.isoformat())
+    return realized_by_day(fills, fees)

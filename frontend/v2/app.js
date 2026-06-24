@@ -76,6 +76,27 @@ async function loadPlaybook() {
   return fetch(`${API}/api/playbook`).then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
 }
 
+async function loadWave() {
+  if (STATIC) {
+    const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => { if (!r.ok) throw new Error('snapshot HTTP ' + r.status); return r.json(); });
+    return {
+      mode: 'static', generatedAt: s.generated_at,
+      history: s.wave_history || null, debrief: s.debrief || {},
+      trades: (s.trades || []).filter(t => t.strategy === 'directional_spread'),
+    };
+  }
+  const [history, debrief, trades] = await Promise.all([
+    fetch(`${API}/api/wave/history`).then(r => r.json()).catch(() => null),
+    fetch(`${API}/api/debrief`).then(r => r.json()).catch(() => ({})),
+    fetch(`${API}/api/paper_trades`).then(r => r.json()).catch(() => []),
+  ]);
+  return {
+    mode: 'live', generatedAt: null, history, debrief: debrief || {},
+    trades: (trades || []).filter(t => t.strategy === 'directional_spread'),
+  };
+}
+
 // useResource — the loading/error/data state machine every view shares.
 function useResource(loader, pollMs) {
   const [state, setState] = useState({ status: 'loading', data: null, error: null });
@@ -412,7 +433,7 @@ function KillButton() {
 }
 
 // ── Chrome ──────────────────────────────────────────────────────────────────
-const VIEWS = [['monitor', 'Monitor'], ['signals', 'Signals'], ['playbook', 'Playbook'], ['backtest', 'Backtest'], ['macro', 'Macro']];
+const VIEWS = [['monitor', 'Monitor'], ['wave', 'Wave'], ['signals', 'Signals'], ['playbook', 'Playbook'], ['backtest', 'Backtest'], ['macro', 'Macro']];
 
 const Nav = ({ view, setView }) => html`
   <nav class="nav" aria-label="Views">
@@ -501,6 +522,82 @@ function MeicTrackRecord({ h }) {
     </tbody></table></div>
     <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5">Real Alpaca-fill P&L · SPY-scale @ 1ct/slot. Many small reds + occasional bigger greens = the condor asymmetry working as designed — judge the cumulative, not one night.<br/><b>Peak/Dip</b> = median MFE/MAE per night (% of credit): how much profit the book reached vs how deep it dipped toward breach. Healthy = peak near +100%, dip shallow — winners capture full decay and the breakeven stop stays clear of recoverable trades.</div>
   </${Card}>`;
+}
+
+function WaveTrackRecord({ h }) {
+  const nights = (h && h.nights) || [];
+  const sm = (h && h.summary) || {};
+  if (!nights.length) return html`<${Card} title="Wave Track Record" accent="var(--blue)">
+    <${EmptyState} glyph="\u{1F30A}" title="No directional nights recorded yet"
+      hint="Each night's Wave P&L lands here after the close." /></${Card}>`;
+  const total = sm.total || 0;
+  const tone = total >= 0 ? 'var(--green)' : 'var(--red)';
+  const curve = nights.map(n => ({ cum: n.cumulative }));
+  return html`<${Card} title="Wave Track Record" accent=${tone}
+    actions=${html`<span class="muted" style="font-size:12px"><b style=${{ color: total >= 0 ? 'var(--green)' : 'var(--red)' }}>${signMoney(total)}</b> est · ${sm.green}/${sm.n} green nights</span>`}>
+    <div class="banner" style="margin-bottom:12px">\u{26A0}️ <span><strong>P&L is model-estimated</strong>, not real Alpaca fills yet — entries execute on the broker but exit P&L is computed by the model. Real-fill capture is the next fix; treat these as directional, not realized.</span></div>
+    <div class="stats" style="margin-bottom:14px">
+      <${StatTile} k="Net (est $)" value=${total} tone=${tone} hl=${true} format=${v => signMoney(v)} />
+      <${StatTile} k="Green / Nights" value=${sm.green || 0} format=${() => `${sm.green || 0} / ${sm.n || 0}`} />
+      <${StatTile} k="Win rate" value=${sm.win_rate || 0} format=${() => sm.win_rate != null ? `${sm.win_rate}% (${sm.wins}/${sm.trades})` : '—'} />
+      <${StatTile} k="Best / Worst" value=${sm.best || 0} tone=${tone} format=${() => `${signMoney(sm.best)} / ${signMoney(sm.worst)}`} />
+    </div>
+    <${Sparkline} curve=${curve} height=${96} />
+    <div style="overflow-x:auto;margin-top:10px">
+    <table class="tbl"><thead><tr>
+      <th>Night</th><th class="r">Trades</th><th class="r">Wins</th><th class="r">P&L (est)</th><th class="r">Cumul.</th>
+    </tr></thead><tbody>
+      ${[...nights].reverse().map(n => html`<tr key=${n.date} class=${n.pnl > 0 ? 'win' : n.pnl < 0 ? 'lose' : ''}>
+        <td>${fmtDay(n.date)}</td>
+        <td class="r">${n.n}</td>
+        <td class="r muted">${n.wins != null ? n.wins : '—'}</td>
+        <td class=${clsx('r', n.pnl >= 0 ? 'pos' : 'neg')} style="font-weight:600">${signMoney(n.pnl)}</td>
+        <td class=${clsx('r', n.cumulative >= 0 ? 'pos' : 'neg')}>${signMoney(n.cumulative)}</td>
+      </tr>`)}
+    </tbody></table></div>
+    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5">Directional credit spreads (SPY-scale). Edge validated ~96% on PUTS; CALL trades are the unproven side. Judge the cumulative, not one night — N is still small.</div>
+  </${Card}>`;
+}
+
+function _waveSide(s) { return s === 'sell_call_cs' ? 'CALL' : s === 'sell_put_cs' ? 'PUT' : (s || '—'); }
+
+function WaveTodayTrades({ trades }) {
+  const ts = [...(trades || [])].sort((a, b) => (b.fired_at || '').localeCompare(a.fired_at || ''));
+  if (!ts.length) return null;
+  return html`<${Card} title="Wave Trades (recent)" accent="var(--violet)">
+    <div style="overflow-x:auto">
+    <table class="tbl"><thead><tr>
+      <th>Time</th><th>Side</th><th class="r">Ctr</th><th class="r">Credit (real)</th><th class="r">P&L (model)</th><th>Outcome</th>
+    </tr></thead><tbody>
+      ${ts.slice(0, 12).map((t, i) => {
+        const real = t.broker_realized_credit, pnl = t.pnl;
+        return html`<tr key=${t.fired_at + i} class=${pnl > 0 ? 'win' : pnl < 0 ? 'lose' : ''}>
+          <td class="muted">${(t.fired_at || '').slice(5, 16).replace('T', ' ')}</td>
+          <td>${_waveSide(t.side)}</td>
+          <td class="r muted">${t.contracts || '—'}</td>
+          <td class="r">${real != null ? signMoney(real) : '—'}</td>
+          <td class=${clsx('r', (pnl || 0) >= 0 ? 'pos' : 'neg')} style="font-weight:600">${pnl != null ? signMoney(pnl) : '—'}</td>
+          <td class="faint" style="font-size:11px">${t.exit_reason || t.outcome || (t.closed ? 'closed' : 'open')}</td>
+        </tr>`;
+      })}
+    </tbody></table></div>
+    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5"><b>Credit (real)</b> = actual Alpaca fill. <b>P&L (model)</b> = system estimate, not yet from real exit fills — they will not reconcile until real-fill capture lands. Where model P&L exceeds the real credit, it is not a realizable number.</div>
+  </${Card}>`;
+}
+
+function WaveView() {
+  const res = useResource(loadWave, STATIC ? 60000 : 8000);
+  const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || (res.data?.history?.summary?.n)) : null);
+  if (res.status === 'loading') return html`<${MonitorSkeleton} />`;
+  if (res.status === 'error') return html`<div style="margin-top:24px"><${ErrorState} message=${'Could not reach the backend. ' + (res.error || '')} onRetry=${res.reload} /></div>`;
+  const d = res.data;
+  return html`
+    <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
+      ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
+      <div data-stagger><${WaveTrackRecord} h=${d.history} /></div>
+      <div data-stagger><${WaveTodayTrades} trades=${d.trades} /></div>
+      <div data-stagger><${DebriefCard} d=${d.debrief} /></div>
+    </div>`;
 }
 
 function MonitorView() {
@@ -905,6 +1002,7 @@ function App() {
       ${settingsOpen && html`<${SettingsSheet} onClose=${() => setSettingsOpen(false)} />`}
       <${Topbar} view=${view} setView=${setView} onSettings=${() => setSettingsOpen(true)} />
       ${view === 'monitor' && html`<${MonitorView} />`}
+      ${view === 'wave' && html`<${WaveView} />`}
       ${view === 'signals' && html`<${SignalsView} />`}
       ${view === 'playbook' && html`<${PlaybookView} />`}
       ${view === 'backtest' && html`<${BacktestView} />`}

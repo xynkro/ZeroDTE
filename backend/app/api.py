@@ -773,6 +773,16 @@ async def meic_history_endpoint():
     return dbf.meic_history(log)
 
 
+@app.get("/api/wave/history")
+async def wave_history_endpoint():
+    """Per-night WAVE (directional-spread) track record from the rolling debrief log.
+    NOTE: P&L is model-estimated, not real Alpaca fills yet — the UI labels it 'est.'."""
+    import os
+    from . import debrief as dbf
+    log = os.path.join(os.path.dirname(__file__), "..", "data", "debrief_log.jsonl")
+    return dbf.wave_history(log)
+
+
 @app.get("/api/reconcile")
 async def reconcile_endpoint():
     """Ledger ⇄ Alpaca reconciliation — flags any recorded trade the broker

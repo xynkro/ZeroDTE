@@ -242,6 +242,59 @@ def meic_history(log_path: str) -> dict:
     }
 
 
+def wave_history(log_path: str) -> dict:
+    """Per-night WAVE (directional-spread) TRACK RECORD from debrief_log.jsonl, for
+    the app — mirrors meic_history so Wave gets a first-class surface. De-dup by date
+    (last wins). NOTE: wave_pnl in the log is currently MODEL-estimated, not real
+    Alpaca-fill P&L — the UI labels it 'est.' until real-fill capture lands.
+    Returns {nights:[{date, n, wins, pnl, cumulative}], summary:{...}}."""
+    import json
+    by_date: dict[str, dict] = {}
+    try:
+        with open(log_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                d = r.get("date", "")
+                if (r.get("wave_n") or 0) > 0 and r.get("wave_pnl") is not None:
+                    by_date[d] = r
+    except OSError:
+        by_date = {}
+    nights, cum = [], 0.0
+    for d in sorted(by_date):
+        r = by_date[d]
+        pnl = float(r["wave_pnl"])
+        cum = round(cum + pnl, 2)
+        n = r.get("wave_n", 0) or 0
+        wins = r.get("wave_wins")
+        nights.append({
+            "date": d, "n": n, "wins": wins,
+            "pnl": round(pnl, 2), "cumulative": cum,
+        })
+    pnls = [x["pnl"] for x in nights]
+    green = sum(1 for x in nights if x["pnl"] > 0)
+    tot_n = sum(x["n"] for x in nights)
+    tot_w = sum((x["wins"] or 0) for x in nights)
+    return {
+        "nights": nights,
+        "summary": {
+            "n": len(nights), "total": round(cum, 2), "green": green,
+            "green_rate": round(green / len(nights) * 100) if nights else None,
+            "best": round(max(pnls), 2) if pnls else None,
+            "worst": round(min(pnls), 2) if pnls else None,
+            "trades": tot_n, "wins": tot_w,
+            "win_rate": round(tot_w / tot_n * 100) if tot_n else None,
+        },
+        # Honesty flag the UI surfaces: P&L is model-estimated, not real fills (yet).
+        "pnl_basis": "model_estimate",
+    }
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""

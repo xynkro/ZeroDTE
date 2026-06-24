@@ -33,7 +33,7 @@ TRADE_FIELDS = (
     "trade_no", "fired_at", "closed_at", "side", "instrument",
     "short_strike", "long_strike", "estimated_credit", "outcome",
     "pnl", "peak_pct_kept", "current_stop_pct_kept", "broker_status",
-    "strategy", "contracts",
+    "strategy", "contracts", "broker_realized_credit", "exit_reason", "closed",
 )
 
 
@@ -62,6 +62,7 @@ def build_snapshot() -> dict:
     debrief = _get("/api/debrief", {}) or {}
     signals = _get("/api/signals", {}) or {}
     meic_history = _get("/api/meic/history", {}) or {}
+    wave_hist = _get("/api/wave/history", {}) or {}
     playbook = _get("/api/playbook", {}) or {}
     ds = [t for t in trades_raw if t.get("strategy") == "directional_spread"]
     trades = [{k: t.get(k) for k in TRADE_FIELDS} for t in ds]
@@ -88,6 +89,8 @@ def build_snapshot() -> dict:
         # Per-night MEIC condor track record (real Alpaca P&L) — so the phone shows
         # the cumulative picture + the GREEN nights, not just the red Telegram pings.
         "meic_history": meic_history,
+        # Per-night WAVE track record (model-estimated P&L for now) for the Wave tab.
+        "wave_history": wave_hist,
         # Live strategy config so the phone Playbook explains exactly what's running.
         "playbook": playbook,
     }

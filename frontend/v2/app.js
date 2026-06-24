@@ -567,21 +567,26 @@ function WaveTodayTrades({ trades }) {
   return html`<${Card} title="Wave Trades (recent)" accent="var(--violet)">
     <div style="overflow-x:auto">
     <table class="tbl"><thead><tr>
-      <th>Time</th><th>Side</th><th class="r">Ctr</th><th class="r">Credit (real)</th><th class="r">P&L (model)</th><th>Outcome</th>
+      <th>Time</th><th>Side</th><th class="r">Ctr</th><th class="r">Credit (real)</th><th class="r">P&L</th><th class="r">Basis</th><th>Outcome</th>
     </tr></thead><tbody>
       ${ts.slice(0, 12).map((t, i) => {
-        const real = t.broker_realized_credit, pnl = t.pnl;
-        return html`<tr key=${t.fired_at + i} class=${pnl > 0 ? 'win' : pnl < 0 ? 'lose' : ''}>
+        const real = t.broker_realized_credit;
+        const rpnl = t.broker_realized_pnl;            // real-fill P&L when captured
+        const verified = rpnl != null;
+        const closeErr = t.broker_status === 'close_error';
+        const pnl = verified ? rpnl : t.pnl;            // prefer real, fall back to model
+        return html`<tr key=${t.fired_at + i} class=${(pnl || 0) > 0 ? 'win' : (pnl || 0) < 0 ? 'lose' : ''}>
           <td class="muted">${(t.fired_at || '').slice(5, 16).replace('T', ' ')}</td>
           <td>${_waveSide(t.side)}</td>
           <td class="r muted">${t.contracts || '—'}</td>
           <td class="r">${real != null ? signMoney(real) : '—'}</td>
           <td class=${clsx('r', (pnl || 0) >= 0 ? 'pos' : 'neg')} style="font-weight:600">${pnl != null ? signMoney(pnl) : '—'}</td>
+          <td class="r" style="font-size:10px">${verified ? html`<span class="pos">real</span>` : closeErr ? html`<span class="neg">close_err</span>` : html`<span class="faint">model</span>`}</td>
           <td class="faint" style="font-size:11px">${t.exit_reason || t.outcome || (t.closed ? 'closed' : 'open')}</td>
         </tr>`;
       })}
     </tbody></table></div>
-    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5"><b>Credit (real)</b> = actual Alpaca fill. <b>P&L (model)</b> = system estimate, not yet from real exit fills — they will not reconcile until real-fill capture lands. Where model P&L exceeds the real credit, it is not a realizable number.</div>
+    <div class="faint" style="font-size:11px;margin-top:9px;line-height:1.5"><b>P&L</b> shows the <b class="pos">real</b> Alpaca entry+exit fill when captured; <b class="faint">model</b> = estimate (no real exit yet); <b class="neg">close_err</b> = the broker close FAILED, so the real P&L is unverified and the position rode on. Trust the <b class="pos">real</b> rows.</div>
   </${Card}>`;
 }
 

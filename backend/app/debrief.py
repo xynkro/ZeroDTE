@@ -43,7 +43,13 @@ def _classify(t) -> dict:
     moved = (clo - sig) if (sig is not None and clo is not None) else 0.0
     # "against" = the tape moved toward/through the short leg (call up, put down)
     against = (is_call and moved > 0) or ((not is_call) and moved < 0)
-    pnl = t.pnl or 0.0
+    # REAL-FILL P&L when captured (entry+exit Alpaca cashflow), else MODEL pnl.
+    # This is the integrity fix: the headline/verdict track what the broker actually
+    # did, not the model's estimate. verified=True means it's a real number.
+    real = getattr(t, "broker_realized_pnl", None)
+    verified = real is not None
+    pnl = real if verified else (t.pnl or 0.0)
+    broker_err = getattr(t, "broker_status", None) == "close_error"
     outcome = t.outcome or ""
     breach = False
     if clo is not None and t.short_strike is not None:
@@ -66,6 +72,7 @@ def _classify(t) -> dict:
     return {
         "trade_no": t.trade_no, "side": side, "cat": cat, "icon": icon,
         "against": against, "pnl": round(pnl, 2), "note": note,
+        "verified": verified, "model_pnl": round(t.pnl or 0.0, 2), "broker_err": broker_err,
         "short_strike": t.short_strike,
         "underlying_signal": sig, "underlying_close": clo,
         "realized_std": t.bs_realized_std, "regime": t.gex_regime,
@@ -340,6 +347,11 @@ def build_debrief(trades, date: str | None = None) -> dict:
     wins = [a for a in analyses if a["cat"] == "win"]
     losses = [a for a in analyses if a["cat"] != "win"]
     session_pnl = round(sum(a["pnl"] for a in analyses), 2)
+    # P&L integrity: how much of today's number is REAL Alpaca fills vs model est.
+    verified_n = sum(1 for a in analyses if a["verified"])
+    err_n = sum(1 for a in analyses if a.get("broker_err"))
+    pnl_basis = ("real_fill" if verified_n == len(analyses)
+                 else "mixed" if verified_n else "model_estimate")
 
     sides = {a["side"] for a in analyses}
     skew = None
@@ -381,6 +393,9 @@ def build_debrief(trades, date: str | None = None) -> dict:
     return {
         "date": date,
         "session_pnl": session_pnl,
+        "pnl_basis": pnl_basis,            # real_fill | mixed | model_estimate
+        "verified_n": verified_n,          # trades backed by real Alpaca fills
+        "close_errors": err_n,             # trades whose broker close FAILED
         "wins": len(wins), "losses": len(losses),
         "trades": analyses,
         "flags": {
@@ -696,11 +711,19 @@ def format_debrief_telegram(d: dict) -> str:
     lines = [f"🔍 DEBRIEF · {d['date']}"]
     sp = d["session_pnl"]
     sp_str = f"+${sp:.0f}" if sp >= 0 else f"−${abs(sp):.0f}"
-    lines.append(f"session: {len(d['trades'])} trade(s) · {d['wins']}W/{d['losses']}L · {sp_str}")
+    basis = d.get("pnl_basis")
+    tag = {"real_fill": "real fills", "mixed": f"{d.get('verified_n',0)}/{len(d['trades'])} real fills",
+           "model_estimate": "MODEL est — not real fills"}.get(basis, "")
+    lines.append(f"session: {len(d['trades'])} trade(s) · {d['wins']}W/{d['losses']}L · {sp_str}"
+                 + (f" ({tag})" if tag else ""))
+    if d.get("close_errors"):
+        lines.append(f"🛑 {d['close_errors']} trade(s) FAILED to close on the broker "
+                     f"(close_error) — their P&L is unverified; the broker position rode on")
     for a in d["trades"]:
         p = a["pnl"]
         p_str = f"+${p:.0f}" if p >= 0 else f"−${abs(p):.0f}"
-        lines.append(f"{a['icon']} #{a['trade_no']} {a['side']} {p_str} — {a['note']}")
+        mark = "" if a.get("verified") else (" ⚠close_err" if a.get("broker_err") else " ~est")
+        lines.append(f"{a['icon']} #{a['trade_no']} {a['side']} {p_str}{mark} — {a['note']}")
     fl = d.get("flags", {})
     if fl.get("directional_skew"):
         lines.append(f"⚠️ {fl['directional_skew']}")

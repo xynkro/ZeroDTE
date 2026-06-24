@@ -280,7 +280,9 @@ def format_wave_summary(
     lines = [
         f"📊 EOD WAVE — {date_str}",
         f"{n} signals · {n_win}W / {n_loss}L · WR {wr:.0f}%",
-        f"Net P&L (paper, est): {'+' if total_pnl >= 0 else ''}${total_pnl:,.0f}",
+        f"Net P&L (model re-sim, est): {'+' if total_pnl >= 0 else ''}${total_pnl:,.0f}",
+        "⚠️ this is a signal re-simulation from bars — the 🔍 DEBRIEF below is the "
+        "REAL-fill book (Alpaca entry+exit). They diverge until the two are unified.",
         "",
     ]
     # Show last 8 trades briefly

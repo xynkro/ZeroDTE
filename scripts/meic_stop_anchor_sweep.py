@@ -42,8 +42,8 @@ def _day_stats(entries):
         by_day[e["date"]] += e["pnl"]
     days = list(by_day.values())
     mean_d = st.mean(days)
-    sd = st.stdev(days) if len(days) > 1 else 0.0
-    t = mean_d / (sd / math.sqrt(len(days))) if sd > 0 else 0.0
+    from backend.app.quant_utils import newey_west_tstat
+    t = newey_west_tstat(days)["t"]   # HAC t — naive overstates on autocorrelated daily P&L
     stops = sum(1 for e in entries if e["outcome"] == "stop")
     return {
         "n_days": len(days), "mean_day": mean_d, "worst_day": min(days),

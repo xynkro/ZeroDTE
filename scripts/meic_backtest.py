@@ -176,13 +176,17 @@ def report(entries, label):
     days = list(by_day.values())
     green = sum(1 for d in days if d > 0) / len(days) * 100
     mean_d = st.mean(days)
-    sd_d = st.stdev(days) if len(days) > 1 else 0
-    t = mean_d / (sd_d / math.sqrt(len(days))) if sd_d > 0 else 0
+    # HAC (Newey-West) t-stat — daily 0DTE P&L is serially correlated (regime
+    # clustering; the ladder shares a day's tape), so the naive t overstates
+    # significance. The gate reads the NW t; naive shown in parens for contrast.
+    from backend.app.quant_utils import newey_west_tstat
+    nw = newey_west_tstat(days)
+    t = nw["t"]
     avg_credit = st.mean(e["credit"] for e in entries)
     print(f"{label}")
     print(f"  entries {len(entries)} | WIN RATE {wins/len(entries)*100:.1f}% | stop rate {stops/len(entries)*100:.1f}% | avg credit ${avg_credit:.0f}")
     print(f"  per-entry: mean ${st.mean(pnls):+.1f} | avg win ${st.mean([p for p in pnls if p>0]):+.0f} | avg loss ${st.mean([p for p in pnls if p<=0]):+.0f}")
-    print(f"  per-DAY ({len(days)}d): ${mean_d:+.1f} SPX-scale | worst ${min(days):+.0f} | green {green:.0f}% | t={t:.2f}")
+    print(f"  per-DAY ({len(days)}d): ${mean_d:+.1f} SPX-scale | worst ${min(days):+.0f} | green {green:.0f}% | t={t:.2f} (NW L={nw['lags']}, naive {nw['naive_t']:.2f})")
     print(f"  at SPY x1ct/slot: ${mean_d/10:+.2f}/day | worst day ${min(days)/10:+.1f}")
     era = {d: v for d, v in by_day.items() if d >= "2024-01-01"}
     if era:

@@ -104,6 +104,53 @@ def expected_shortfall(
 
 
 # ---------------------------------------------------------------------------
+# 2b. Newey-West (HAC) t-statistic for the mean of a return series
+# ---------------------------------------------------------------------------
+def newey_west_tstat(returns: Sequence[float], lags: int | None = None) -> Dict[str, float]:
+    """HAC (Newey-West) t-statistic for the mean of a return series.
+
+    The naive t = mean / (s/√n) assumes i.i.d. observations. Trading P&L — and a
+    0DTE ladder whose rungs share one day's tape especially — is SERIALLY
+    CORRELATED, so the naive standard error is too small and the t too large: it
+    waves through changes that aren't real edge. Newey-West corrects the variance
+    of the mean for autocorrelation up to `lags` using the Bartlett kernel, which
+    guarantees a non-negative long-run-variance estimate.
+
+    lags=None → Newey-West (1994) plug-in bandwidth floor(4·(n/100)^(2/9)), min 1.
+    Returns {t, naive_t, se, naive_se, mean, n, lags}. t/naive_t are 0.0 when the
+    series is constant or n<2 (no dispersion to test)."""
+    r = [float(x) for x in returns if x is not None]
+    n = len(r)
+    if n < 2:
+        return {"t": 0.0, "naive_t": 0.0, "se": 0.0, "naive_se": 0.0,
+                "mean": (r[0] if r else 0.0), "n": n, "lags": 0}
+    mean = sum(r) / n
+    dev = [x - mean for x in r]
+    ss = sum(d * d for d in dev)
+    gamma0 = ss / n                       # population autocovariance at lag 0
+    if gamma0 <= 0:                       # constant series — no dispersion
+        return {"t": 0.0, "naive_t": 0.0, "se": 0.0, "naive_se": 0.0,
+                "mean": mean, "n": n, "lags": 0}
+    if lags is None:
+        lags = max(1, int(math.floor(4.0 * (n / 100.0) ** (2.0 / 9.0))))
+    lags = min(lags, n - 1)
+    lrv = gamma0                          # long-run variance (Bartlett-weighted)
+    for k in range(1, lags + 1):
+        w = 1.0 - k / (lags + 1.0)        # Bartlett kernel weight
+        cov_k = sum(dev[t] * dev[t - k] for t in range(k, n)) / n
+        lrv += 2.0 * w * cov_k
+    lrv = max(lrv, 1e-12)                 # Bartlett guarantees ≥0; clamp fp noise
+    se = math.sqrt(lrv / n)
+    s = math.sqrt(ss / (n - 1))          # sample stdev for the naive comparison
+    naive_se = s / math.sqrt(n)
+    return {
+        "t": round(mean / se, 3) if se > 0 else 0.0,
+        "naive_t": round(mean / naive_se, 3) if naive_se > 0 else 0.0,
+        "se": se, "naive_se": naive_se, "mean": mean, "n": n, "lags": lags,
+    }
+
+
+# ---------------------------------------------------------------------------
 # 3. Bayesian win-rate tracker — don't trust a small-sample hot streak
 # ---------------------------------------------------------------------------
 class BetaBinomialWinRate:
@@ -297,6 +344,18 @@ def _self_test() -> None:
     returns[:10] = -0.05  # inject a fat left tail
     es, var = expected_shortfall(returns, confidence=0.95)
     assert es <= var <= 0.0, (es, var)
+
+    # --- Newey-West: on POSITIVELY autocorrelated data the HAC t must be SMALLER
+    #     (more conservative) than the naive t; on i.i.d. data they're close ---
+    base = rng.normal(0.0, 1.0, 400)
+    ac = [base[0]]
+    for i in range(1, len(base)):
+        ac.append(0.6 * ac[-1] + base[i])            # AR(1), strong positive autocorr
+    ac = [x + 0.5 for x in ac]                        # shift to a positive mean
+    nw = newey_west_tstat(ac)
+    assert abs(nw["t"]) < abs(nw["naive_t"]), (nw["t"], nw["naive_t"])
+    iid = newey_west_tstat([0.5 + x for x in rng.normal(0.0, 1.0, 400)])
+    assert abs(iid["t"] - iid["naive_t"]) < 0.6, (iid["t"], iid["naive_t"])
 
     # --- Beta-Binomial: 7 wins, 1 loss -> mean ~0.8, lower bound strictly below ---
     wr = BetaBinomialWinRate()

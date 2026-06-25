@@ -65,19 +65,10 @@ def analyze(name: str, dated: list[tuple[str, float]]):
         nbo = newey_west_tstat(drop_both)
         print(f"    drop both: total {_fmt(sum(drop_both))} · "
               f"mean {_fmt(st.mean(drop_both))} · HAC t {nbo['t']:+.2f}")
-    # honest verdict
-    verdict = []
-    if len(dated) < 20:
-        verdict.append(f"n={len(dated)} is BELOW the 20-night gate — any t-stat here is "
-                       "unstable and not gate-eligible.")
-    if abs(pct_from_best) > 60:
-        verdict.append(f"the single best night is {pct_from_best:.0f}% of the total — the "
-                       "result is OUTLIER-CARRIED, not a steady edge.")
-    if nw["t"] < 2.0:
-        verdict.append(f"HAC t={nw['t']:.2f} < 2 — mean daily P&L is NOT distinguishable from zero.")
-    else:
-        verdict.append(f"HAC t={nw['t']:.2f} ≥ 2, but read it against the jackknife + small n above.")
-    print("\n  VERDICT: " + " ".join(verdict))
+    # canonical verdict — SAME function the nightly debrief prints, so the script
+    # and the Telegram line can never disagree.
+    from backend.app.quant_utils import daily_edge_summary, daily_edge_line
+    print("\n  " + daily_edge_line(daily_edge_summary(series)))
 
 
 def load_meic_nights() -> list[tuple[str, float]]:

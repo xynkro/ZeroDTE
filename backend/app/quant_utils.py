@@ -150,6 +150,55 @@ def newey_west_tstat(returns: Sequence[float], lags: int | None = None) -> Dict[
     }
 
 
+def daily_edge_summary(series: Sequence[float], gate_n: int = 20) -> Dict[str, float]:
+    """Edge diagnostics for a daily P&L series: HAC t-stat + outlier (jackknife)
+    dependence — the honest "is there a signal worth scaling, or N lucky days?" read.
+
+    Computes the Newey-West t-stat over the series AND re-computes it with the single
+    best day removed (`t_drop_best`). A result that collapses when its best day is
+    dropped is outlier-carried, not an edge. `has_edge` requires enough sample
+    (n≥gate_n), HAC t≥2, AND survival of the drop-best jackknife (t≥1).
+
+    Returns a dict; daily_edge_line() renders the one-liner. {ok: False} if n<2."""
+    s = [float(x) for x in series if x is not None]
+    n = len(s)
+    if n < 2:
+        return {"ok": False, "n": n}
+    total = sum(s)
+    nw = newey_west_tstat(s)
+    bi = max(range(n), key=lambda i: s[i])          # index of the single best day
+    best = s[bi]
+    drop_best = s[:bi] + s[bi + 1:]
+    nw_db = newey_west_tstat(drop_best)
+    best_pct = (best / total * 100.0) if total else float("inf")
+    return {
+        "ok": True, "n": n, "total": round(total, 2), "mean": round(total / n, 2),
+        "green": sum(1 for v in s if v > 0),
+        "hac_t": nw["t"], "naive_t": nw["naive_t"], "lags": nw["lags"],
+        "best": round(best, 2), "best_pct": round(best_pct, 1),
+        "t_drop_best": nw_db["t"], "total_drop_best": round(sum(drop_best), 2),
+        "gate_n": gate_n, "gate_eligible": n >= gate_n,
+        "has_edge": bool(n >= gate_n and nw["t"] >= 2.0 and nw_db["t"] >= 1.0),
+    }
+
+
+def daily_edge_line(d: Dict[str, float]) -> str:
+    """One-line render of daily_edge_summary() for the nightly debrief / console."""
+    if not d.get("ok"):
+        return "📐 edge: <2 days — nothing to test yet."
+    gate = "" if d["gate_eligible"] else f", <{d['gate_n']} gate"
+    if d["has_edge"]:
+        tail = "✅ distinguishable edge — survives the drop-best jackknife"
+    elif not d["gate_eligible"]:
+        tail = "TRACKING — too few days to judge"
+    elif d["hac_t"] < 2.0:
+        tail = "NO edge yet (t<2): indistinguishable from zero"
+    else:
+        tail = "FRAGILE — fails the drop-best jackknife (outlier-carried)"
+    return (f"📐 edge: HAC t={d['hac_t']:+.2f} (n={d['n']}{gate}) · "
+            f"best day {d['best_pct']:.0f}% of total · drop it → t={d['t_drop_best']:+.2f} · {tail}")
+
+
 # ---------------------------------------------------------------------------
 # 3. Bayesian win-rate tracker — don't trust a small-sample hot streak
 # ---------------------------------------------------------------------------

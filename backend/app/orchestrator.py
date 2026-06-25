@@ -1095,7 +1095,9 @@ class Orchestrator:
             # cheerful number can never go out unchallenged.
             try:
                 from . import broker_ledger as _bl
-                _bt = await _bl.fetch_realized(self.alpaca_trader, days_back=1)
+                # 30-day pull: today feeds the self-consistency check; the full
+                # series feeds the nightly edge verdict below (one fetch, reused).
+                _bt = await _bl.fetch_realized(self.alpaca_trader, days_back=30)
                 _rec = _bt.get(date_str) or {}
                 _broker = _rec.get("realized_net", _rec.get("realized"))
                 if _broker is not None:
@@ -1111,8 +1113,15 @@ class Orchestrator:
                                     f"OVERSTATED; trust the broker number, not the screen")
                     else:
                         wave_msg = f"{wave_msg}\n✓ P&L check: broker {_m(_broker)} ≈ reported {_m(_model)}"
+                # NIGHTLY EDGE VERDICT — HAC (Newey-West) t-stat + outlier jackknife on
+                # the broker-truth daily series, so the edge proves or disproves itself
+                # in the open every night instead of us guessing off a hot streak.
+                from .quant_utils import daily_edge_summary, daily_edge_line
+                _ser = [r["realized_net"] for _, r in sorted(_bt.items()) if r.get("fills")]
+                if len(_ser) >= 2:
+                    wave_msg = f"{wave_msg}\n{daily_edge_line(daily_edge_summary(_ser))}"
             except Exception as e:
-                log.warning("EOD P&L self-consistency check failed: %s", e)
+                log.warning("EOD P&L self-consistency / edge verdict failed: %s", e)
             # Muted == the user WANTS silence, not a transport failure. Mark dedup
             # and return so the safety loop doesn't rebuild + retry every 60s all
             # day (the old behaviour, since both sends return None when muted).

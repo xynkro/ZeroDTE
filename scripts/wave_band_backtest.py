@@ -58,7 +58,7 @@ def _minute(t):
 def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
          min_otm_pct=0.20, risk_label="$1,000 (10-wide SPX ×1ct)", regime="all",
          entry_min=ENTRY_MIN, bb_len=BB_LEN, bb_mult=2.0, stop_mode="breach",
-         hard_exit_min=None):
+         hard_exit_min=None, diag=None):
     # regime (Schwartz/CBOE rule): "all"=every day; "released"=trade only days where
     # the morning realized vol is ABOVE its running median (vol already fired, now
     # settling — sell into it); "compress"=only the quiet/coiling days (the trap he
@@ -151,29 +151,47 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
         credit = cr
         tp_level = credit * (1 - tp_pct / 100.0)
         exit_val = None
+        reason = None
+        worst_through = 0.0   # max distance price ran THROUGH the short (>0 = breached)
         for i in idxs:
             if i <= eidx:
                 continue
             bm = _minute(bars[i][0])
             c = closes[i]
+            thr = (short - c) if downtrend else (c - short)
+            if thr > worst_through:
+                worst_through = thr
             if bm >= 16 * 60:
                 exit_val = bs.spread_value(side, c, short, lng, 0.0) * MULT
-                break
+                reason = "settle"; break
             tv = bs.total_vol_to_expiry(r5, _periods_remaining(bars[i][0]), PM) * sk
             bb = bs.spread_value(side, c, short, lng, tv) * MULT
             if hard_exit_min is not None and bm >= hard_exit_min:
-                exit_val = bb; break           # forced time-exit
+                exit_val = bb; reason = "hard"; break    # forced time-exit
             if bb <= tp_level:                 # take 30-50%
-                exit_val = bb; break
+                exit_val = bb; reason = "tp"; break
             through = (downtrend and c <= short) or ((not downtrend) and c >= short)
             if stop_mode == "breach" and through:   # breach stop (default)
-                exit_val = bb; break
+                exit_val = bb; reason = "breach"; break
             if stop_mode == "2x" and bb >= 2 * credit:   # fixed 1×-credit loss stop
-                exit_val = bb; break
+                exit_val = bb; reason = "2x"; break
             # stop_mode == "none": ride to TP / expiry, no intraday stop
         if exit_val is None:
             exit_val = bs.spread_value(side, closes[idxs[-1]], short, lng, 0.0) * MULT
-        daily[date] = daily.get(date, 0.0) + (credit - exit_val - COST)
+            reason = "expiry"
+        pnl = credit - exit_val - COST
+        daily[date] = daily.get(date, 0.0) + pnl
+        if diag is not None:
+            diag.append(dict(date=date, pnl=pnl, side=side, down=downtrend, S0=float(S0),
+                             short=float(short), lng=float(lng), credit=float(credit),
+                             exit_val=float(exit_val), reason=reason, r5=float(r5),
+                             choppy=bool(choppy), atr=float(atr), eidx=int(eidx),
+                             upper=float(upper[eidx]), lower=float(lower[eidx]),
+                             sma=float(sma[eidx]), width=float(width[eidx]),
+                             last=float(closes[idxs[-1]]),
+                             day_hi=float(max(closes[j] for j in idxs)),
+                             day_lo=float(min(closes[j] for j in idxs)),
+                             worst_through=float(worst_through)))
 
     return daily, skipped
 

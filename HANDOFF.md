@@ -2,6 +2,20 @@
 # 📍 CURRENT STATE — 2026-06-12 (read THIS first; history below is context)
 # ═══════════════════════════════════════════════════════════════════════════
 #
+# ⏭️  NEXT BUILD (queued 2026-06-25, do FRESH — don't rush the live order path):
+#     Wire the VALIDATED WAVE config flag-gated + default-OFF, then enable deliberately.
+#     Config = band-anchored strikes (sell at Bollinger-band extreme, walk to $30 credit
+#     floor) + Schwartz "VOL-RELEASED" gate (trade only when morning realized vol > its
+#     running median; SIT OUT quiet/compressing days) + $1,000 risk + half-Kelly sizing.
+#     Evidence: scripts/wave_band_backtest.py — vol-released OOS +$30/d t=4.25 worst −$273,
+#     IS +$31 t=3.20 worst −$268 (regime-robust, ~2.3× baseline, half the tail); the
+#     quiet/compress bucket is noise (+$4 t=0.72) and holds the −$492 tail. In-model
+#     (overstates) but the relative split is trustworthy — clean-live broker-truth decides.
+#     Current live WAVE (stoch/30Δ-from-spot/TP90) was a MISIMPLEMENTATION (≈$0 broker-truth,
+#     never Caspar's strategy). Big multi-file change → build carefully, verify, restart clean.
+#     Honest framing: NO bigger free 0DTE edge exists (Vilkov/Bandi/CBOE); levers = conditional
+#     timing (this) + sizing. Don't chase win-rate (it's the negative-skew trap). See memory.
+#
 # PORTFOLIO = TWO BOOKS, both live on Alpaca paper (SPY @ 1/10 SPX scale):
 #   1. MEIC (the "Mech") — multiple-entry iron condors, ladder 11:00/12:00/13:00/
 #      14:00 ET × 1 contract, each its own breakeven stop. Backtested

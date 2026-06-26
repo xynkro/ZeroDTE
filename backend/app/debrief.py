@@ -635,35 +635,26 @@ def build_ic_debrief(ic_history, date: str, real_book: dict | None = None,
 
 
 def format_ic_debrief_telegram(d: dict) -> str:
+    """Dead-simple MEIC night summary: did we WIN or LOSE, in real Alpaca dollars.
+    The technical detail (slippage, limit-shadow, excursion, per-rung credits) stays
+    in the markdown debrief + log for the engineer view — NOT in this Telegram."""
     if not d.get("date"):
         return ""
-    lines = [f"🦅 MEIC DEBRIEF · {d['date']}"]
     r = d.get("real") or {}
-    if r.get("net_pnl") is not None:
-        lines.append(f"book: {d['executed']} fired · {d['stopped']} stopped · "
-                     f"real {_money(r['net_pnl'])} (entry {_money(r.get('entry_credit'))})")
+    net = r.get("net_pnl")
+    lines = [f"🦅 MEIC · {d['date']}"]
+    if net is None:
+        lines.append("⚪ no real fills captured — model only")
+    elif net > 0:
+        lines.append(f"✅ WON {_money(net)} (real Alpaca)")
+    elif net < 0:
+        lines.append(f"❌ LOST {_money(net)} (real Alpaca)")
     else:
-        lines.append(f"book: {d['executed']} fired · {d['stopped']} stopped · model-only")
-    for rg in d.get("rungs", []):
-        cs, ps = rg.get("call_short"), rg.get("put_short")
-        legs = f"C{cs:.0f}/P{ps:.0f}" if cs and ps else "(no build)"
-        lines.append(f"  {rg['slot']} {rg['status']:>9} {legs} · model {_money(rg['model_credit'])}")
-    sh = d.get("limit_shadow")
-    if sh:
-        lines.append(f"limit-shadow: {sh['would_fill']}/{sh['n']} would_fill · "
-                     f"mean improve {sh['mean_improve_per_share']:+.3f} $/share · "
-                     f"total {_money(sh['total_improve_spy'])}")
-    for f in d.get("flags", []):
-        lines.append(f)
+        lines.append("⚪ FLAT — $0 (real Alpaca)")
+    lines.append(f"{d.get('executed', 0)} condors fired · {d.get('stopped', 0)} stopped out")
     cf = d.get("confidence") or {}
     if cf.get("n"):
-        es = cf.get("expected_shortfall")
-        tail = f" · worst-5% {_money(es)}" if es is not None else ""
-        lines.append(
-            f"edge: green-night {cf['win_rate_posterior_pct']:.0f}% "
-            f"(95% floor {cf['win_rate_lower95_pct']:.0f}%, N={cf['n']}){tail}"
-        )
-    lines.append(f"verdict: {d['verdict']}")
+        lines.append(f"so far: {cf['win_rate_posterior_pct']:.0f}% green nights ({cf['n']} total)")
     return "\n".join(lines)
 
 

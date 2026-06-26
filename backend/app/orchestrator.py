@@ -847,16 +847,27 @@ class Orchestrator:
         put_spread_cost  = max(0.0, (sp_mid - lp_mid)) * multiplier
         total_buyback = call_spread_cost + put_spread_cost
 
+        # Credit the stop anchors to. The model credit (total_credit_dollars) ran
+        # too LOW vs the real fill, so the breakeven stop fired while still in
+        # profit → 100% stop-rate, every condor stopped 4 nights running. When
+        # IC_STOP_ANCHOR_REAL is on AND the real fill credit has been captured,
+        # anchor to the REAL credit collected (the canonical Chambless/Sandvand
+        # rule: stop at the credit RECEIVED). Falls back to model credit until the
+        # fill is read (the arm delay guarantees it's read before the stop can fire).
+        base_credit = ic.total_credit_dollars
+        if settings.IC_STOP_ANCHOR_REAL and ic.real_credit_dollars:
+            base_credit = ic.real_credit_dollars
+
         # MAE/MFE excursion telemetry — pure measurement, never affects the stop.
         # upnl = unrealized P&L at this mark; track running peak (MFE) and trough (MAE).
-        upnl = ic.total_credit_dollars - total_buyback
+        upnl = base_credit - total_buyback
         ic.mfe_dollars = upnl if ic.mfe_dollars is None else max(ic.mfe_dollars, upnl)
         ic.mae_dollars = upnl if ic.mae_dollars is None else min(ic.mae_dollars, upnl)
 
         # Stop trigger: buyback ≥ credit × buffer (noise margin over pure
         # breakeven), CONFIRMED on two consecutive marks ≥ IC_STOP_CONFIRM_SEC
         # apart — one CBOE mid-tick can't fire it.
-        threshold = ic.total_credit_dollars * settings.IC_STOP_BUFFER
+        threshold = base_credit * settings.IC_STOP_BUFFER
         pend = getattr(self, "_ic_stop_pending", None)
         if pend is None:
             pend = self._ic_stop_pending = {}
@@ -875,8 +886,10 @@ class Orchestrator:
         pend.pop(ic.build_id, None)
 
         log.warning(
-            "IC STOP triggered: buyback ${%.0f} ≥ credit ${%.0f} (call_cost=${%.0f}, put_cost=${%.0f})",
-            total_buyback, ic.total_credit_dollars, call_spread_cost, put_spread_cost,
+            "IC STOP triggered: buyback ${%.0f} ≥ credit ${%.0f} (%s anchor) (call_cost=${%.0f}, put_cost=${%.0f})",
+            total_buyback, base_credit,
+            "real" if (settings.IC_STOP_ANCHOR_REAL and ic.real_credit_dollars) else "model",
+            call_spread_cost, put_spread_cost,
         )
         dedup.mark_done("ic_stop_fired", ic.build_id)
         try:
@@ -886,8 +899,8 @@ class Orchestrator:
                 short_call=ic.call_leg.short_strike,
                 short_put=ic.put_leg.short_strike,
                 current_spread_cost=total_buyback,
-                original_credit=ic.total_credit_dollars,
-                stop_threshold=ic.total_credit_dollars,
+                original_credit=base_credit,
+                stop_threshold=base_credit,
                 pwa_url=settings.DASHBOARD_PUBLIC_URL or None,
             )
         except Exception as e:
@@ -2891,8 +2904,12 @@ class Orchestrator:
                 return
             qty = max(1, ic.contracts or 1)
             real_per_share = cf / (qty * 100.0)
-            log.info("IC fill-read: %s real credit $%.2f (%.3f/share) | model $%.0f",
-                     ic.build_id, cf, real_per_share, ic.total_credit_dollars or 0)
+            # Real per-contract credit (SPY-scale) — same scale as the stop's
+            # mark-to-market buyback, so the breakeven stop can anchor to it.
+            ic.real_credit_dollars = abs(cf) / qty
+            log.info("IC fill-read: %s real credit $%.2f (%.3f/share) | model $%.0f | per-ct $%.0f",
+                     ic.build_id, cf, real_per_share, ic.total_credit_dollars or 0,
+                     ic.real_credit_dollars)
             if settings.IC_LIMIT_SHADOW_ENABLED \
                     and ic.limit_shadow_credit_per_share_spy is not None:
                 ic.limit_shadow_market_credit_per_share_spy = round(real_per_share, 4)

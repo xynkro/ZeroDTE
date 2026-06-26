@@ -258,6 +258,11 @@ class Settings:
     IC_STOP_ARM_MIN: int = _i("IC_STOP_ARM_MIN", 5)
     IC_STOP_BUFFER: float = _f("IC_STOP_BUFFER", 1.05)
     IC_STOP_CONFIRM_SEC: int = _i("IC_STOP_CONFIRM_SEC", 45)
+    # Anchor the breakeven stop to the REAL fill credit (cf/qty) instead of the
+    # mis-scaled model credit. The model anchor fired the stop while still in
+    # profit → 100% stop-rate, every condor stopped (Jun 22-25). Default OFF for
+    # safety; set true in .env to run the fix. Falls back to model until fill read.
+    IC_STOP_ANCHOR_REAL: bool = _b("IC_STOP_ANCHOR_REAL", False)
 
     # CBOE-mid marketable-limit execution for MEIC condors. SHADOW first: still
     # submit market mleg, but stash the limit-price we WOULD have used (CBOE mid

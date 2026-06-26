@@ -189,6 +189,11 @@ class IronCondorBuilder(BaseModel):
     # into stop territory first (mae). Position-scale $; None until the first mark.
     mfe_dollars: float | None = None   # peak unrealized profit = credit − min(buyback)
     mae_dollars: float | None = None   # deepest drawdown        = credit − max(buyback)
+    # Real per-contract credit from the actual Alpaca fill (SPY-scale, set by
+    # _capture_ic_fill). The breakeven stop anchors to THIS when IC_STOP_ANCHOR_REAL
+    # is on — the model credit it used before was mis-scaled/too low, firing the
+    # stop while still in profit (100% stop-rate bug). None until the fill is read.
+    real_credit_dollars: float | None = None
 
 
 class DashboardState(BaseModel):

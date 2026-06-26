@@ -56,7 +56,9 @@ def _minute(t):
 
 
 def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
-         min_otm_pct=0.20, risk_label="$1,000 (10-wide SPX ×1ct)", regime="all"):
+         min_otm_pct=0.20, risk_label="$1,000 (10-wide SPX ×1ct)", regime="all",
+         entry_min=ENTRY_MIN, bb_len=BB_LEN, bb_mult=2.0, stop_mode="breach",
+         hard_exit_min=None):
     # regime (Schwartz/CBOE rule): "all"=every day; "released"=trade only days where
     # the morning realized vol is ABOVE its running median (vol already fired, now
     # settling — sell into it); "compress"=only the quiet/coiling days (the trap he
@@ -64,10 +66,10 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
     bars = _load()
     closes = np.array([b[3] for b in bars], float)
     # rolling Bollinger(20,2) over the continuous 5m series
-    sma = np.convolve(closes, np.ones(BB_LEN) / BB_LEN, mode="full")[:len(closes)]
-    sma[:BB_LEN] = closes[:BB_LEN]
-    std = np.array([closes[max(0, i - BB_LEN + 1):i + 1].std() for i in range(len(closes))])
-    upper, lower = sma + 2 * std, sma - 2 * std
+    sma = np.convolve(closes, np.ones(bb_len) / bb_len, mode="full")[:len(closes)]
+    sma[:bb_len] = closes[:bb_len]
+    std = np.array([closes[max(0, i - bb_len + 1):i + 1].std() for i in range(len(closes))])
+    upper, lower = sma + bb_mult * std, sma - bb_mult * std
     width = (upper - lower)
     # group bar indices by ET day
     by_day = defaultdict(list)
@@ -85,7 +87,7 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
         if len(idxs) < 20:
             continue
         # entry = first bar at/after 10:00
-        eidx = next((i for i in idxs if _minute(bars[i][0]) >= ENTRY_MIN), None)
+        eidx = next((i for i in idxs if _minute(bars[i][0]) >= entry_min), None)
         if eidx is None:
             continue
         S0 = closes[eidx]
@@ -157,13 +159,18 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
             if bm >= 16 * 60:
                 exit_val = bs.spread_value(side, c, short, lng, 0.0) * MULT
                 break
-            through = (downtrend and c <= short) or ((not downtrend) and c >= short)
             tv = bs.total_vol_to_expiry(r5, _periods_remaining(bars[i][0]), PM) * sk
             bb = bs.spread_value(side, c, short, lng, tv) * MULT
+            if hard_exit_min is not None and bm >= hard_exit_min:
+                exit_val = bb; break           # forced time-exit
             if bb <= tp_level:                 # take 30-50%
                 exit_val = bb; break
-            if through:                        # breach stop
+            through = (downtrend and c <= short) or ((not downtrend) and c >= short)
+            if stop_mode == "breach" and through:   # breach stop (default)
                 exit_val = bb; break
+            if stop_mode == "2x" and bb >= 2 * credit:   # fixed 1×-credit loss stop
+                exit_val = bb; break
+            # stop_mode == "none": ride to TP / expiry, no intraday stop
         if exit_val is None:
             exit_val = bs.spread_value(side, closes[idxs[-1]], short, lng, 0.0) * MULT
         daily[date] = daily.get(date, 0.0) + (credit - exit_val - COST)

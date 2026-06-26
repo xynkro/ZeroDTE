@@ -507,7 +507,7 @@ class Orchestrator:
         premarket→close window. Stores self._gex + self.state.gex for display and
         for stamping onto trades at entry. Pure context — does not gate entries here
         (sizing is applied at entry only when GEX_SIZING_ENABLED). Never throws."""
-        from .gex import fetch_gex
+        from .gex import fetch_gex_full
         first = True
         while True:
             try:
@@ -516,7 +516,7 @@ class Orchestrator:
                 # Fetch window: 07:00–16:30 ET on weekdays (premarket + RTH).
                 in_window = now.weekday() < 5 and (7 * 60) <= mins <= (16 * 60 + 30)
                 if in_window or first:
-                    res = await fetch_gex(settings.GEX_SYMBOL)
+                    res, oi_levels = await fetch_gex_full(settings.GEX_SYMBOL)
                     if res.ok:
                         self._gex = res
                         self.state.gex = {
@@ -524,10 +524,13 @@ class Orchestrator:
                             "net_gex_b": res.net_gex_b, "spot": res.spot,
                             "call_wall": res.call_wall, "put_wall": res.put_wall,
                             "summary": res.summary(), "asof": res.asof,
+                            "oi": oi_levels,
                         }
                         log.info("GEX refresh: %s", res.summary())
                         # Persist a timestamped snapshot so the GEX gate becomes
-                        # backtestable over time (no historical GEX feed exists).
+                        # backtestable over time (no historical GEX feed exists). Now
+                        # also captures dealer-positioning LEVELS (max-pain, OI walls,
+                        # gamma pins/flip) — the one genuinely-untested edge from research.
                         _et = datetime.now(ET)
                         from .gex import append_history as _gex_append
                         _gex_append({
@@ -537,7 +540,7 @@ class Orchestrator:
                             "regime": res.regime, "net_ratio": res.net_ratio,
                             "net_gex_b": res.net_gex_b, "spot": res.spot,
                             "call_wall": res.call_wall, "put_wall": res.put_wall,
-                            "asof": res.asof,
+                            "asof": res.asof, "oi": oi_levels,
                         })
                     first = False
                 # Piggyback the broker-truth P&L refresh on this slow loop so the

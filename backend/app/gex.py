@@ -136,6 +136,85 @@ def compute_gex(chain: dict, neutral_band: float = 0.05) -> GexResult:
         return GexResult(ok=False, symbol="?", error=str(e))
 
 
+def compute_oi_levels(chain: dict, top_n: int = 3) -> dict:
+    """Dealer-positioning LEVELS for the nearest (0DTE) expiry — the angle the credible
+    retail sources kept converging on (GEX walls / gamma pins / max-pain / OI-anchored
+    strikes). Captures: max-pain strike, the highest open-interest call & put strikes
+    (OI walls / pin candidates), the strongest net-POSITIVE gamma strikes (P1/P2 — pins /
+    resistance) and net-NEGATIVE gamma strikes (N1/N2 — acceleration / breakout), and the
+    zero-gamma flip strike. Pure + fully guarded — returns {} on any failure so it can
+    NEVER break the live GEX loop. No historical source exists, so logging these forward
+    IS the dataset that would make a dealer-level gate testable later.
+    """
+    try:
+        data = chain.get("data") or {}
+        spot = float(data.get("current_price") or data.get("close") or 0.0)
+        options = data.get("options") or []
+        if spot <= 0 or not options:
+            return {}
+        s2 = spot * spot * 0.01
+        by_exp: dict[str, dict] = {}
+        for o in options:
+            m = _OCC.search(o.get("option", "") or "")
+            if not m:
+                continue
+            exp = m.group(1)
+            is_call = m.group(2) == "C"
+            strike = int(m.group(3)) / 1000.0
+            oi = o.get("open_interest") or 0
+            gamma = o.get("gamma") or 0.0
+            s = by_exp.setdefault(exp, {}).setdefault(
+                strike, {"coi": 0, "poi": 0, "cg": 0.0, "pg": 0.0})
+            dg = gamma * oi * MULTIPLIER * s2
+            if is_call:
+                s["coi"] += oi
+                s["cg"] += dg
+            else:
+                s["poi"] += oi
+                s["pg"] += dg
+        if not by_exp:
+            return {}
+        exp = sorted(by_exp.keys())[0]     # nearest expiry = 0DTE on a trading day
+        rec = by_exp[exp]
+        strikes = sorted(rec.keys())
+        if not strikes:
+            return {}
+
+        def pain(K):   # total ITM cash owed to holders at expiry price K (min = max pain)
+            t = 0.0
+            for k in strikes:
+                if k < K:
+                    t += rec[k]["coi"] * (K - k)
+                elif k > K:
+                    t += rec[k]["poi"] * (k - K)
+            return t
+
+        max_pain = min(strikes, key=pain)
+        hi_calls = sorted(strikes, key=lambda k: rec[k]["coi"], reverse=True)[:top_n]
+        hi_puts = sorted(strikes, key=lambda k: rec[k]["poi"], reverse=True)[:top_n]
+        net_g = {k: rec[k]["cg"] - rec[k]["pg"] for k in strikes}
+        pos = sorted(strikes, key=lambda k: net_g[k], reverse=True)[:top_n]   # pins
+        neg = sorted(strikes, key=lambda k: net_g[k])[:top_n]                 # acceleration
+        cum, cums = 0.0, []
+        for k in strikes:
+            cum += net_g[k]
+            cums.append(cum)
+        flip = None
+        for i in range(1, len(cums)):
+            if (cums[i - 1] < 0 <= cums[i]) or (cums[i - 1] > 0 >= cums[i]):
+                flip = strikes[i]
+                break
+        return {
+            "oi_expiry": exp, "spot_at": round(spot, 2), "max_pain": max_pain,
+            "hi_oi_calls": [{"k": k, "oi": rec[k]["coi"]} for k in hi_calls],
+            "hi_oi_puts": [{"k": k, "oi": rec[k]["poi"]} for k in hi_puts],
+            "pos_gamma_strikes": pos, "neg_gamma_strikes": neg, "gamma_flip": flip,
+        }
+    except Exception as e:  # noqa: BLE001
+        log.debug("compute_oi_levels failed: %s", e)
+        return {}
+
+
 def pick_iron_condor(chain: dict, short_delta: float = 0.16, wing: float = 25.0,
                      min_dte_date: str | None = None) -> dict:
     """Pick a real, delta-based iron condor from a CBOE delayed-quotes chain.
@@ -253,6 +332,23 @@ async def fetch_gex(symbol: str = "_SPX", timeout: float = 20.0) -> GexResult:
     except Exception as e:
         log.warning("fetch_gex(%s) failed: %s", symbol, e)
         return GexResult(ok=False, symbol=symbol, error=str(e))
+
+
+async def fetch_gex_full(symbol: str = "_SPX", timeout: float = 20.0):
+    """Fetch the CBOE chain ONCE and return (GexResult, oi_levels dict) — so the live
+    loop gets both the regime AND the dealer-positioning levels without a second HTTP
+    round-trip. Never raises; degrades to (GexResult(ok=False), {})."""
+    import httpx
+    url = CBOE_URL.format(sym=symbol)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            chain = resp.json()
+            return compute_gex(chain), compute_oi_levels(chain)
+    except Exception as e:
+        log.warning("fetch_gex_full(%s) failed: %s", symbol, e)
+        return GexResult(ok=False, symbol=symbol, error=str(e)), {}
 
 
 def chain_mids_for_expiry(chain: dict, expiry_yymmdd: str) -> dict:

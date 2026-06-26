@@ -56,7 +56,11 @@ def _minute(t):
 
 
 def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
-         min_otm_pct=0.20, risk_label="$1,000 (10-wide SPX ×1ct)"):
+         min_otm_pct=0.20, risk_label="$1,000 (10-wide SPX ×1ct)", regime="all"):
+    # regime (Schwartz/CBOE rule): "all"=every day; "released"=trade only days where
+    # the morning realized vol is ABOVE its running median (vol already fired, now
+    # settling — sell into it); "compress"=only the quiet/coiling days (the trap he
+    # says to AVOID). The clean inverse of the calm-open filter that failed earlier.
     bars = _load()
     closes = np.array([b[3] for b in bars], float)
     # rolling Bollinger(20,2) over the continuous 5m series
@@ -75,6 +79,7 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
     daily = {}
     skipped = 0
     width_hist = []
+    r5_hist = []
     for date in sorted(by_day):
         idxs = by_day[date]
         if len(idxs) < 20:
@@ -96,6 +101,14 @@ def main(wing=10.0, credit_floor=30.0, tp_pct=40.0, choppy_push_atr=1.5,
         r5 = bs.realized_5m_std(list(pre))
         if r5 <= 0:
             continue
+        # Schwartz regime gate — classify by morning vol vs its running median, then
+        # filter (append to history first so the median is identical across regimes).
+        med_r5 = st.median(r5_hist) if len(r5_hist) >= 20 else None
+        r5_hist.append(r5)
+        if med_r5 is not None and regime != "all":
+            vol_released = r5 > med_r5
+            if (regime == "released") != vol_released:
+                continue
         pr0 = _periods_remaining(bars[eidx][0])
         if pr0 <= 1:
             continue
@@ -174,16 +187,24 @@ def _f(s):
 
 
 if __name__ == "__main__":
-    print("WAVE — your real strategy (band-anchored strikes, ~$1,000 risk), honest BS, 3y SPX\n")
-    for wing, label in ((10.0, "$1,000 risk (10-wide ×1ct)"), (25.0, "$2,500 risk (25-wide)"),
-                        (50.0, "$5,000 risk (50-wide)")):
-        daily, skipped = main(wing=wing)
-        oos, is_ = score(daily, lo=OOS_START), score(daily, hi=OOS_START)
-        print(f"WING {wing:.0f}pt — {label} · traded {len(daily)} days · skipped {skipped} (thin credit)")
-        print(f"   OOS: {_f(oos)}")
-        print(f"   IS : {_f(is_)}\n")
-    print("=" * 86)
-    print("Read: this is the FIRST honest test of YOUR method — band-anchored strikes, choppy")
-    print("(band-width) push-out, $30 credit floor, TP40 + breach-stop. Watch OOS worst-day vs")
-    print("the −$4k strawman: wider/further-OTM = thinner tail. Absolute $ overstate; clean-live decides.")
-    print("Note: 'skipped' = days the band strike couldn't clear $30 without getting too close to spot.")
+    print("WAVE + Schwartz regime gate — band-anchored, $1,000 risk, honest BS, 3y SPX\n")
+    print("Schwartz/CBOE: SELL after vol has fired (morning vol high, now settling); SIT OUT")
+    print("the quiet/compressing days (coil-then-explode = the tail). Testing that claim:\n")
+    print(f"{'regime':>26} | {'OUT-OF-SAMPLE':^52} | mean/|worst|")
+    print("  " + "-" * 96)
+    rows = []
+    for regime, label in (("all", "ALL days (baseline)"),
+                          ("released", "VOL-RELEASED only (Schwartz: trade)"),
+                          ("compress", "QUIET/COMPRESSING only (he says: AVOID)")):
+        daily, _ = main(regime=regime)
+        oos = score(daily, lo=OOS_START)
+        is_ = score(daily, hi=OOS_START)
+        rr = (oos['mean'] / abs(oos['worst'])) if (oos and oos['worst'] < 0) else float('nan')
+        rows.append((label, oos, rr))
+        print(f"{label:>40} OOS | {_f(oos)} | {rr:+.3f}")
+        print(f"{'':>40} IS  | {_f(is_)}")
+    print("\n" + "=" * 86)
+    print("Read: if VOL-RELEASED has the SMALLER worst-day / better mean-per-worst, and the")
+    print("QUIET/COMPRESSING bucket holds the fat tail, Schwartz is right — sit out the coil.")
+    print("That's a real, no-lookahead 'when to sit out' filter aimed straight at your tail.")
+    print("In-model; the regime split is the signal — confirm direction holds, then clean-live.")

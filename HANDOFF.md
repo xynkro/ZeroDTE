@@ -6,11 +6,16 @@
 #     Wire the VALIDATED WAVE config flag-gated + default-OFF, then enable deliberately.
 #     Config = band-anchored strikes (sell at Bollinger-band extreme, walk to $30 credit
 #     floor) + Schwartz "VOL-RELEASED" gate (trade only when morning realized vol > its
-#     running median; SIT OUT quiet/compressing days) + $1,000 risk + half-Kelly sizing.
+#     running median; SIT OUT quiet/compressing days) + $1,000 risk + half-Kelly sizing
+#     + Bollinger bb_len=14 / bb_mult=2.5 (the ONE refinement from a 99-config IS-first sweep).
 #     Evidence: scripts/wave_band_backtest.py — vol-released OOS +$30/d t=4.25 worst −$273,
 #     IS +$31 t=3.20 worst −$268 (regime-robust, ~2.3× baseline, half the tail); the
-#     quiet/compress bucket is noise (+$4 t=0.72) and holds the −$492 tail. In-model
-#     (overstates) but the relative split is trustworthy — clean-live broker-truth decides.
+#     quiet/compress bucket is noise (+$4 t=0.72) and holds the −$492 tail. With BB 14/2.5:
+#     OOS +$42/d t=5.85 worst −$304 (both regimes, survives Bonferroni N=99 bar 3.48 +
+#     drop-best jackknife +$41/t5.72). Sweep proved all OTHER knobs already-optimal or inert
+#     (entry 10:00, TP40, breach-stop, wing=sizing-only, floor/min-OTM non-binding); stacking
+#     a 3rd change collapsed OOS below the bar (overfitting cliff). In-model (overstates) but
+#     the relative improvement + every robustness gate is trustworthy — clean-live decides.
 #     Current live WAVE (stoch/30Δ-from-spot/TP90) was a MISIMPLEMENTATION (≈$0 broker-truth,
 #     never Caspar's strategy). Big multi-file change → build carefully, verify, restart clean.
 #     Honest framing: NO bigger free 0DTE edge exists (Vilkov/Bandi/CBOE); levers = conditional

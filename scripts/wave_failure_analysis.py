@@ -140,12 +140,18 @@ def run():
             pct_otm=100.0 * abs(S0 - d["short"]) / S0,
             choppy=1.0 if d["choppy"] else 0.0,
         )
+        # candidate NEW gates (known at entry, no lookahead)
+        day_open = float(o[idxs[0]])
+        adverse_drive = (100.0 * (day_open - S0) / day_open) if down \
+            else (100.0 * (S0 - day_open) / day_open)   # morning move TOWARD our danger
+        cred_width = 100.0 * d["credit"] / (10.0 * 100)   # credit as % of the 10-wide ($1k) width
         # outcome / attribution (NOT filter features)
         out = dict(
             pnl=d["pnl"], loss=1.0 if d["pnl"] < 0 else 0.0, reason=d["reason"],
             day_move_pct=100.0 * (d["last"] - S0) / S0,
             adverse_pct=100.0 * ((S0 - d["day_lo"]) if down else (d["day_hi"] - S0)) / S0,
             through_pts=d["worst_through"], side=d["side"],
+            adverse_drive=adverse_drive, cred_width=cred_width,
         )
         rows.append({"date": date, **feats, **out})
     return rows
@@ -199,15 +205,16 @@ def report(rows):
     return ranked
 
 
-def test_filter(rows, key, grid, label):
-    """Post-hoc: skip days where feature < threshold, re-score IS/OOS. Discipline:
-    a real missing piece IMPROVES both samples' worst-day AND mean/t — not just trades less."""
+def test_filter(rows, key, grid, label, direction="min"):
+    """Post-hoc: keep days where feature >= X (min) or <= X (max), re-score IS/OOS.
+    Discipline: a real missing piece IMPROVES both samples' worst-day AND mean/t."""
     from backend.app.quant_utils import newey_west_tstat
-    print(f"\n{label} (skip days where {key} < X) — does cutting them actually help net?")
+    op = "<" if direction == "min" else ">"
+    print(f"\n{label} (skip days where {key} {op} X) — does cutting them actually help net?")
     print(f"  {'X':>5} {'kept':>5} | {'IS mean':>7} {'IS t':>6} {'IS worst':>8} | "
           f"{'OOS mean':>8} {'OOS t':>6} {'OOS worst':>9}")
     for X in grid:
-        kept = [r for r in rows if r[key] >= X]
+        kept = [r for r in rows if (r[key] >= X if direction == "min" else r[key] <= X)]
         byd = defaultdict(float)
         for r in kept:
             byd[r["date"]] += r["pnl"]
@@ -226,3 +233,9 @@ if __name__ == "__main__":
     report(rows)
     test_filter(rows, "pct_otm", [0.0, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0], "MIN-CUSHION FILTER")
     test_filter(rows, "adx", [0.0, 10, 15, 20, 25, 30], "ADX-FLOOR FILTER (secondary)")
+    # --- NEW ideas from the video batch ---
+    test_filter(rows, "adverse_drive", [9.9, 1.0, 0.8, 0.6, 0.4, 0.3, 0.2],
+                "CONTINUATION GATE (skip days price already drove TOWARD our danger by entry)",
+                direction="max")
+    test_filter(rows, "cred_width", [0.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                "CREDIT/WIDTH RICHNESS GATE (tastylive: collect >= X% of the wing width)")

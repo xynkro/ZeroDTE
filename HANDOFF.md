@@ -21,6 +21,16 @@
 #     Honest framing: NO bigger free 0DTE edge exists (Vilkov/Bandi/CBOE); levers = conditional
 #     timing (this) + sizing. Don't chase win-rate (it's the negative-skew trap). See memory.
 #
+# ▶️  LIVE NOW (2026-06-26): GEX/OI dealer-positioning LOGGER is running. The existing 30-min
+#     GEX loop now enriches gex_history.jsonl (+ state.gex.oi) with max-pain, top high-OI
+#     call/put strikes, net-positive gamma pins (P1/P2), net-negative acceleration strikes
+#     (N1/N2), and the gamma-flip — verified live (06:51 snapshot wrote max_pain 7430 on real
+#     _SPX). The one genuinely-untested edge from ALL the research (videos kept converging on
+#     dealer positioning) has NO historical feed, so we accrue it forward. Pure logging, zero
+#     trade-path change. ANALYZE once ~20+ session-days accrue: do these levels separate WAVE
+#     winners/losers where RSI/Stoch/VWAP/ADX did NOT (wave_failure_analysis.py is the template
+#     — point-biserial + IS/OOS filter test)? Forward-only; there is no backtest for this.
+#
 # PORTFOLIO = TWO BOOKS, both live on Alpaca paper (SPY @ 1/10 SPX scale):
 #   1. MEIC (the "Mech") — multiple-entry iron condors, ladder 11:00/12:00/13:00/
 #      14:00 ET × 1 contract, each its own breakeven stop. Backtested

@@ -1109,6 +1109,7 @@ class Orchestrator:
             # Compares today's net of real option fills (MEIC+Wave) against the model
             # P&L the debrief reports; flags any divergence beyond tolerance so the
             # cheerful number can never go out unchallenged.
+            _book_hdr = ""   # plain-English per-book broker-truth split (leads the EOD msg)
             try:
                 from . import broker_ledger as _bl
                 # 30-day pull: today feeds the self-consistency check; the full
@@ -1136,6 +1137,27 @@ class Orchestrator:
                 _ser = [r["realized_net"] for _, r in sorted(_bt.items()) if r.get("fills")]
                 if len(_ser) >= 2:
                     wave_msg = f"{wave_msg}\n{daily_edge_line(daily_edge_summary(_ser))}"
+                # PER-BOOK SPLIT — real Alpaca fills, attributed by the client_order_id
+                # tag (meic-… / wave-…). The plain "did we win, per book" header.
+                try:
+                    _byb = await _bl.fetch_realized_by_book(
+                        self.alpaca_trader, f"{date_str}T00:00:00-04:00",
+                        f"{date_str}T23:59:59-04:00")
+                    _mc = (_byb.get("meic") or {}).get("realized")
+                    _wv = (_byb.get("wave") or {}).get("realized")
+                    _un = (_byb.get("untagged") or {}).get("realized")
+                    _net = _rec.get("realized_net", _rec.get("realized"))
+                    _md = lambda v: ("—" if v is None else f"{'+' if v >= 0 else '−'}${abs(v):,.0f}")
+                    _hl = [f"{'✅ WON' if (_net or 0) > 0 else '❌ LOST'} {_md(_net)} · real Alpaca · {date_str}"]
+                    if _mc is not None:
+                        _hl.append(f"  🦅 MEIC {_md(_mc)}")
+                    if _wv is not None:
+                        _hl.append(f"  🌊 Wave {_md(_wv)}")
+                    if _mc is None and _wv is None and _un is not None:
+                        _hl.append("  (per-book split starts next session — today's orders predate tagging)")
+                    _book_hdr = "\n".join(_hl)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("EOD per-book split failed: %s", e)
             except Exception as e:
                 log.warning("EOD P&L self-consistency / edge verdict failed: %s", e)
             # Muted == the user WANTS silence, not a transport failure. Mark dedup
@@ -1145,26 +1167,22 @@ class Orchestrator:
                 dedup.eod_mark(date_str)
                 log.info("EOD summary suppressed (muted) for %s — not retrying", date_str)
                 return
-            # Append the dashboard link so the EOD summaries match every other
-            # alert (one tap → the Pages monitor).
+            # ONE consolidated EOD message — plain per-book broker-truth result on top,
+            # MEIC + Wave detail below. (Was two separate sends to two topics, which
+            # read as duplicate/contradictory; the user asked for a single message.)
             _url = settings.DASHBOARD_PUBLIC_URL
+            _eod = "\n\n".join(p for p in (_book_hdr, ic_msg, wave_msg) if p)
             if _url:
-                wave_msg = f"{wave_msg}\n📱 {_url}"
-                ic_msg = f"{ic_msg}\n📱 {_url}"
-            wave_ok = tg.ping_eod_wave(wave_msg)
-            ic_ok = tg.ping_eod_iron_condor(ic_msg)
-            if not wave_ok and not ic_ok:
-                raise RuntimeError("Both Telegram EOD sends failed (returned None)")
-            if not wave_ok:
-                log.warning("EOD wave Telegram send failed for %s (IC ok)", date_str)
-            if not ic_ok:
-                log.warning("EOD IC Telegram send failed for %s (wave ok)", date_str)
-            # Mark persistent dedup ONLY after at least one send succeeded
+                _eod = f"{_eod}\n📱 {_url}"
+            eod_ok = tg.ping_eod_iron_condor(_eod)
+            if not eod_ok:
+                raise RuntimeError("EOD Telegram send failed (returned None)")
+            # Mark persistent dedup ONLY after the send succeeded
             dedup.eod_mark(date_str)
-            log.info("EOD summary fired for %s (%d signals, IC=%s, wave_ok=%s, ic_ok=%s)",
+            log.info("EOD summary fired for %s (%d signals, IC=%s, sent=%s)",
                      date_str, len(today_sigs),
                      "yes" if self.state.iron_condor.available else "no",
-                     bool(wave_ok), bool(ic_ok))
+                     bool(eod_ok))
         except Exception as e:
             log.exception("EOD summary failed: %s", e)
             # Reset both flags so safety loop can retry

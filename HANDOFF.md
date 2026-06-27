@@ -2,6 +2,10 @@
 # 📍 CURRENT STATE — 2026-06-12 (read THIS first; history below is context)
 # ═══════════════════════════════════════════════════════════════════════════
 #
+# 👥 TWO-AGENT DESK: 🦅 MEICZero (iron condors) + 🌊 WaveZero (credit spreads) share
+#    this account + backend. **READ OWNERS.md** — code ownership, the shared-file
+#    handshake, and the broker-truth rules that stop the two books conflating.
+#
 # ⏭️  NEXT BUILD (queued 2026-06-25, do FRESH — don't rush the live order path):
 #     Wire the VALIDATED WAVE config flag-gated + default-OFF, then enable deliberately.
 #     Config = band-anchored strikes (sell at Bollinger-band extreme, walk to $30 credit

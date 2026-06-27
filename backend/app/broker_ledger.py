@@ -137,3 +137,48 @@ async def fetch_realized(trader, days_back: int = 7, now: datetime | None = None
     fills = await trader.get_fill_activities(after.isoformat(), until.isoformat())
     fees = await trader.get_fee_activities(after.isoformat(), until.isoformat())
     return realized_by_day(fills, fees)
+
+
+def book_of(client_order_id: str | None) -> str:
+    """Map an order's client_order_id tag → book. We stamp 'meic-…' / 'wave-…' at
+    submission; anything else (incl. untagged pre-2026-06-28 orders) → 'untagged'."""
+    cid = (client_order_id or "").lower()
+    if cid.startswith("meic"):
+        return "meic"
+    if cid.startswith("wave"):
+        return "wave"
+    return "untagged"
+
+
+def realized_by_book(fills: list[dict], orders: list[dict]) -> dict:
+    """Split realized option-fill cashflow by BOOK (meic / wave / untagged), using the
+    client_order_id tag on each order. Anchored to the raw FILLS (ground truth), just
+    labelled — a fill's order_id is matched to its parent order OR any of its leg ids
+    (Alpaca fills mleg legs as child orders), and that order's tag decides the book."""
+    oid2book: dict[str, str] = {}
+    for o in orders:
+        book = book_of(o.get("client_order_id"))
+        if o.get("id"):
+            oid2book[o["id"]] = book
+        for leg in (o.get("legs") or []):
+            if leg.get("id"):
+                oid2book[leg["id"]] = book
+    out: dict[str, float] = defaultdict(float)
+    cnt: dict[str, int] = defaultdict(int)
+    for f in fills:
+        if not is_our_option(f.get("symbol", "")):
+            continue
+        cf = _fill_cashflow(f)
+        if cf is None:
+            continue
+        book = oid2book.get(f.get("order_id"), "untagged")
+        out[book] += cf
+        cnt[book] += 1
+    return {b: {"realized": round(out[b], 2), "fills": cnt[b]} for b in out}
+
+
+async def fetch_realized_by_book(trader, after_iso: str, until_iso: str) -> dict:
+    """Per-book realized P&L from real fills for [after, until). Read-only."""
+    fills = await trader.get_fill_activities(after_iso, until_iso)
+    orders = await trader.get_orders_for_day(after_iso, until_iso)
+    return realized_by_book(fills, orders)

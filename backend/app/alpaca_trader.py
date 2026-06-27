@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -78,6 +79,7 @@ class AlpacaTrader:
         qty: int = 1,
         order_class: str = "oto",  # one-triggers-other
         limit_credit: float | None = None,  # per-share net credit (model mid) for marketable-limit
+        tag: str | None = None,    # book attribution → client_order_id ("meic"/"wave")
     ) -> dict | None:
         """Place a vertical credit spread.
 
@@ -126,6 +128,8 @@ class AlpacaTrader:
             if settings.ALPACA_MARKETABLE_LIMIT and limit_credit and limit_credit > 0.02:
                 order["type"] = "limit"
                 order["limit_price"] = str(round(max(0.01, limit_credit - 0.01), 2))
+            if tag:
+                order["client_order_id"] = f"{tag}-{uuid.uuid4().hex[:10]}"
 
             url = f"{settings.ALPACA_BASE_URL}/v2/orders"
             resp = await client.post(url, json=order)
@@ -157,6 +161,7 @@ class AlpacaTrader:
         put_short: float,
         put_long: float,
         qty: int = 1,
+        tag: str | None = None,    # book attribution → client_order_id ("meic")
     ) -> dict | None:
         """Place a 4-leg iron condor.
 
@@ -196,6 +201,8 @@ class AlpacaTrader:
                     {"symbol": pl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
                 ],
             }
+            if tag:
+                order["client_order_id"] = f"{tag}-{uuid.uuid4().hex[:10]}"
 
             url = f"{settings.ALPACA_BASE_URL}/v2/orders"
             resp = await client.post(url, json=order)
@@ -355,6 +362,7 @@ class AlpacaTrader:
         short_strike: float,
         long_strike: float,
         qty: int = 1,
+        tag: str | None = None,    # book attribution → client_order_id ("meic"/"wave")
     ) -> dict | None:
         """Close a credit spread by placing the reverse multi-leg order."""
         if not settings.TRADING_ENABLED:
@@ -378,6 +386,8 @@ class AlpacaTrader:
                     {"symbol": long_sym, "ratio_qty": "1", "side": "sell", "position_intent": "sell_to_close"},
                 ],
             }
+            if tag:
+                order["client_order_id"] = f"{tag}-{uuid.uuid4().hex[:10]}"
 
             url = f"{settings.ALPACA_BASE_URL}/v2/orders"
             resp = await client.post(url, json=order)
@@ -479,6 +489,22 @@ class AlpacaTrader:
         except Exception as e:  # noqa: BLE001
             log.error("Alpaca get_fill_activities failed: %s", e)
             return out
+
+    async def get_orders_for_day(self, after_iso: str, until_iso: str) -> list[dict]:
+        """READ-ONLY: orders submitted in [after, until), nested legs included. Carries
+        client_order_id (our book tag 'meic-…'/'wave-…') and each leg's id — lets the
+        ledger map a FILL's order_id back to the book that placed it."""
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(
+                f"{settings.ALPACA_BASE_URL}/v2/orders",
+                params={"status": "all", "after": after_iso, "until": until_iso,
+                        "nested": "true", "limit": "500"})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:  # noqa: BLE001
+            log.error("Alpaca get_orders_for_day failed: %s", e)
+            return []
 
     async def get_fee_activities(self, after_iso: str, until_iso: str) -> list[dict]:
         """READ-ONLY: every FEE activity in [after, until) — OCC clearing, ORF, TAF,

@@ -927,10 +927,10 @@ class Orchestrator:
             qty = max(1, ic.contracts or 1)
             r1 = await self.alpaca_trader.close_credit_spread(
                 underlying="SPY", expiry=today_str, side="call",
-                short_strike=cs, long_strike=cl, qty=qty)
+                short_strike=cs, long_strike=cl, qty=qty, tag=f"meic-{ic.build_id}")
             r2 = await self.alpaca_trader.close_credit_spread(
                 underlying="SPY", expiry=today_str, side="put",
-                short_strike=ps, long_strike=pl, qty=qty)
+                short_strike=ps, long_strike=pl, qty=qty, tag=f"meic-{ic.build_id}")
             ok = bool(r1 and not r1.get("shadow")) and bool(r2 and not r2.get("shadow"))
             ic.broker_status = "closed_stop" if ok else "close_error"
             log.info("IC stop close %s: call=%s put=%s", ic.build_id,
@@ -2693,6 +2693,7 @@ class Orchestrator:
                 # SPY per-share net credit ≈ SPX$credit / 10(scale) / 100(mult).
                 # Only used when ALPACA_MARKETABLE_LIMIT is on (scaffold; model-derived).
                 limit_credit=(pt.estimated_credit or 0) / 1000.0,
+                tag=f"wave-{pt.trade_no}",
             )
             if result and not result.get("shadow"):
                 pt.alpaca_order_id = result.get("id")
@@ -2862,6 +2863,7 @@ class Orchestrator:
                 result = await self.alpaca_trader.place_iron_condor(
                     underlying="SPY", expiry=today_str,
                     call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+                    tag=f"meic-{ic.build_id}",
                 )
             if result and not result.get("shadow"):
                 ic.alpaca_order_id = result.get("id")
@@ -2907,9 +2909,18 @@ class Orchestrator:
                 return
             qty = max(1, ic.contracts or 1)
             real_per_share = cf / (qty * 100.0)
-            # Real per-contract credit (SPY-scale) — same scale as the stop's
-            # mark-to-market buyback, so the breakeven stop can anchor to it.
-            ic.real_credit_dollars = abs(cf) / qty
+            # Real per-contract credit, RESCALED to the STOP's units. cf is the SPY
+            # Alpaca fill (1/10 SPX); total_credit_dollars AND the stop's buyback are
+            # SPX-scale, so ×10 to match (the 1/10 SPX-via-SPY convention). Sanity guard:
+            # only adopt the real anchor if it lands within a believable band of the
+            # model credit — a future scale/fill-read bug can't silently nuke the stop
+            # (it falls back to the model anchor instead). Caught a 10× bug here on Jun 26.
+            real_spx = abs(cf) / qty * 10.0
+            if ic.total_credit_dollars and 0.4 <= real_spx / (ic.total_credit_dollars or 1) <= 2.5:
+                ic.real_credit_dollars = round(real_spx, 2)
+            else:
+                log.warning("IC real-credit %s out of band ($%.0f vs model $%.0f) — keeping model anchor",
+                            ic.build_id, real_spx, ic.total_credit_dollars or 0)
             log.info("IC fill-read: %s real credit $%.2f (%.3f/share) | model $%.0f | per-ct $%.0f",
                      ic.build_id, cf, real_per_share, ic.total_credit_dollars or 0,
                      ic.real_credit_dollars)
@@ -2966,6 +2977,7 @@ class Orchestrator:
                     short_strike=params["short_strike"],
                     long_strike=params["long_strike"],
                     qty=pt.contracts,
+                    tag=f"wave-{pt.trade_no}",
                 )
                 if result and not result.get("shadow"):
                     pt.broker_status = "closed"

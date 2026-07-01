@@ -174,6 +174,16 @@ class Settings:
     # legacy wave_manager. Shadow-mode validation period before deletion.
     DIRECTIONAL_SPREAD_ENABLED: bool = _b("DIRECTIONAL_SPREAD_ENABLED", False)
 
+    # ── WaveZero band-anchored strategy (validated rebuild, time-triggered) ──
+    # The validated WAVE entry: ONE attempt/day at ~10:00 ET (ENTRY_MIN), gated by
+    # the function's OWN Schwartz vol-released + Bollinger(14/2.5) cushion logic —
+    # NOT the old stoch/confluence signal path. When enabled, the orchestrator drives
+    # wave_band_live.decide_band_trade() once per day from handle_bar, and the old
+    # signal-driven WAVE entry (_open_paper_trade) stands aside so they never double-
+    # fire. Parity-proven to the validated backtest (OOS +$41.68/t5.85). Default OFF —
+    # enable in .env only after review (this is a real paper-trading engine).
+    WAVE_BAND_STRATEGY_ENABLED: bool = _b("WAVE_BAND_STRATEGY_ENABLED", False)
+
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.
     # That proxy booked a "win" on a 0.008% favorable tick (median 1 bar) and so

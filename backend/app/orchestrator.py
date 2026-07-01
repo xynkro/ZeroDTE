@@ -108,6 +108,23 @@ class Orchestrator:
         self._flow_scans_fired: set[str] = set()  # e.g. {"2026-05-25_10:30", ...}
         self._last_flow_scan: dict | None = None   # last FlowScanResult.to_dict()
 
+        # ── WaveZero band-anchored strategy (validated, time-triggered) ──
+        # Seed the Schwartz/cushion running medians from history so the gate is
+        # calibrated from day one (live expanding median == validated backtest's).
+        self._band_medians = None
+        self._band_opened_date: str | None = None
+        if settings.WAVE_BAND_STRATEGY_ENABLED:
+            try:
+                from .wave_band_live import seed_running_medians
+                self._band_medians = seed_running_medians()
+                log.info("Band strategy ARMED: seeded medians from history "
+                         "(r5 n=%d, width n=%d, r5_median=%s)",
+                         len(self._band_medians.r5_hist), len(self._band_medians.width_hist),
+                         self._band_medians.r5_median())
+            except Exception as e:  # noqa: BLE001 — fail SAFE: no band entries this run
+                log.error("Band strategy seed FAILED (%s) — band entries DISABLED this run", e)
+                self._band_medians = None
+
         # ── Restore live state from disk (survives backend restarts) ──
         self._restore_from_disk()
 
@@ -577,6 +594,8 @@ class Orchestrator:
         self._maybe_ping_morning_alive(bar)
         # Phase 2: update mid-session volatility flag (used by entry gate)
         self._update_mid_session_volatility(bar)
+        # WaveZero VALIDATED band-anchored entry — time-triggered, once/day at ~10:00 ET
+        await self._maybe_open_band_trade(bar)
         await self._refresh_state(bar, new_signals=signals)
         # Check open wave trades for TP / STOP / TIME / EOD exits → fire EXIT alerts
         self._dispatch_exit_check(bar)
@@ -587,6 +606,90 @@ class Orchestrator:
         await self._check_ic_stop_loss(bar)
         await self._maybe_fire_eod_summary(bar)
         await self._broadcast()
+
+    async def _maybe_open_band_trade(self, bar: Bar):
+        """WaveZero VALIDATED band-anchored entry — TIME-triggered, ONE attempt/day at
+        ~10:00 ET, gated entirely by decide_band_trade's own Schwartz vol-released +
+        Bollinger(14/2.5) cushion logic (parity-proven to the backtest). Reuses the
+        directional open/submit path (SPX→SPY, sizing, wave-tag). Never crashes the loop.
+
+        LIVE bars only; skips weekends; one shot per day (marks the date whether it opens
+        or gates); records the running medians AFTER the decision (no lookahead)."""
+        if not settings.WAVE_BAND_STRATEGY_ENABLED or self._band_medians is None:
+            return
+        if not getattr(self, "_is_live_bar", False):
+            return
+        et = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
+        if et.weekday() > 4:
+            return
+        bar_min = et.hour * 60 + et.minute
+        if bar_min < 10 * 60 or bar_min >= 16 * 60:   # entry window: 10:00 → 16:00 ET
+            return
+        date = et.strftime("%Y-%m-%d")
+        if self._band_opened_date == date:
+            return
+        try:
+            from . import bs_pricing as bs
+            from .wave_band_live import decide_band_trade, bollinger, BandParams
+            from .directional_spread_manager import _periods_remaining, open_directional_trade
+            from .models import SignalEvent, StrikeSuggestion
+
+            buf = [b.close for b in self.predictor._buffer]
+            if len(buf) < 14:
+                return   # not enough continuous 5m history yet — retry next bar (no mark)
+            today_closes = [b.close for b in self.predictor._buffer
+                            if (b.time.astimezone(ET) if b.time.tzinfo else b.time)
+                            .strftime("%Y-%m-%d") == date]
+            if len(today_closes) < 5:
+                return
+            r5 = bs.realized_5m_std(today_closes)
+            if not r5 or r5 <= 0:
+                return
+            pr = _periods_remaining(bar.time)
+            p = BandParams(premium_mult=settings.DIRECTIONAL_PREMIUM_MULT,
+                           put_skew=settings.DIRECTIONAL_SKEW_PUT_MULT,
+                           call_skew=settings.DIRECTIONAL_SKEW_CALL_MULT)
+            d = decide_band_trade(buf, r5, pr, self._band_medians.r5_median(),
+                                  self._band_medians.width_median(), p)
+            # record medians AFTER the decision (no lookahead); mark today attempted
+            _, _, _, width = bollinger(buf, p.bb_len, p.bb_mult)
+            self._band_medians.record(r5, width)
+            self._band_opened_date = date
+            if d is None:
+                log.info("Band: no trade %s — gated (vol-released/cushion/floor). "
+                         "r5=%.5f r5_median=%s", date, r5, self._band_medians.r5_median())
+                return
+
+            S0 = buf[-1]
+            wing = abs(d.long_strike - d.short_strike)
+            ev = SignalEvent(side=d.side, triggered_at=bar.time.isoformat(),
+                             underlying_price=S0, confluence={}, confluence_score=4)
+            sp = StrikeSuggestion(instrument="SPX", side=d.side, mode="directional_spread",
+                                  short_strike=d.short_strike, long_strike=d.long_strike,
+                                  wing_width=wing, multiplier=100,
+                                  estimated_credit_dollars=d.est_credit,
+                                  max_loss_dollars=wing * 100 - d.est_credit,
+                                  notional_per_contract=S0 * 100)
+            trade_no = self._next_trade_no(et)
+            pt, sizing_note = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
+            pt.proj_high_at_signal = self.state.regime.proj_high
+            pt.proj_low_at_signal = self.state.regime.proj_low
+            if self._gex is not None and getattr(self._gex, "ok", False):
+                pt.gex_regime = self._gex.regime
+                pt.gex_net_ratio = self._gex.net_ratio
+            self.paper_trades.append(pt)
+            log.info("Band trade #%d OPENED [%s]: SPX short=%.0f long=%.0f credit=$%.0f "
+                     "cushion=%.2f%% choppy=%s size=%dct (%s)", trade_no, d.side,
+                     d.short_strike, d.long_strike, d.est_credit, d.pct_otm, d.choppy,
+                     pt.contracts, sizing_note)
+            if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:
+                pt.broker_status = "pending"
+                self._broker_entry_tasks[pt.id] = asyncio.create_task(
+                    self._submit_alpaca_entry(pt, ev, sizing_note, True))
+            self._persist_state()
+        except Exception as e:  # noqa: BLE001 — never crash the bar loop
+            log.error("Band entry failed %s: %s", date, e, exc_info=True)
+            self._band_opened_date = date   # don't retry a crashing entry all day
 
     def _maybe_ping_morning_alive(self, bar: Bar):
         """Fire a 'good morning' heartbeat on the first live bar of each session.
@@ -2302,6 +2405,12 @@ class Orchestrator:
           4. VIX bucket allows entries (not "stand aside" bucket)
           5. Daily loss limit (existing safety)
         """
+        # ── Band-mode stand-aside ── when the validated band-anchored strategy is the
+        # live WAVE entry, it is TIME-triggered (one attempt/day at ~10:00 ET via
+        # _maybe_open_band_trade), gated by its own Schwartz/cushion logic. The old
+        # stoch/confluence signal path must NOT also fire, or the two double-enter.
+        if settings.WAVE_BAND_STRATEGY_ENABLED:
+            return None, "skipped: band-mode (time-triggered entry active)"
         if not ev.wave_strikes:
             return None, ""
 

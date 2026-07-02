@@ -38,7 +38,8 @@ MULT = 100
 def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
              stop_buffer: float = 1.0, take_profit_pct: float | None = None,
              time_stop_min: int | None = None,
-             credit_richness: float = 1.0, stop_anchor: str = "real"):
+             credit_richness: float = 1.0, stop_anchor: str = "real",
+             min_side_credit: float = 0.0):
     """stop_buffer: stop when buy-back >= buffer×credit (1.0=breakeven, ∞=no stop).
     take_profit_pct: close early when buy-back <= (1-tp/100)×credit (None=no TP).
     time_stop_min: close N minutes after entry at the current mark (None=ride to expiry).
@@ -93,12 +94,21 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             cl = cs + WING
             ps = bs.strike_for_put_delta(S0, p_tv0, SHORT_DELTA)
             pl = ps - WING
-            credit_ps = (bs.spread_value("sell_call_cs", S0, cs, cl, c_tv0)
-                         + bs.spread_value("sell_put_cs", S0, ps, pl, p_tv0))
+            call_credit_ps = bs.spread_value("sell_call_cs", S0, cs, cl, c_tv0)
+            put_credit_ps = bs.spread_value("sell_put_cs", S0, ps, pl, p_tv0)
+            R = credit_richness
+            # Per-side credit floor (live: IC_MIN_SIDE_CREDIT on the NBBO plane) —
+            # a side that can't pay for its own wing risk doesn't trade; the
+            # paying side trades alone (one-sided MEIC). Floor compares against
+            # the R-scaled (as-collected) side credit, SPX $.
+            use_call = call_credit_ps * MULT * R >= min_side_credit
+            use_put = put_credit_ps * MULT * R >= min_side_credit
+            if not use_call and not use_put:
+                continue
+            credit_ps = (call_credit_ps if use_call else 0.0) + (put_credit_ps if use_put else 0.0)
             model_credit = credit_ps * MULT          # BS model credit (gate + 'model' anchor)
             if model_credit / (WING * MULT) * 100.0 < MIN_CREDIT_PCT:
                 continue  # thin-premium gate (live skips these) — gates on model credit, like live
-            R = credit_richness
             real_credit = model_credit * R           # credit actually collected (rich fills)
             # Stop threshold: 'real' anchors to collected credit (true breakeven);
             # 'model' anchors to the un-scaled BS credit (recreates the live bug).
@@ -116,15 +126,15 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 et = b.time.astimezone(ET) if b.time.tzinfo else b.time
                 bm = et.hour * 60 + et.minute
                 if bm >= 16 * 60:
-                    iv_c = bs.spread_value("sell_call_cs", b.close, cs, cl, 0.0)
-                    iv_p = bs.spread_value("sell_put_cs", b.close, ps, pl, 0.0)
+                    iv_c = bs.spread_value("sell_call_cs", b.close, cs, cl, 0.0) if use_call else 0.0
+                    iv_p = bs.spread_value("sell_put_cs", b.close, ps, pl, 0.0) if use_put else 0.0
                     exit_val = (iv_c + iv_p) * MULT     # intrinsic — no richness at settlement
                     outcome = "expiry"
                     break
                 pr = _periods_remaining(b.time)
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
-                bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
-                      + bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)) * MULT * R
+                bb = ((bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK) if use_call else 0.0)
+                      + (bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK) if use_put else 0.0)) * MULT * R
                 min_bb = min(min_bb, bb)
                 max_bb = max(max_bb, bb)
                 # exit priority each bar: take-profit (winner) → stop (loser) → time exit
@@ -147,8 +157,8 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 # fake-won EVERY held condor (worst day went POSITIVE, 100% green),
                 # grossly inflating wide-/no-stop configs in the buffer sweep.
                 lc = sb[-1].close
-                exit_val = (bs.spread_value("sell_call_cs", lc, cs, cl, 0.0)
-                            + bs.spread_value("sell_put_cs", lc, ps, pl, 0.0)) * MULT
+                exit_val = ((bs.spread_value("sell_call_cs", lc, cs, cl, 0.0) if use_call else 0.0)
+                            + (bs.spread_value("sell_put_cs", lc, ps, pl, 0.0) if use_put else 0.0)) * MULT
                 outcome = "expiry"
             # Fold the realized exit into the excursion window so a same-bar
             # stop/expiry that never traversed an intraday repricing still scores.

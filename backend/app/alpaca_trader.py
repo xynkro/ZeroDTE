@@ -548,20 +548,24 @@ class AlpacaTrader:
         as "no reliable mark" and HOLDS (never closes on a bad mark)."""
         if not symbols:
             return {}
+        out: dict[str, dict] = {}
         try:
             client = await self._ensure_client()
             url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
-            params = {"symbols": ",".join(symbols), "feed": settings.ALPACA_OPTIONS_FEED}
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            quotes = (resp.json() or {}).get("quotes", {}) or {}
-            out: dict[str, dict] = {}
-            for sym, q in quotes.items():
-                out[sym] = {"bid": q.get("bp"), "ask": q.get("ap"), "ts": q.get("t")}
+            # The endpoint 400s on large symbol lists (seen at 110 for a full
+            # entry chain) — chunk to 50/request and merge.
+            for i in range(0, len(symbols), 50):
+                chunk = symbols[i:i + 50]
+                params = {"symbols": ",".join(chunk), "feed": settings.ALPACA_OPTIONS_FEED}
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                quotes = (resp.json() or {}).get("quotes", {}) or {}
+                for sym, q in quotes.items():
+                    out[sym] = {"bid": q.get("bp"), "ask": q.get("ap"), "ts": q.get("t")}
             return out
         except Exception as e:  # noqa: BLE001
             log.warning("Alpaca get_option_quotes failed: %s", e)
-            return {}
+            return out
 
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open

@@ -31,8 +31,13 @@ Notes:
 - Expected accrual: ~40% of ~21 sessions/mo ≈ 8–9 trades/mo → 25 trades ≈ end-Sep 2026.
 - Fill-quality telemetry (entry/exit CBOE mid on every trade) splits any gap:
   model-vs-mid = SIGNAL problem; mid-vs-fill = EXECUTION problem.
-- Sizing during trial: existing DIRECTIONAL sizing (~6ct ≈ $600 ≈ 6% max-loss/trade).
-  Do not change size mid-trial — it contaminates the sample.
+- Sizing during trial (risk-owner set, 2026-07-02, BEFORE the floor-era sample):
+  **$1,000 risk budget/trade = 1 SPX-equivalent backtest unit** (10–12 SPY ct at
+  floor-grade→richer credits; RISK_PER_TRADE_PCT=10, SIZE_CAP_USD=1000). Makes live
+  numbers directly comparable to the backtest's per-unit stats (+$42/day, worst −$304).
+  Accepted consequence: a full gap-through-wing day = −10% of account; TWO such days
+  trip the 15% halt gate. Trades #1–2 (5ct, pre-floor era) are normalized per-unit in
+  analysis. Do not change size again mid-trial — it contaminates the sample.
 
 ## IBKR recommendation (data, not orders)
 Alpaca's free feed has no options quotes; telemetry uses CBOE **delayed** mids

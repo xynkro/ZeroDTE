@@ -298,6 +298,15 @@ class Settings:
     # One-sided entries only make sense on the NBBO plane (honest per-side
     # credits). Default OFF until the one-sided stop/close paths are validated.
     IC_ONE_SIDED_ENABLED: bool = _b("IC_ONE_SIDED_ENABLED", False)
+    # Claude SHADOW analyst — per-slot market reads, LOGGED ONLY (never gates a
+    # trade; see claude_analyst.py contract + DECISION.md). CLI transport uses
+    # the authenticated Claude Code binary; absolute path because launchd's PATH
+    # doesn't include ~/.local/bin.
+    CLAUDE_SHADOW_ENABLED: bool = _b("CLAUDE_SHADOW_ENABLED", False)
+    CLAUDE_SHADOW_MODEL: str = os.getenv("CLAUDE_SHADOW_MODEL", "claude-sonnet-5")
+    CLAUDE_SHADOW_TIMEOUT_SEC: int = _i("CLAUDE_SHADOW_TIMEOUT_SEC", 45)
+    CLAUDE_SHADOW_BIN: str = os.getenv("CLAUDE_SHADOW_BIN",
+                                       "/Users/xynkro/.local/bin/claude")
 
     # CBOE-mid marketable-limit execution for MEIC condors. SHADOW first: still
     # submit market mleg, but stash the limit-price we WOULD have used (CBOE mid

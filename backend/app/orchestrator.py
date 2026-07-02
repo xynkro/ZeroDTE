@@ -1810,6 +1810,12 @@ class Orchestrator:
             finally:
                 self._current_slot = None
             self._record_slot(date_str, slot, outcome[0], outcome[1])
+            # Claude SHADOW read — fires AFTER the decision, logged only, can
+            # never delay or alter a trade (see claude_analyst.py contract).
+            if settings.CLAUDE_SHADOW_ENABLED:
+                from . import claude_analyst
+                asyncio.create_task(claude_analyst.shadow_read_task(
+                    self, bar, slot, outcome[0], outcome[1]))
             break  # at most one build per bar
 
     def _record_slot(self, date_str: str, slot: str, action: str, detail: str = ""):

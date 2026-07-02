@@ -18,15 +18,21 @@ from backend.app.claude_scan import run_scan, append_scan
 
 
 async def main():
-    if not settings.ANTHROPIC_API_KEY:
-        print("❌ ANTHROPIC_API_KEY not set in .env — add it (the file, not chat), then rerun.")
-        return
+    import os
     ctx = {"session": "manual test", "note": "offline test context",
            "spot": 7500.0, "open_move_pct": 0.12, "daily_atr": 55.0,
            "gex": {"regime": "positive", "max_pain": 7480.0},
            "macro_events_today": [{"event": "ISM Services PMI", "time_utc": "14:00", "impact": "medium"}]}
-    print(f"calling {settings.CLAUDE_SCAN_MODEL} ...")
-    v = await run_scan(ctx, settings.ANTHROPIC_API_KEY, settings.CLAUDE_SCAN_MODEL)
+    if settings.ANTHROPIC_API_KEY:
+        print(f"transport: API · calling {settings.CLAUDE_SCAN_MODEL} ...")
+        v = await run_scan(ctx, settings.ANTHROPIC_API_KEY, settings.CLAUDE_SCAN_MODEL)
+    elif os.path.exists(settings.CLAUDE_SCAN_BIN):
+        from backend.app.claude_scan import run_scan_cli
+        print(f"transport: CLI (subscription, no key) · calling {settings.CLAUDE_SCAN_MODEL} ...")
+        v = await run_scan_cli(ctx, settings.CLAUDE_SCAN_MODEL, settings.CLAUDE_SCAN_BIN)
+    else:
+        print("❌ no ANTHROPIC_API_KEY and no claude CLI found — nothing to test.")
+        return
     if v is None:
         print("❌ scan failed (see log above) — check key/model/network.")
         return

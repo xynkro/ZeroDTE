@@ -130,6 +130,46 @@ async def run_scan(context: dict, api_key: str, model: str,
         return None
 
 
+async def run_scan_cli(context: dict, model: str, bin_path: str,
+                       timeout: float = 60.0) -> dict | None:
+    """Fallback transport: the authenticated Claude Code CLI in headless print mode
+    (MEICZero's claude_analyst pattern) — rides the existing subscription, NO API
+    key needed. Trade-off vs the API: no temperature control (tag the transport in
+    the record so scoring can distinguish). Fail-soft like everything else."""
+    import asyncio
+    prompt = (SYSTEM + "\n\nPre-market context (JSON):\n" + json.dumps(context) +
+              "\n\nReturn the verdict JSON now.")
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            bin_path, "-p", prompt, "--model", model, "--output-format", "json",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            log.warning("claude_scan CLI rc=%s (%s)", proc.returncode, (err or b"")[:120])
+            return None
+        text = json.loads(out.decode()).get("result") or ""
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            log.warning("claude_scan CLI: no JSON in response (%.120s)", text)
+            return None
+        verdict = json.loads(m.group(0))
+        verdict["_model"] = model
+        return verdict
+    except asyncio.TimeoutError:
+        try:
+            if proc:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+        log.warning("claude_scan CLI: timeout after %ss", timeout)
+        return None
+    except Exception as e:  # noqa: BLE001
+        log.warning("claude_scan CLI transport failed: %s", e)
+        return None
+
+
 def append_scan(rec: dict) -> None:
     """One JSON line per session — the dataset the advisor gets SCORED on."""
     try:

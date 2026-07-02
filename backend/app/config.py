@@ -210,6 +210,10 @@ class Settings:
     WAVE_CLAUDE_SCAN_ENABLED: bool = _b("WAVE_CLAUDE_SCAN_ENABLED", False)
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_SCAN_MODEL: str = os.getenv("CLAUDE_SCAN_MODEL", "claude-haiku-4-5-20251001")
+    # Transport fallback (MEICZero's claude_analyst pattern): when no API key is
+    # set, use the authenticated Claude Code CLI headlessly — rides the existing
+    # subscription, zero manual setup. Key present → direct API (temperature 0).
+    CLAUDE_SCAN_BIN: str = os.getenv("CLAUDE_SCAN_BIN", "/Users/xynkro/.local/bin/claude")
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

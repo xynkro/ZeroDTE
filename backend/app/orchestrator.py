@@ -627,7 +627,11 @@ class Orchestrator:
         """Claude morning scan — SCORED ADVISOR (see claude_scan.py). Fires once per
         session in the 09:45–09:59 ET window (before the 10:00 band decision), off
         the bar loop. Logs + stamps state; gates NOTHING. No-ops without a key."""
-        if not settings.WAVE_CLAUDE_SCAN_ENABLED or not settings.ANTHROPIC_API_KEY:
+        if not settings.WAVE_CLAUDE_SCAN_ENABLED:
+            return
+        # Transport: API key if present, else the authed Claude Code CLI (MEIC pattern)
+        import os as _os
+        if not settings.ANTHROPIC_API_KEY and not _os.path.exists(settings.CLAUDE_SCAN_BIN):
             return
         if not getattr(self, "_is_live_bar", False):
             return
@@ -646,12 +650,18 @@ class Orchestrator:
             try:
                 import json
                 from datetime import timezone as _tz
-                from .claude_scan import build_context, run_scan, append_scan
+                from .claude_scan import build_context, run_scan, run_scan_cli, append_scan
                 ctx = build_context(self)
-                verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
-                                         settings.CLAUDE_SCAN_MODEL)
+                if settings.ANTHROPIC_API_KEY:
+                    transport = "api"
+                    verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
+                                             settings.CLAUDE_SCAN_MODEL)
+                else:
+                    transport = "cli"
+                    verdict = await run_scan_cli(ctx, settings.CLAUDE_SCAN_MODEL,
+                                                 settings.CLAUDE_SCAN_BIN)
                 rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date,
-                       "context": ctx, "verdict": verdict,
+                       "context": ctx, "verdict": verdict, "transport": transport,
                        "ok": verdict is not None}
                 append_scan(rec)
                 self._claude_scan_last = ({"date": date, **{k: v for k, v in verdict.items()

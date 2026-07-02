@@ -114,6 +114,8 @@ class Orchestrator:
         self._band_medians = None
         self._band_opened_date: str | None = None
         self._band_last: dict | None = None   # last band decision (dashboard visibility)
+        self._claude_scan_date: str | None = None   # one advisor scan per session
+        self._claude_scan_last: dict | None = None
         if settings.WAVE_BAND_STRATEGY_ENABLED:
             try:
                 from .wave_band_live import seed_running_medians
@@ -168,6 +170,8 @@ class Orchestrator:
             self._today_gated = dict(data.get("today_gated") or {})
             self._band_opened_date = data.get("band_opened_date")
             self._band_last = data.get("band_last")
+            self._claude_scan_date = data.get("claude_scan_date")
+            self._claude_scan_last = data.get("claude_scan_last")
             self.state.last_signals = self._signal_history[-20:]
             self.state.open_positions = [t for t in self.paper_trades if not t.closed]
             log.info(
@@ -207,6 +211,8 @@ class Orchestrator:
                 # rides along so the dashboard shows today's decision after a bounce.
                 "band_opened_date": self._band_opened_date,
                 "band_last": self._band_last,
+                "claude_scan_date": self._claude_scan_date,
+                "claude_scan_last": self._claude_scan_last,
             }
             state_store.save_async(snapshot)
         except Exception as e:
@@ -602,6 +608,8 @@ class Orchestrator:
         self._maybe_ping_morning_alive(bar)
         # Phase 2: update mid-session volatility flag (used by entry gate)
         self._update_mid_session_volatility(bar)
+        # Claude morning scan — scored ADVISOR (logs, gates nothing), pre-band window
+        self._maybe_claude_scan(bar)
         # WaveZero VALIDATED band-anchored entry — time-triggered, once/day at ~10:00 ET
         await self._maybe_open_band_trade(bar)
         await self._refresh_state(bar, new_signals=signals)
@@ -614,6 +622,48 @@ class Orchestrator:
         await self._check_ic_stop_loss(bar)
         await self._maybe_fire_eod_summary(bar)
         await self._broadcast()
+
+    def _maybe_claude_scan(self, bar: Bar):
+        """Claude morning scan — SCORED ADVISOR (see claude_scan.py). Fires once per
+        session in the 09:45–09:59 ET window (before the 10:00 band decision), off
+        the bar loop. Logs + stamps state; gates NOTHING. No-ops without a key."""
+        if not settings.WAVE_CLAUDE_SCAN_ENABLED or not settings.ANTHROPIC_API_KEY:
+            return
+        if not getattr(self, "_is_live_bar", False):
+            return
+        et = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
+        if et.weekday() > 4:
+            return
+        bar_min = et.hour * 60 + et.minute
+        if bar_min < (9 * 60 + 45) or bar_min >= (10 * 60):
+            return
+        date = et.strftime("%Y-%m-%d")
+        if self._claude_scan_date == date:
+            return
+        self._claude_scan_date = date   # mark first — one attempt per session
+
+        async def _run():
+            try:
+                import json
+                from datetime import timezone as _tz
+                from .claude_scan import build_context, run_scan, append_scan
+                ctx = build_context(self)
+                verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
+                                         settings.CLAUDE_SCAN_MODEL)
+                rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date,
+                       "context": ctx, "verdict": verdict,
+                       "ok": verdict is not None}
+                append_scan(rec)
+                self._claude_scan_last = ({"date": date, **{k: v for k, v in verdict.items()
+                                          if not k.startswith("_")}} if verdict else
+                                          {"date": date, "error": "scan failed"})
+                log.info("Claude scan %s: %s", date,
+                         json.dumps(self._claude_scan_last)[:220])
+                self._persist_state()
+            except Exception as e:  # noqa: BLE001 — advisor must never break the loop
+                log.warning("claude scan task failed: %s", e)
+
+        asyncio.create_task(_run())
 
     async def _maybe_open_band_trade(self, bar: Bar):
         """WaveZero VALIDATED band-anchored entry — TIME-triggered, ONE attempt/day at

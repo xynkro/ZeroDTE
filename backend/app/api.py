@@ -214,6 +214,12 @@ async def status():
             "opened_date": getattr(orch, "_band_opened_date", None),
             "last": getattr(orch, "_band_last", None),
         },
+        # Claude morning scan — scored advisor (logs only, gates nothing)
+        "claude_scan": {
+            "enabled": settings.WAVE_CLAUDE_SCAN_ENABLED,
+            "key_present": bool(settings.ANTHROPIC_API_KEY),
+            "last": getattr(orch, "_claude_scan_last", None),
+        },
     }
 
 

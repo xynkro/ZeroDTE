@@ -201,6 +201,16 @@ class Settings:
     # 0 disables (model-only floor). CBOE unquotable at entry → SKIP (fail-closed).
     WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 10.0)
 
+    # ── Claude morning scan — SCORED ADVISOR, never a decision-maker ──
+    # One API call/session ~09:45-09:59 ET → structured risk verdict → logged to
+    # data/claude_scan.jsonl + dashboard. Gates NOTHING. Scored against outcomes
+    # after 25+ sessions (wave_failure_analysis pattern); earns a vote only if it
+    # separates winners/losers where RSI/Stoch (|r|<0.1) could not. No-ops without
+    # ANTHROPIC_API_KEY. See backend/app/claude_scan.py.
+    WAVE_CLAUDE_SCAN_ENABLED: bool = _b("WAVE_CLAUDE_SCAN_ENABLED", False)
+    ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    CLAUDE_SCAN_MODEL: str = os.getenv("CLAUDE_SCAN_MODEL", "claude-haiku-4-5-20251001")
+
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.
     # That proxy booked a "win" on a 0.008% favorable tick (median 1 bar) and so

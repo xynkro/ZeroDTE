@@ -166,6 +166,32 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                         exit_val = realized_cost
                         outcome = "stop"
                         break
+                elif stop_mode == "hybrid":
+                    # Caspar's spec (2026-07-02): trigger on TOTAL buyback like the
+                    # disaster stop, but close ONLY the threatened (pricier) side —
+                    # the safe side keeps decaying toward worthless expiry. If the
+                    # survivor side later runs to the threshold on ITS OWN (whipsaw),
+                    # it closes too. Earlier trigger than pure side-mode (sum ≥
+                    # thresh before either side alone is) → smaller stopped losses,
+                    # while keeping the safe side's remaining premium.
+                    if call_open and put_open:
+                        if bb >= stop_thresh:
+                            if call_bb >= put_bb:
+                                realized_cost += call_bb
+                                call_open = False
+                            else:
+                                realized_cost += put_bb
+                                put_open = False
+                            side_stops += 1
+                    else:
+                        rem = call_bb if call_open else put_bb
+                        if rem >= stop_thresh:
+                            realized_cost += rem
+                            call_open = put_open = False
+                            side_stops += 1
+                            exit_val = realized_cost
+                            outcome = "stop"
+                            break
                 elif bb >= stop_thresh:  # total mode: stop whole position
                     exit_val = bb
                     outcome = "stop"

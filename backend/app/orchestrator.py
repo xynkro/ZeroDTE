@@ -1791,10 +1791,29 @@ class Orchestrator:
         close_min = 16 * 60
         if getattr(self, "alpaca_trader", None) is not None:
             close_min = await self._market_close_min_today()
+        # EVENT-DAY STAND-ASIDE: FOMC decision days lose systematically
+        # (−$2,082/day mean, 12 of the worst-20 days) and the danger is
+        # invisible in the morning tape — the 14:00 statement hits positions
+        # entered 11:00-14:00. Known a year ahead; we simply don't play.
+        event_day = (settings.IC_SKIP_EVENT_DAYS
+                     and date_str in {d.strip() for d in
+                                      settings.IC_EVENT_DATES.split(",") if d.strip()})
         for slot, slot_min in _slot_minutes():
             if not (slot_min <= bar_minute <= slot_min + 25):
                 continue
             slot_key = f"{date_str}:{slot}"
+            if event_day:
+                if not dedup.get(f"ic_slot_built_{slot_key}"):
+                    dedup.set(f"ic_slot_built_{slot_key}", True)
+                    self._record_slot(date_str, slot, "skip_fomc",
+                                      "FOMC decision day — stand aside (DECISION.md A2)")
+                    if not dedup.already_done("fomc_skip_pinged", date_str):
+                        dedup.mark_done("fomc_skip_pinged", date_str)
+                        self._tg(tg.ping_eod_iron_condor,
+                                 "🦅 MEIC standing aside today — FOMC decision day. "
+                                 "34-event backtest: mean −$2,082/day, 12 of the 20 "
+                                 "worst days ever. The one bomb with a schedule.")
+                continue
             # PER-SLOT dedup keys. The old single-value key ("ic_slot_built" =
             # latest slot) forgot earlier slots the moment a later one marked —
             # same disease as the EOD-summary dedup bug (see dedup.eod_done).

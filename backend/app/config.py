@@ -298,6 +298,17 @@ class Settings:
     # One-sided entries only make sense on the NBBO plane (honest per-side
     # credits). Default OFF until the one-sided stop/close paths are validated.
     IC_ONE_SIDED_ENABLED: bool = _b("IC_ONE_SIDED_ENABLED", False)
+    # EVENT-DAY STAND-ASIDE (2026-07-02 sweep): FOMC decision days averaged
+    # −$2,082/day across 34 events (12 of the worst-20 days); the 14:00
+    # announcement detonates gamma on condors entered 11:00-14:00, and the
+    # morning tape looks NORMAL (no tape filter can see it — the calendar can).
+    # Skipping them raised mean/day +8.2% AND cut the worst day 27%. Dates are
+    # the Fed's published schedule (federalreserve.gov, verified 2026-07-02) —
+    # refresh annually.
+    IC_SKIP_EVENT_DAYS: bool = _b("IC_SKIP_EVENT_DAYS", True)
+    IC_EVENT_DATES: str = os.getenv(
+        "IC_EVENT_DATES",
+        "2026-07-29,2026-09-16,2026-10-28,2026-12-09")
     # Claude SHADOW analyst — per-slot market reads, LOGGED ONLY (never gates a
     # trade; see claude_analyst.py contract + DECISION.md). CLI transport uses
     # the authenticated Claude Code binary; absolute path because launchd's PATH

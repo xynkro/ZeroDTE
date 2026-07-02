@@ -92,6 +92,23 @@ buffer 1.50, guard on. No further stop tuning inside the series — R4's
 stop-dysfunction gate now reads against the 25-55% *side*-stop band with the
 new buffer's expected ~23% stop-rate as the healthy center.
 
+## Amendment A2 — 2026-07-02, BEFORE clean night #1 counted
+**FOMC decision-day stand-aside** (`IC_SKIP_EVENT_DAYS=true`). Caspar asked
+"how do we predict a worse day so we don't even trade?" — answered empirically:
+the worst-20 days' MORNING observables are indistinguishable from normal days
+(gap/range/vol ratios 0.9-1.1× — no tape filter can see it; the old fan-out's
+"unpredictable at entry" was right about the tape and wrong about the
+calendar). But **12 of the worst 20 are FOMC decision days**: the 14:00
+statement detonates gamma on condors entered 11:00-14:00. 34-event economics:
+mean **−$2,082/day, −$70,787 total**. Skipping them: mean/day +8.2%, worst day
+−27%, total +$71k, t 25.1→27.5 — dominant on every metric, causal mechanism,
+robust to outlier removal. Dates = the Fed's published schedule (verified at
+federalreserve.gov 2026-07-02; refresh each January). Tape filters (range>0.85%)
+re-tested and re-rejected (−16% mean, worst unchanged). Half-size re-rejected
+(strictly dominated by full skip). Residual non-FOMC disasters (earnings
+cascades, PCE days) = candidates for the Opus shadow-read gate at N≥20, NOT
+for pre-series adoption.
+
 ## Standing constraints (unchanged, non-negotiable)
 Paper only · never touch CasaaFinance positions · `.env` never committed ·
 improve-loop gates not bypassed · WaveZero runs its own account/backend.

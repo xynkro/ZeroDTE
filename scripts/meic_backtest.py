@@ -39,7 +39,7 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
              stop_buffer: float = 1.0, take_profit_pct: float | None = None,
              time_stop_min: int | None = None,
              credit_richness: float = 1.0, stop_anchor: str = "real",
-             min_side_credit: float = 0.0):
+             min_side_credit: float = 0.0, stop_mode: str = "total"):
     """stop_buffer: stop when buy-back >= buffer×credit (1.0=breakeven, ∞=no stop).
     take_profit_pct: close early when buy-back <= (1-tp/100)×credit (None=no TP).
     time_stop_min: close N minutes after entry at the current mark (None=ride to expiry).
@@ -120,21 +120,32 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             # Excursion over the realized holding window; entry mark ≈ real_credit
             # (unrealized P&L ≈ 0). Intraday buy-backs are CBOE-rich (×R); expiry is not.
             min_bb = max_bb = real_credit
+            # stop_mode="side" (Chambless canon): each SIDE stops alone when ITS
+            # spread value ≥ threshold (the TOTAL credit received × buffer); the
+            # safe side keeps riding to worthless expiry. stop_mode="total"
+            # (live rule pre-2026-07-02): whole position closes when combined
+            # buyback ≥ threshold — tighter, forfeits safe-side decay.
+            call_open, put_open = use_call, use_put
+            realized_cost = 0.0
+            side_stops = 0
             for b in sb:
                 if b.time <= eb.time:
                     continue
                 et = b.time.astimezone(ET) if b.time.tzinfo else b.time
                 bm = et.hour * 60 + et.minute
                 if bm >= 16 * 60:
-                    iv_c = bs.spread_value("sell_call_cs", b.close, cs, cl, 0.0) if use_call else 0.0
-                    iv_p = bs.spread_value("sell_put_cs", b.close, ps, pl, 0.0) if use_put else 0.0
-                    exit_val = (iv_c + iv_p) * MULT     # intrinsic — no richness at settlement
-                    outcome = "expiry"
+                    iv_c = bs.spread_value("sell_call_cs", b.close, cs, cl, 0.0) if call_open else 0.0
+                    iv_p = bs.spread_value("sell_put_cs", b.close, ps, pl, 0.0) if put_open else 0.0
+                    exit_val = realized_cost + (iv_c + iv_p) * MULT   # intrinsic — no richness at settlement
+                    outcome = "stop" if side_stops else "expiry"
                     break
                 pr = _periods_remaining(b.time)
                 tv = bs.total_vol_to_expiry(r5, pr, PM)
-                bb = ((bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK) if use_call else 0.0)
-                      + (bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK) if use_put else 0.0)) * MULT * R
+                call_bb = (bs.spread_value("sell_call_cs", b.close, cs, cl, tv * CALL_SK)
+                           * MULT * R) if call_open else 0.0
+                put_bb = (bs.spread_value("sell_put_cs", b.close, ps, pl, tv * PUT_SK)
+                          * MULT * R) if put_open else 0.0
+                bb = realized_cost + call_bb + put_bb
                 min_bb = min(min_bb, bb)
                 max_bb = max(max_bb, bb)
                 # exit priority each bar: take-profit (winner) → stop (loser) → time exit
@@ -142,7 +153,20 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                     exit_val = bb
                     outcome = "tp"
                     break
-                if bb >= stop_thresh:  # stop at threshold (anchor-dependent)
+                if stop_mode == "side":
+                    if call_open and call_bb >= stop_thresh:
+                        realized_cost += call_bb
+                        call_open = False
+                        side_stops += 1
+                    if put_open and put_bb >= stop_thresh:
+                        realized_cost += put_bb
+                        put_open = False
+                        side_stops += 1
+                    if not call_open and not put_open:
+                        exit_val = realized_cost
+                        outcome = "stop"
+                        break
+                elif bb >= stop_thresh:  # total mode: stop whole position
                     exit_val = bb
                     outcome = "stop"
                     break
@@ -157,9 +181,10 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
                 # fake-won EVERY held condor (worst day went POSITIVE, 100% green),
                 # grossly inflating wide-/no-stop configs in the buffer sweep.
                 lc = sb[-1].close
-                exit_val = ((bs.spread_value("sell_call_cs", lc, cs, cl, 0.0) if use_call else 0.0)
-                            + (bs.spread_value("sell_put_cs", lc, ps, pl, 0.0) if use_put else 0.0)) * MULT
-                outcome = "expiry"
+                exit_val = realized_cost + (
+                    (bs.spread_value("sell_call_cs", lc, cs, cl, 0.0) if call_open else 0.0)
+                    + (bs.spread_value("sell_put_cs", lc, ps, pl, 0.0) if put_open else 0.0)) * MULT
+                outcome = "stop" if side_stops else "expiry"
             # Fold the realized exit into the excursion window so a same-bar
             # stop/expiry that never traversed an intraday repricing still scores.
             min_bb = min(min_bb, exit_val)
@@ -168,7 +193,7 @@ def run_meic(slots: list[str], cost_rt: float = 50.0, data_window: str = "max",
             mae = real_credit - max_bb       # deepest unrealized drawdown ($, ≤0)
             pnl = real_credit - exit_val - cost_rt
             entries.append({"date": str(date), "slot": slot, "credit": real_credit,
-                            "outcome": outcome, "pnl": pnl,
+                            "outcome": outcome, "pnl": pnl, "side_stops": side_stops,
                             "gross": real_credit - exit_val, "mfe": mfe, "mae": mae})
     return entries
 

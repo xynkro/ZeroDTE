@@ -77,6 +77,21 @@ Gateway was down on eval day; recommendation from documented properties:
   guard needed, and §1256 tax treatment on real money. IBKR = data feed ONLY
   (hard rule: never an order path from this codebase).
 
+## Amendment A1 — 2026-07-02, BEFORE clean night #1 counted (shakedown day)
+**IC_STOP_BUFFER 1.05 → 1.50** ("disaster stop, not breakeven stop"). Caspar's
+challenge ("the key is expiring WORTHLESS — why so trigger-happy?") was tested,
+not vibes-adopted: 6-config race + 3-point richness sensitivity on the honest
+engine (see .env note + scripts/meic_backtest stop_mode). 1.50× dominates 1.05×
+at every R (+23-25% mean/day, expiry 57%→77%, t intact); per-side Chambless
+REJECTED (worse tails, no edge); no-stop REJECTED (edge is an R-artifact —
+t collapses 28→14 at R=1.0 — and the model can't price gap days; wings + the
+assignment guard remain the true catastrophe caps). Because this landed on the
+shakedown day, the clean-night counter starts at ZERO from Mon 2026-07-06 with
+the config FROZEN: NBBO plane, real anchor, $100 side floor, one-sided on,
+buffer 1.50, guard on. No further stop tuning inside the series — R4's
+stop-dysfunction gate now reads against the 25-55% *side*-stop band with the
+new buffer's expected ~23% stop-rate as the healthy center.
+
 ## Standing constraints (unchanged, non-negotiable)
 Paper only · never touch CasaaFinance positions · `.env` never committed ·
 improve-loop gates not bypassed · WaveZero runs its own account/backend.

@@ -188,7 +188,14 @@ class MacroFeed:
                     r.raise_for_status()
                     raw = r.json()
                 except Exception as e:  # noqa: BLE001
-                    log.warning("calendar fetch %s failed: %s", url.rsplit("/", 1)[-1], e)
+                    # A persistent upstream 404 (ff_calendar_nextweek.json was retired
+                    # upstream, verified 2026-06-30) is expected — log at DEBUG so it
+                    # doesn't spam stderr every 15 min and bury real failures. Anything
+                    # else (network, 5xx) stays a WARNING. thisweek alone still covers
+                    # the blackout gate's intraday needs.
+                    is_404 = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404
+                    (log.debug if is_404 else log.warning)(
+                        "calendar fetch %s failed: %s", url.rsplit("/", 1)[-1], e)
                     continue
                 ok_any = True
                 for e in (raw or []):

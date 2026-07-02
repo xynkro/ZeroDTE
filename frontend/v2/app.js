@@ -603,6 +603,24 @@ function WaveTodayTrades({ trades }) {
   </${Card}>`;
 }
 
+// Band strategy status — armed state + today's decision (why it did/didn't fire).
+// Live-only (reads /api/status); renders nothing on the static snapshot.
+function BandStatusCard() {
+  const load = useCallback(() => fetch(`${API}/api/status`).then(r => r.json()).then(s => s.band || null), []);
+  const res = useResource(load, 30000);
+  if (STATIC || res.status !== 'ready' || !res.data || !res.data.enabled) return null;
+  const b = res.data;
+  const last = b.last;
+  let line;
+  if (!b.armed) line = '⚠️ enabled but NOT armed (median seed failed — check logs)';
+  else if (!last) line = `\u{1F3AF} armed · waiting for the ~10:00 ET window (fires ~40% of days)`;
+  else if (last.decision === 'opened')
+    line = `✅ ${last.date}: OPENED ${last.side === 'sell_put_cs' ? 'PUT' : 'CALL'} spread ` +
+           `${last.short}/${last.long} · ~$${last.credit} credit · cushion ${last.cushion_pct}%`;
+  else line = `\u{1F6AB} ${last.date}: sat out — ${last.reason}`;
+  return html`<${Card} title="Band strategy (validated config)"><div style="font-size:.92em">${line}</div></${Card}>`;
+}
+
 function WaveView() {
   const res = useResource(loadWave, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || (res.data?.history?.summary?.n)) : null);
@@ -612,6 +630,7 @@ function WaveView() {
   return html`
     <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
+      <div data-stagger><${BandStatusCard} /></div>
       <div data-stagger><${WaveTrackRecord} h=${d.history} /></div>
       <div data-stagger><${WaveTodayTrades} trades=${d.trades} /></div>
       <div data-stagger><${DebriefCard} d=${d.debrief} /></div>

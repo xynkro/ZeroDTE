@@ -113,6 +113,7 @@ class Orchestrator:
         # calibrated from day one (live expanding median == validated backtest's).
         self._band_medians = None
         self._band_opened_date: str | None = None
+        self._band_last: dict | None = None   # last band decision (dashboard visibility)
         if settings.WAVE_BAND_STRATEGY_ENABLED:
             try:
                 from .wave_band_live import seed_running_medians
@@ -165,6 +166,7 @@ class Orchestrator:
             self._today_date = data.get("today_date")
             self._today_evaluated = int(data.get("today_evaluated") or 0)
             self._today_gated = dict(data.get("today_gated") or {})
+            self._band_opened_date = data.get("band_opened_date")
             self.state.last_signals = self._signal_history[-20:]
             self.state.open_positions = [t for t in self.paper_trades if not t.closed]
             log.info(
@@ -199,6 +201,9 @@ class Orchestrator:
                 "today_date": self._today_date,
                 "today_evaluated": self._today_evaluated,
                 "today_gated": dict(self._today_gated),
+                # Band strategy: one-attempt-per-day marker MUST survive restarts,
+                # or a mid-session bounce could double-enter the same day.
+                "band_opened_date": self._band_opened_date,
             }
             state_store.save_async(snapshot)
         except Exception as e:
@@ -656,8 +661,13 @@ class Orchestrator:
             self._band_medians.record(r5, width)
             self._band_opened_date = date
             if d is None:
-                log.info("Band: no trade %s — gated (vol-released/cushion/floor). "
-                         "r5=%.5f r5_median=%s", date, r5, self._band_medians.r5_median())
+                rm = self._band_medians.r5_median()
+                reason = ("vol not released (quiet/coiling day)" if rm and r5 <= rm
+                          else "cushion/credit-floor unmet")
+                self._band_last = {"date": date, "decision": "gated", "reason": reason,
+                                   "r5": round(r5, 6), "r5_median": round(rm, 6) if rm else None}
+                log.info("Band: no trade %s — gated (%s). r5=%.5f r5_median=%s",
+                         date, reason, r5, rm)
                 return
 
             S0 = buf[-1]
@@ -682,6 +692,11 @@ class Orchestrator:
                      "cushion=%.2f%% choppy=%s size=%dct (%s)", trade_no, d.side,
                      d.short_strike, d.long_strike, d.est_credit, d.pct_otm, d.choppy,
                      pt.contracts, sizing_note)
+            self._band_last = {"date": date, "decision": "opened", "side": d.side,
+                               "short": d.short_strike, "long": d.long_strike,
+                               "credit": round(d.est_credit, 0),
+                               "cushion_pct": round(d.pct_otm, 2), "choppy": d.choppy,
+                               "r5": round(r5, 6)}
             if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:
                 pt.broker_status = "pending"
                 self._broker_entry_tasks[pt.id] = asyncio.create_task(
@@ -1269,6 +1284,13 @@ class Orchestrator:
             if tg.is_muted():
                 dedup.eod_mark(date_str)
                 log.info("EOD summary suppressed (muted) for %s — not retrying", date_str)
+                return
+            # No bot token == intentionally Telegram-silent instance (WaveZero runs
+            # this way). Same rule as muted: mark done + return, or the safety loop
+            # retries every 60s and the raise-spam buries real errors in stderr.
+            if not settings.TELEGRAM_BOT_TOKEN:
+                dedup.eod_mark(date_str)
+                log.info("EOD summary skipped (no bot token) for %s — not retrying", date_str)
                 return
             # ONE consolidated EOD message — plain per-book broker-truth result on top,
             # MEIC + Wave detail below. (Was two separate sends to two topics, which
@@ -3083,6 +3105,31 @@ class Orchestrator:
         if not pt.alpaca_order_id:
             return  # entry placed no live order — nothing to reverse
         try:
+            # ── Late-session guard (exit hardening, 2026-06-30) ──
+            # After ~15:55 ET a market mleg close is a coin-flip: it may land after the
+            # 16:00 close and get CANCELED (the Jun-26 failure: 3 canceled retries on an
+            # already-worthless leg → close_error + phantom P&L). If the spread is fully
+            # OTM this late, closing buys nothing — the legs expire worthless and we KEEP
+            # the credit. Book that reality instead of thrashing orders.
+            now_et = datetime.now(ET)
+            late = (now_et.hour * 60 + now_et.minute) >= (15 * 60 + 55)
+            spot = pt.underlying_at_close or 0.0
+            otm_margin = pt.short_strike * 0.0005   # 5bp buffer against pin ambiguity
+            fully_otm = spot > 0 and (
+                (pt.side == "sell_put_cs" and spot > pt.short_strike + otm_margin) or
+                (pt.side == "sell_call_cs" and spot < pt.short_strike - otm_margin))
+            if late and fully_otm:
+                pt.broker_status = "expired_otm"
+                if pt.broker_realized_credit is not None:
+                    # Real P&L = keep the full entry credit (legs expire worthless).
+                    pt.broker_realized_pnl = pt.broker_realized_credit
+                log.warning("Exit trade #%d: late (%s ET) + fully OTM (spot %.1f vs short "
+                            "%.1f) → NO close order; booking expired_otm, real pnl=%s",
+                            pt.trade_no, now_et.strftime("%H:%M"), spot, pt.short_strike,
+                            pt.broker_realized_pnl)
+                self._persist_state()
+                return
+
             # Try cancel first (if order still pending)
             cancelled = await self.alpaca_trader.cancel_order(pt.alpaca_order_id)
             if cancelled:
@@ -3096,16 +3143,27 @@ class Orchestrator:
                     spx_short_strike=pt.short_strike,
                     spx_credit_dollars=pt.estimated_credit,
                 )
-                today_str = datetime.now(ET).strftime("%Y-%m-%d")
-                result = await self.alpaca_trader.close_credit_spread(
-                    underlying="SPY",
-                    expiry=today_str,
-                    side=params["side_type"],
-                    short_strike=params["short_strike"],
-                    long_strike=params["long_strike"],
-                    qty=pt.contracts,
-                    tag=f"wave-{pt.trade_no}",
-                )
+                today_str = now_et.strftime("%Y-%m-%d")
+
+                async def _try_close():
+                    return await self.alpaca_trader.close_credit_spread(
+                        underlying="SPY",
+                        expiry=today_str,
+                        side=params["side_type"],
+                        short_strike=params["short_strike"],
+                        long_strike=params["long_strike"],
+                        qty=pt.contracts,
+                        tag=f"wave-{pt.trade_no}",
+                    )
+
+                result = await _try_close()
+                if (not result or result.get("shadow")) and not late:
+                    # ONE bounded retry (transient reject/HTTP) — never past 15:55.
+                    log.warning("Exit trade #%d: close attempt failed — one retry in 15s",
+                                pt.trade_no)
+                    await asyncio.sleep(15)
+                    if (datetime.now(ET).hour * 60 + datetime.now(ET).minute) < (15 * 60 + 55):
+                        result = await _try_close()
                 if result and not result.get("shadow"):
                     pt.broker_status = "closed"
                     log.info("Alpaca paper exit (reverse): trade #%d → order %s",
@@ -3113,6 +3171,11 @@ class Orchestrator:
                     asyncio.create_task(self._capture_fill(pt, result.get("id"), "exit"))
                 else:
                     pt.broker_status = "close_error"
+                    # LOUD: a close_error means the broker position may be UNMANAGED.
+                    log.error("🚨 UNMANAGED POSITION RISK: trade #%d close FAILED "
+                              "(%s SPY %.0f/%.0f x%d) — verify the broker position.",
+                              pt.trade_no, pt.side, params["short_strike"],
+                              params["long_strike"], pt.contracts)
 
             self._persist_state()
         except Exception as e:
@@ -3140,6 +3203,40 @@ class Orchestrator:
                 pt.broker_realized_pnl = round(base + cf, 2)
             log.info("fill-read %s: trade #%s real cashflow $%.2f | model credit $%.0f model pnl %s",
                      kind, pt.trade_no, cf, pt.estimated_credit or 0, pt.pnl)
+            # ── Fill-quality telemetry (trial diagnostic) ── capture the CBOE delayed
+            # quoted MID for the same SPY spread. model-vs-mid = SIGNAL gap; mid-vs-fill
+            # = EXECUTION gap. Best-effort; the ~15min CBOE delay makes this an
+            # approximate mid — good enough at trial granularity.
+            try:
+                from .gex import fetch_chain, chain_mids_for_expiry
+                from .directional_spread_manager import spy_strike_params
+                params = spy_strike_params(side=pt.side, spx_short_strike=pt.short_strike,
+                                           spx_credit_dollars=pt.estimated_credit)
+                chain = await fetch_chain("SPY")
+                if chain:
+                    exp = datetime.now(ET).strftime("%y%m%d")
+                    mids = chain_mids_for_expiry(chain, exp)
+                    rows = mids["calls"] if pt.side == "sell_call_cs" else mids["puts"]
+
+                    def _mid(target):
+                        for r in rows:
+                            if abs((r.get("strike") or 0.0) - target) < 0.01:
+                                return r.get("mid")
+                        return None
+
+                    ms, ml = _mid(params["short_strike"]), _mid(params["long_strike"])
+                    if ms is not None and ml is not None:
+                        spread_mid = round((ms - ml) * 100, 2)   # $/contract
+                        if kind == "entry":
+                            pt.entry_mid_quote = spread_mid
+                        else:
+                            pt.exit_mid_quote = spread_mid
+                        log.info("mid-quote %s: trade #%s SPY %.0f/%.0f mid $%.2f/ct "
+                                 "(real fill $%.2f total, %dct)", kind, pt.trade_no,
+                                 params["short_strike"], params["long_strike"],
+                                 spread_mid, cf, pt.contracts)
+            except Exception as e:  # noqa: BLE001 — telemetry must never break fills
+                log.debug("mid-quote capture failed (%s): %s", kind, e)
             self._persist_state()
         except Exception as e:  # noqa: BLE001
             log.warning("fill-read %s failed for trade #%s: %s", kind, pt.trade_no, e)

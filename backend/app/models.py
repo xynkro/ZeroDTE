@@ -137,6 +137,11 @@ class PaperTrade(BaseModel):
     # existing `pnl` field remains the MODEL pnl. (quant-audit: critical flaw #2)
     broker_realized_credit: float | None = None  # net entry credit from fills
     broker_realized_pnl: float | None = None      # realized $ from entry+exit fills
+    # Fill-quality telemetry (25-trade-trial diagnostic): CBOE delayed quoted MID for
+    # the SPY spread at entry/exit, $/contract. Decomposes any live-vs-model gap into
+    # SIGNAL (model vs mid) vs EXECUTION (mid vs fill).
+    entry_mid_quote: float | None = None
+    exit_mid_quote: float | None = None
     # Black-Scholes pricing state (directional_spread, DIRECTIONAL_PNL_MODEL=bs).
     # Per-5m realized vol fixed at entry; check_exit reprices the spread each bar
     # with shrinking time-to-expiry instead of the underlying-move proxy.

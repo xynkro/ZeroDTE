@@ -207,6 +207,13 @@ async def status():
         "subscribers": len(orch.subscribers),
         "trading_enabled": settings.TRADING_ENABLED,
         "shadow_mode": settings.SHADOW_MODE,
+        # WaveZero band strategy — armed state + today's decision (why it did/didn't fire)
+        "band": {
+            "enabled": settings.WAVE_BAND_STRATEGY_ENABLED,
+            "armed": getattr(orch, "_band_medians", None) is not None,
+            "opened_date": getattr(orch, "_band_opened_date", None),
+            "last": getattr(orch, "_band_last", None),
+        },
     }
 
 

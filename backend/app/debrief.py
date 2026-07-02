@@ -302,6 +302,49 @@ def wave_history(log_path: str) -> dict:
     }
 
 
+TRIAL_START = "2026-07-01"          # band-config trial: first armed session
+TRIAL_N = 25                        # pre-registered sample size (docs/TRIAL_GATES.md)
+TRIAL_ACCOUNT = 10_000.0            # WaveZero paper account
+TRIAL_MAX_DD_PCT = 15.0             # hard halt: real drawdown > 15% of account
+
+
+def trial_status(trades) -> dict:
+    """25-trade trial scoreboard vs the PRE-REGISTERED gates (docs/TRIAL_GATES.md).
+    Counts band-era trades (fired >= TRIAL_START) with REAL fill P&L only — the
+    model never grades itself here. Returns {} until the first trial trade exists."""
+    ds = [t for t in trades
+          if getattr(t, "strategy", None) == "directional_spread"
+          and t.closed and (t.fired_at or "") >= TRIAL_START]
+    real = [t for t in ds if t.broker_realized_pnl is not None]
+    if not ds:
+        return {}
+    real_pnls = [t.broker_realized_pnl for t in real]
+    model_pnls = [t.pnl for t in real if t.pnl is not None]
+    real_sum = round(sum(real_pnls), 2) if real_pnls else 0.0
+    real_mean = round(real_sum / len(real_pnls), 2) if real_pnls else None
+    capture = (round(100.0 * real_sum / sum(model_pnls), 0)
+               if model_pnls and sum(model_pnls) > 0 else None)
+    # running drawdown on REAL equity (trade order = fired order)
+    eq = peak = dd = 0.0
+    for t in sorted(real, key=lambda x: x.fired_at or ""):
+        eq += t.broker_realized_pnl or 0.0
+        peak = max(peak, eq)
+        dd = max(dd, peak - eq)
+    dd_pct = round(100.0 * dd / TRIAL_ACCOUNT, 1)
+    # gate verdict-so-far (pre-registered; do NOT move these)
+    if dd_pct > TRIAL_MAX_DD_PCT:
+        verdict = f"🛑 HALT — drawdown {dd_pct}% > {TRIAL_MAX_DD_PCT}% gate"
+    elif len(real) >= TRIAL_N:
+        verdict = ("✅ TRIAL COMPLETE — " +
+                   ("RETIRE (real mean ≤ $0)" if (real_mean or 0) <= 0 else
+                    f"judge vs gates: mean ${real_mean}/trade, capture {capture}%"))
+    else:
+        verdict = f"accruing {len(real)}/{TRIAL_N} real-fill trades"
+    return {"n_closed": len(ds), "n_real": len(real), "real_sum": real_sum,
+            "real_mean": real_mean, "capture_pct": capture, "dd_pct": dd_pct,
+            "verdict": verdict}
+
+
 def build_debrief(trades, date: str | None = None) -> dict:
     """trades: iterable of PaperTrade. Returns a structured debrief for one
     session (the latest closed-trade date by default)."""
@@ -321,6 +364,7 @@ def build_debrief(trades, date: str | None = None) -> dict:
             "book_split": _book_split(ds),
             "broker_realized": _broker_check(ds),
             "confidence": _confidence_block(ds),
+            "trial": trial_status(trades),
         }
 
     date = date or days[-1]
@@ -415,6 +459,8 @@ def build_debrief(trades, date: str | None = None) -> dict:
         # Posterior win-rate floor + realized tail (Expected Shortfall) — reads the
         # lower bound and the tail, not the headline rate. Pure measurement.
         "confidence": _confidence_block(ds),
+        # 25-trade band-config trial vs the PRE-REGISTERED gates (docs/TRIAL_GATES.md).
+        "trial": trial_status(trades),
     }
 
 
@@ -707,6 +753,12 @@ def format_debrief_telegram(d: dict) -> str:
            "model_estimate": "MODEL est — not real fills"}.get(basis, "")
     lines.append(f"session: {len(d['trades'])} trade(s) · {d['wins']}W/{d['losses']}L · {sp_str}"
                  + (f" ({tag})" if tag else ""))
+    # 25-trade trial scoreboard — nightly accountability vs the pre-registered gates.
+    tr = d.get("trial") or {}
+    if tr:
+        cap = f" · capture {tr['capture_pct']:.0f}%" if tr.get("capture_pct") is not None else ""
+        mean = f" · real ${tr['real_mean']:+.0f}/trade" if tr.get("real_mean") is not None else ""
+        lines.append(f"🧪 TRIAL: {tr['verdict']}{mean}{cap} · dd {tr['dd_pct']}%")
     if d.get("close_errors"):
         lines.append(f"🛑 {d['close_errors']} trade(s) FAILED to close on the broker "
                      f"(close_error) — their P&L is unverified; the broker position rode on")

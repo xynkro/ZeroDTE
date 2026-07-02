@@ -214,6 +214,9 @@ class Settings:
     # set, use the authenticated Claude Code CLI headlessly — rides the existing
     # subscription, zero manual setup. Key present → direct API (temperature 0).
     CLAUDE_SCAN_BIN: str = os.getenv("CLAUDE_SCAN_BIN", "/Users/xynkro/.local/bin/claude")
+    # Send-only Telegram (WaveZero): sends share MEIC's bot token safely; only the
+    # getUpdates POLLER conflicts (409) — so it's the poller that gets the flag.
+    TELEGRAM_POLLER_ENABLED: bool = _b("TELEGRAM_POLLER_ENABLED", True)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

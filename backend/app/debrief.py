@@ -268,6 +268,9 @@ def wave_history(log_path: str) -> dict:
                 except ValueError:
                     continue
                 d = r.get("date", "")
+                if d < TRIAL_START:
+                    continue   # fresh baseline (risk-owner reset Fri Jul-3) — pre-trial
+                               # shakedown nights stay in the raw log, not the display
                 if (r.get("wave_n") or 0) > 0 and r.get("wave_pnl") is not None:
                     by_date[d] = r
     except OSError:
@@ -302,7 +305,10 @@ def wave_history(log_path: str) -> dict:
     }
 
 
-TRIAL_START = "2026-07-01"          # band-config trial: first armed session
+TRIAL_START = "2026-07-03"          # FRESH BASELINE (risk-owner reset, Fri Jul-3):
+# trades #1-2 (Jul-1/2, zero-credit era, net −$10 real) = pre-trial shakedown,
+# excluded. The 25-trade clock counts only trades fired >= this date, i.e. the
+# full config: real-credit floor $10/ct + $1,000/unit sizing + hardened exits.
 TRIAL_N = 25                        # pre-registered sample size (docs/TRIAL_GATES.md)
 TRIAL_ACCOUNT = 10_000.0            # WaveZero paper account
 TRIAL_MAX_DD_PCT = 15.0             # hard halt: real drawdown > 15% of account

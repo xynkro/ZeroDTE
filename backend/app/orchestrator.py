@@ -221,9 +221,15 @@ class Orchestrator:
     async def start(self):
         log.info("Orchestrator starting...")
         # Spin up Telegram bot command poller (handles /status, /shutup, etc.)
-        from .telegram_bot import TelegramBotPoller
-        self.bot_poller = TelegramBotPoller(self)
-        await self.bot_poller.start()
+        # SEND-ONLY instances (WaveZero) disable the poller: two pollers on one bot
+        # token 409-war over getUpdates, but plain sends never conflict — so WaveZero
+        # shares MEICZero's bot for outbound EODs while MEIC keeps the interactive bot.
+        if settings.TELEGRAM_POLLER_ENABLED:
+            from .telegram_bot import TelegramBotPoller
+            self.bot_poller = TelegramBotPoller(self)
+            await self.bot_poller.start()
+        else:
+            log.info("Telegram poller DISABLED (send-only instance)")
         await self.macro.start()  # async news + calendar polling
         # 60s safety-net for EOD summary — fires if past 16:30 ET and no
         # bar-driven trigger arrived
@@ -1426,6 +1432,10 @@ class Orchestrator:
             # read as duplicate/contradictory; the user asked for a single message.)
             _url = settings.DASHBOARD_PUBLIC_URL
             _eod = "\n\n".join(p for p in (_book_hdr, ic_msg, wave_msg) if p)
+            # Instance identity — WaveZero shares MEIC's bot for sends; the header
+            # keeps the two books' EODs unmistakable in the same chat.
+            if not settings.MEIC_ENABLED:
+                _eod = f"🌊 WaveZero · $10K paper · 25-trade trial\n\n{_eod}"
             if _url:
                 _eod = f"{_eod}\n📱 {_url}"
             eod_ok = tg.ping_eod_iron_condor(_eod)

@@ -45,6 +45,12 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-07-02 (later) — floor $8 → $10/ct (risk-owner rule).** Caspar: minimum
+  10% of width when risking $1,000/SPX-equivalent. Backtest split at that line:
+  the sub-10% trades were 55 tiny never-losing fillers (+$1,246 total, worst +$8)
+  — and live reality pays ~$0 for that class anyway. Cost of compliance ≈ nothing
+  validated; benefit = auditable round rule set by the risk owner. Still BEFORE
+  any trade ran under a floor.
 - **2026-07-02 — real-credit floor $3 → $8/ct** (before any trade ran under a floor).
   Trades #1/#2 exposed that reality pays ~$0–1/ct for spreads the flat-IV model
   prices at ~$20/ct. First floor ($3/ct) naively scaled the backtest's $30-SPX

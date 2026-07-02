@@ -193,11 +193,13 @@ class Settings:
     # floor was the never-binding MINIMUM — its OPERATING credits were median $307
     # SPX (31% of width!), p25 $167, p10 $78. A $3/ct floor = risking $97 to make $3
     # (97% breakeven WR) — trades the validated distribution never contained. Floor
-    # = backtest p10 ≈ $8/ct: only take trades the validated economics recognize.
-    # If reality NEVER pays p10 credit at cushion-legal strikes, the trial starves
-    # fast → that IS the verdict (model credit world = fantasy → retire early).
+    # RISK-OWNER RULE (Caspar, 2026-07-02): minimum 10% of width — $10/ct on the
+    # $100-wide SPY spread ($100 per $1,000 SPX-equivalent). Backtest check: trades
+    # below this line were tiny never-losing filler (+$1,246 of +$16,223; worst +$8)
+    # that reality pays ~$0 for anyway (trades #1/#2). If reality never pays 10% at
+    # cushion-legal strikes, the trial starves fast → that IS the early verdict.
     # 0 disables (model-only floor). CBOE unquotable at entry → SKIP (fail-closed).
-    WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 8.0)
+    WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 10.0)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

@@ -94,6 +94,33 @@ def strike_for_put_delta(S: float, tv: float, target_delta: float) -> float:
     return 0.5 * (lo + hi)
 
 
+def implied_tv(price: float, S: float, K: float, is_call: bool) -> float | None:
+    """Invert BS for total-vol-to-expiry from an observed option price.
+
+    Per-strike inversion (each strike carries its OWN tv) keeps deltas
+    smile-consistent — a flat ATM vol under-prices the put tail and places
+    'target-delta' strikes too close on skewed days. Monotone in tv → bisection.
+    Returns None when the price is at/below intrinsic or outside the bracket
+    (stale/crossed quote) so callers can drop the strike instead of trusting it.
+    """
+    if price is None or price <= 0.0 or S <= 0.0 or K <= 0.0:
+        return None
+    intrinsic = max(0.0, S - K) if is_call else max(0.0, K - S)
+    if price <= intrinsic + 1e-6:
+        return None
+    fn = call_price if is_call else put_price
+    lo, hi = 1e-6, 0.5   # 0DTE tv rarely exceeds ~0.10 even on FOMC; 0.5 is generous
+    if fn(S, K, hi) < price:
+        return None      # price above bracket → not a sane same-day quote
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if fn(S, K, mid) < price:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def spread_value(side: str, S: float, short_K: float, long_K: float, tv: float) -> float:
     """Per-share value (cost to close) of the SHORT vertical credit spread."""
     if side == "sell_call_cs":           # bear call: short short_K, long long_K (>short_K)

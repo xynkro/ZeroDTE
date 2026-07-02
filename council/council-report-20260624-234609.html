@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Council — IBKR Migration & Scaling ZeroDTE</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --line:#2b333d; --ink:#e6edf3; --mut:#8b949e;
+    --accent:#4493f8; --green:#3fb950; --amber:#d29922; --red:#f85149; --violet:#bc8cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:32px 18px;max-width:860px;margin:0 auto}
+  h1{font-size:23px;margin:0 0 4px;letter-spacing:-.01em}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);
+    margin:30px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  .sub{color:var(--mut);font-size:13px;margin:0 0 22px}
+  .q{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;padding:14px 16px;font-size:14px;color:#c9d1d9}
+  .verdict{background:linear-gradient(180deg,#161b22,#12161c);border:1px solid var(--line);
+    border-radius:12px;padding:6px 20px 18px;margin-top:8px}
+  .verdict h3{font-size:15px;margin:18px 0 6px;color:var(--ink)}
+  .verdict h3 .ic{margin-right:8px}
+  .verdict p,.verdict li{font-size:14.5px;color:#d3dae2}
+  .rec{background:rgba(63,185,80,.08);border:1px solid rgba(63,185,80,.35);border-radius:10px;
+    padding:4px 18px 14px;margin-top:6px}
+  .first{background:rgba(68,147,248,.10);border:1px solid rgba(68,147,248,.4);border-radius:10px;
+    padding:14px 18px;margin-top:14px;font-size:15px}
+  .first b{color:var(--accent)}
+  /* spectrum */
+  .spectrum{display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap}
+  .pos{flex:1;min-width:340px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .pos h4{margin:0 0 8px;font-size:13px;letter-spacing:.03em}
+  .chip{display:inline-block;font-size:12px;padding:2px 9px;border-radius:20px;margin:3px 4px 3px 0;border:1px solid var(--line)}
+  .c-hold{background:rgba(63,185,80,.12);border-color:rgba(63,185,80,.4);color:#7ee787}
+  .c-go{background:rgba(188,140,255,.12);border-color:rgba(188,140,255,.4);color:#d2a8ff}
+  .meter{height:8px;border-radius:6px;background:linear-gradient(90deg,var(--green) 0 80%,var(--violet) 80% 100%);margin:8px 0 2px}
+  .meterlab{display:flex;justify-content:space-between;font-size:11px;color:var(--mut)}
+  details{background:var(--card);border:1px solid var(--line);border-radius:9px;margin:8px 0;padding:0 14px}
+  details[open]{padding-bottom:12px}
+  summary{cursor:pointer;padding:11px 0;font-weight:600;font-size:14px;list-style:none;display:flex;align-items:center;gap:9px}
+  summary::-webkit-details-marker{display:none}
+  summary .dot{width:8px;height:8px;border-radius:50%}
+  summary .tag{margin-left:auto;font-weight:500;font-size:11.5px;color:var(--mut)}
+  details p{margin:6px 0 2px;font-size:13.5px;color:#c9d1d9}
+  .foot{color:var(--mut);font-size:12px;margin-top:30px;border-top:1px solid var(--line);padding-top:12px}
+  code{background:#1f2630;padding:1px 5px;border-radius:4px;font-size:12.5px;color:#e6edf3}
+  b.warn{color:var(--amber)} b.kill{color:var(--red)}
+</style>
+</head>
+<body>
+  <h1>🏛️ LLM Council Verdict</h1>
+  <p class="sub">ZeroDTE · Alpaca → IBKR migration &amp; scaling single-digit → 3-digit/day · 2026-06-24</p>
+
+  <div class="q">
+    <b>The question:</b> (1) What criteria should gate moving the live paper book from Alpaca Paper → IBKR Paper Trade — prerequisite to scaling, or distraction? (2) How do we scale realized P&amp;L from single-digit to three-digit $/day — and is scaling even justified yet? <i>Context: real-fill P&amp;L ~breakeven at 1 contract (~9 noisy condor nights); dashboards were lying until a broker-truth ledger was built this week; PAPER ONLY; improve-loop won't tune below 20 clean nights; documented history of a "94% WR +$5.6k" config that was actually negative.</i>
+  </div>
+
+  <h2>Council Position</h2>
+  <div class="spectrum">
+    <div class="pos">
+      <h4>🛑 HOLD — don't migrate, don't scale (4 of 5)</h4>
+      <span class="chip c-hold">Contrarian</span><span class="chip c-hold">First Principles</span>
+      <span class="chip c-hold">Outsider</span><span class="chip c-hold">Executor</span>
+      <p style="font-size:12.5px;color:var(--mut);margin:6px 0 0">No edge established yet; scaling/relocating multiplies a sign-unknown number. Bank 11 more clean nights first.</p>
+    </div>
+    <div class="pos">
+      <h4>🚀 GO — IBKR first, it's bigger (1 of 5)</h4>
+      <span class="chip c-go">Expansionist</span>
+      <p style="font-size:12.5px;color:var(--mut);margin:6px 0 0">SPX/XSP cash-settlement <i>deletes</i> the strike-collision bug class; clean attribution → regime allocation is where 3-digit days live.</p>
+    </div>
+  </div>
+  <div class="meter"></div>
+  <div class="meterlab"><span>Hold &amp; validate (80%)</span><span>Migrate now (20%)</span></div>
+
+  <h2>The Verdict</h2>
+  <div class="verdict">
+    <h3><span class="ic">🤝</span>Where the council agrees</h3>
+    <ul>
+      <li><b>Don't migrate, don't scale — not yet.</b> The edge isn't established: ~9 noise-dominated nights, real-fill P&amp;L ~breakeven, instruments only made honest this week. You can't scale or relocate an edge whose sign is still unknown.</li>
+      <li><b>Scaling a breakeven book = a bigger breakeven with bigger variance</b> — and likely <i>negative</i> once real friction scales with size (Contrarian). <b>Size is the last lever, not the first.</b></li>
+      <li><b>The 20-clean-night gate is the boundary</b>, and you're at ~9 — arguably zero, since the prior nights were measured by broken instruments. Obey your own gate.</li>
+      <li><b>Scaling P&amp;L isn't a goal — it's an output</b> that becomes legitimate the day the edge clears the gate after slippage.</li>
+    </ul>
+
+    <h3><span class="ic">⚔️</span>Where the council clashes</h3>
+    <p><b>The Expansionist dissents: IBKR first.</b> Its one genuinely strong point (peer-review confirmed): SPX/XSP is <b>cash-settled — no assignment, no pin risk — which <i>deletes</i> the strike-collision / position-merging bug class</b> that corrupted attribution this week. Not a fix; a deletion by venue. Plus 10× notional, 60/40 tax, portfolio margin.</p>
+    <p><b>The other four call IBKR procrastination</b> — buildable, ends in a green checkmark, while the real work is 11 boring nights. The reconciliation (First Principles): IBKR is <b>neither prerequisite nor procrastination — a measurement-instrument decision.</b> Migrate only if Alpaca's SPY-proxy fills systematically misrepresent real SPX slippage. The strike-collision merging is the one <i>named</i> defect that could justify it — but the cheaper fix is the cross-book strike guard, not a migration.</p>
+
+    <h3><span class="ic">🔍</span>Blind spots the peer review caught</h3>
+    <ul>
+      <li><b class="kill">Migrating mid-validation RESETS the clean-night counter.</b> New venue = new fill model, new microstructure, new bugs. "IBKR fixes the thermometer" and "fastest path to 20 nights" are in direct tension — migrating now throws away progress toward the gate.</li>
+      <li><b class="warn">Paper fills may never validate a real-money-microstructure edge.</b> At single-digit $/day, queue position and fill quality at scale are exactly what paper (Alpaca <i>or</i> IBKR) can't model. A live 1-lot may teach more per night than 20 more paper nights.</li>
+      <li><b class="warn">20 nights may be statistically underpowered</b> to detect a small 0DTE edge against daily variance. The gate may need to be larger — or the edge bigger to be detectable at all.</li>
+    </ul>
+
+    <h3><span class="ic">✅</span>The recommendation</h3>
+    <div class="rec">
+      <p><b>Stay on Alpaca. One contract. Untouched. Bank clean nights toward the gate.</b> Migrating now relocates a sign-unknown edge <i>and</i> resets your clean-night counter — the opposite of progress. Two sharpeners:</p>
+      <p><b>1. Fix the one named defect first</b> — the cross-book MEIC↔Wave strike collision that breaks attribution. That's the cheap, correct version of what the Expansionist wants (clean per-book P&amp;L) without paying for a migration or resetting the counter.</p>
+      <p><b>2. Treat IBKR/SPX as a deferred, conditional scaling substrate</b> — revisit only at/after night 20, and only if BOTH (a) the edge clears the gate after modeled slippage AND (b) Alpaca's SPY fills are shown to misrepresent real SPX slippage. Then IBKR/SPX (cash-settled, 10× notional, 60/40 tax) is the right vehicle to scale a <i>proven</i> edge — that's when 3-digit/day stops being fiction.</p>
+      <p>Hard truth (Outsider + Contrarian): the honest status isn't "edge unproven," it's <b>"no edge detected yet, on instruments that were lying until two days ago."</b> Reframe the goal from "make $300/day" to <b>"earn 20 trustworthy nights"</b> — the dollars either follow or reveal there was nothing to scale.</p>
+    </div>
+
+    <div class="first">
+      <h3 style="margin-top:4px"><span class="ic">🎯</span>The one thing to do first</h3>
+      <b>Tonight, after the close, prove the integrity floor holds for one full session: dashboard P&amp;L == broker-truth ledger == kill-switch dollars, to the cent.</b> Until that holds for a clean night, you can't count a single night toward the 20 — so it's the gate to even start counting. Then: ship the cross-book strike guard. Then: 11 untouched 1-contract nights.
+    </div>
+  </div>
+
+  <h2>The Five Advisors (full responses)</h2>
+
+  <details><summary><span class="dot" style="background:var(--red)"></span>The Contrarian<span class="tag">HOLD · "scaling funds a louder lie"</span></summary>
+    <p>Start with the question you're not asking: <b>why are you scaling at all?</b> ~9 nights, breakeven, a dashboard that lied by $400 this week. The honest read isn't "edge unproven" — it's "no edge detected, and the measurement apparatus was broken until Tuesday." You can't even claim flat with confidence, because the instrument that told you flat is the same class that once screamed "DEPLOY 94% WR +$5.6k" on a losing config.</p>
+    <p>IBKR is <b>procrastination wearing a lab coat</b> — buildable, measurable, ends in a green checkmark, unlike sitting through 11 boring nights. Migrate only when a <i>specific</i> Alpaca defect blocks validation (the strike-collision merging is a candidate — name it or don't move).</p>
+    <p>The trap nobody's flagging: scaling 1→10 contracts isn't linear. At three-digit P&amp;L you're no longer a price-taker; slippage and bid-ask you ignored at 1 contract become the whole game, and your breakeven edge goes <b>negative</b> the moment friction scales with size. You'd 10× the noise AND import a cost structure your backtest never priced. That's how "+$5.6k" happens again. What must be TRUE: 20 clean nights, positive worst-day after modeled slippage at target size, a t-stat that survives.</p>
+  </details>
+
+  <details><summary><span class="dot" style="background:var(--accent)"></span>The First Principles Thinker<span class="tag">HOLD · "ask how fast you get 11 more honest nights" — rated strongest</span></summary>
+    <p>You're asking two scaling questions about a thing you haven't established exists. The question isn't Alpaca vs IBKR or single- vs three-digit. Both presuppose an edge. Your ground truth says you don't have one: ~9 nights, flat, dominated by noise. There's nothing to migrate and nothing to scale — there's a hypothesis under test.</p>
+    <p>Rebuild from the primitive: the smallest true number is <b>per-condor edge after real slippage</b>, and its confidence interval straddles zero. Everything else — broker, size, P&amp;L magnitude — is a <i>multiplier</i> on that number. Multiplying an unknown sign by 10–20× gives a wider distribution around zero and a faster way to fool yourself (you already ran that experiment).</p>
+    <p>The real question both yours are proxies for: <b>"How do I get to ≥20 clean nights of trustworthy fills as fast as possible?"</b> IBKR is neither prerequisite nor procrastination — it's a <b>measurement-instrument decision</b>: migrate ONLY if Alpaca's SPY fills systematically lie about real SPX slippage (the strike-collision merging suggests they might). Then it's fixing the thermometer. Scaling P&amp;L is an <i>output</i> that becomes legitimate the day the lower CI bound clears zero after slippage. Stop asking how big. Ask how fast you get 11 more honest nights.</p>
+  </details>
+
+  <details><summary><span class="dot" style="background:var(--violet)"></span>The Expansionist<span class="tag">GO · "IBKR first, because it's bigger" — the dissenter</span></summary>
+    <p>The upside everyone's underweighting isn't dollars-per-day — it's the asset you accidentally built this week: a <b>verified-honesty trading harness</b> (broker-truth ledger, self-consistency alert, kill-switch on real fills, a documented history of catching your own lie). Most retail systems die because nobody priced them honestly; you built the apparatus that refuses to lie. The strategy is replaceable; the harness is the moat.</p>
+    <p>IBKR isn't procrastination — it's the unlock, framed too small. SPX/XSP is <b>cash-settled, no assignment, no pin risk — which eliminates the entire class of strike-collision bugs</b> that just corrupted your attribution. The Alpaca position-merge problem doesn't get fixed — it gets <i>deleted</i> by the venue. Plus 60/40 tax and portfolio margin.</p>
+    <p>The hidden adjacent opportunity: once attribution is clean per-condor, you have a <b>labeled dataset of regime-conditional edge nobody else has</b> — your own fills, your own slippage — the seed for a meta-layer: which book to weight on which VIX/trend regime. That's where 3-digit days live — not bigger size, smarter allocation across two uncorrelated books. So: IBKR Paper first, then scale — because it's bigger.</p>
+  </details>
+
+  <details><summary><span class="dot" style="background:var(--green)"></span>The Outsider<span class="tag">HOLD · "10 × zero = zero"</span></summary>
+    <p><b>It's fake money — what's the rush to switch banks?</b> An outsider hears: a system that prints pretend dollars, makes about zero, and you're asking whether to move it to a different pretend-dollar machine to make 10× the pretend nothing. 10 × zero is still zero.</p>
+    <p>You caught your own dashboard lying by $400 and your safety brake was wired to the lie. An hour ago you didn't know if you were winning or losing; now you do, and you're not. That's the <b>first time the scoreboard has been real</b> — why build anything new on a foundation you just stopped distrusting?</p>
+    <p>You already have a rule: 20 clean days proven on stats. You're at 9, and the previous 9 used broken instruments — so you have <b>zero clean days.</b> By your own rule the conversation is over until day 20. One honest question back: what does IBKR get you that you can name in one sentence that isn't "it feels like progress"? If you can't, it's motion, not movement. <b>Don't switch, don't scale, earn 20 real days first.</b></p>
+  </details>
+
+  <details><summary><span class="dot" style="background:var(--amber)"></span>The Executor<span class="tag">HOLD · "verify all three P&L numbers match to the cent"</span></summary>
+    <p>IBKR migration is a distraction — a 0-dollar-of-edge yak-shave dressed up as progress. Your blocker is not the broker; it's that real-fill P&amp;L is flat. A better broker on a flat strategy gives flat with tighter spreads. Scaling a flat edge gives a bigger flat number with bigger variance.</p>
+    <p>Monday-morning sequence, don't reorder: <b>(1) Tonight</b> — confirm the broker-truth ledger and EOD self-consistency alert actually fire. One clean night where dashboard P&amp;L == broker fills == kill-switch dollars. If it fails, fix only that. <b>(2) Next ~11 sessions</b> — run 1-contract, untouched, to hit the 20-clean-night gate. No tuning, no swap, no size change. <b>(3) At night 20</b> — let improve-loop run its t-stat / worst-day-after-slippage test. Only then do you know if there's an edge to scale.</p>
+    <p>3-digit/day is premature by 11 nights. You can't scale breakeven into profit — breakeven × 10 = breakeven. Size is the last lever, not the first. <b>Very next action: open tonight's EOD report after close and verify all three P&amp;L numbers match to the cent.</b></p>
+  </details>
+
+  <h2>Peer Review — what the round surfaced</h2>
+  <details><summary><span class="dot" style="background:#6e7681"></span>Cross-examination highlights</summary>
+    <p><b>Consensus on strongest:</b> both reviewers picked <b>First Principles</b> — the only response that collapses both questions into one (per-condor edge after slippage, sign unknown) and derives a non-dogmatic test for IBKR rather than a virtue judgment.</p>
+    <p><b>Consensus on biggest blind spot:</b> both flagged <b>the Expansionist</b> — its cash-settlement point is real and underweighted by the others, but it leaps to a "regime-allocation meta-layer across two uncorrelated books" that presupposes <i>two</i> edges when <i>zero</i> are established. Selling a Series-A vision on a pre-product.</p>
+    <p><b>What ALL five missed:</b> (1) migrating mid-validation <b>resets the clean-night counter</b> — directly in tension with "fastest path to 20 nights"; (2) <b>paper fills may never validate</b> an edge that lives in real-money microstructure — a live 1-lot may out-teach 20 paper nights; (3) <b>20 nights may be underpowered</b> for a small 0DTE edge against daily variance.</p>
+  </details>
+
+  <p class="foot">Generated 2026-06-24 23:46 · 5 advisors → anonymized peer review → chairman synthesis · ZeroDTE council · companion transcript: <code>council-transcript-20260624-234609.md</code></p>
+</body>
+</html>

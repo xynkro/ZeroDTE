@@ -55,8 +55,9 @@ def _minute(t):
     return et.hour * 60 + et.minute
 
 
-def _spread_trade(day_bars, sig, delta, tp_pct):
-    """Honest single-side credit-spread P&L for ONE signal with YOUR TP rule."""
+def _spread_trade(day_bars, sig, delta, tp_pct, exit_by_min=TIME_STOP_MIN):
+    """Honest single-side credit-spread P&L for ONE signal with YOUR TP rule.
+    exit_by_min = hard time exit (minute-of-day ET); earlier = less afternoon risk."""
     # bars at/after the signal time, same session
     post = [b for b in day_bars if b.time >= sig.time]
     pre = [b.close for b in day_bars if b.time <= sig.time]
@@ -94,24 +95,44 @@ def _spread_trade(day_bars, sig, delta, tp_pct):
             exit_val = bb; break
         if through:                               # stop
             exit_val = bb; break
-        if bm >= TIME_STOP_MIN:                    # time exit
+        if bm >= exit_by_min:                      # hard time exit (the lever)
             exit_val = bb; break
     if exit_val is None:
         exit_val = bs.spread_value(side, post[-1].close, cs, cl, 0.0) * MULT
     return credit - exit_val - SPREAD_COST
 
 
-def run(sessions, by_day, delta, tp_pct):
+def _calm_map(by_day):
+    """Classify each day calm/choppy by early-session (first hour) realized 5m vol vs
+    its EXPANDING median (no lookahead). calm = below median = sit IN; else sit OUT."""
+    out, hist = {}, []
+    for d in sorted(by_day):
+        bars = by_day[d]
+        early = [b.close for b in bars if _minute(b.time) <= 10 * 60 + 30]
+        rv = bs.realized_5m_std(early) if len(early) >= 5 else None
+        med = st.median(hist) if len(hist) >= 20 else None
+        out[d] = True if (med is None or rv is None) else (rv < med)   # default trade until median forms
+        if rv is not None:
+            hist.append(rv)
+    return out
+
+
+def run(sessions, by_day, delta, tp_pct, calm=None, calm_only=False, exit_by_min=TIME_STOP_MIN):
     daily = defaultdict(float)
     n_trades = 0
     for s in sessions:
         if not s.signals:
             continue
+        if calm_only and calm is not None and not calm.get(s.session_date, True):
+            continue   # choppy day — sit it out
         db = by_day.get(s.session_date)
         if not db:
             continue
         for sig in s.signals:
-            p = _spread_trade(db, sig, delta, tp_pct)
+            # don't open a trade with <30 min to run before the hard exit
+            if _minute(sig.time) >= exit_by_min - 30:
+                continue
+            p = _spread_trade(db, sig, delta, tp_pct, exit_by_min)
             if p is not None:
                 daily[s.session_date] += p
                 n_trades += 1
@@ -154,15 +175,37 @@ if __name__ == "__main__":
             rows.append((delta, tp, is_, oos))
             print(f"{delta*100:>5.0f}Δ {tp:>3}% | {_f(oos):<42} | {_f(is_)}")
         print()
-    # best by OOS mean among positive-OOS
-    cand = [r for r in rows if r[3] and r[3]["mean"] > 0]
-    cand.sort(key=lambda r: r[3]["t"], reverse=True)
+    # ── SIT OUT CHOPPY DAYS — your idea: trade only calm-open days ──────────
+    calm = _calm_map(by_day)
     print("=" * 90)
-    if cand:
-        d, tp, _, oos = cand[0]
-        print(f"BEST OOS by t-stat: {d*100:.0f}Δ / TP{tp}%  →  {_f(oos)}")
-        print("…but remember: absolute $ overstate (engine). Judge the RANKING + tail,")
-        print("and nothing is real until it survives broker-truth on clean live fills.")
-    else:
-        print("NO positive-OOS config. Your strategy, honestly priced, has no edge in 3y SPX.")
+    print("SIT OUT CHOPPY DAYS — trade only calm-open days (early-RV below running median):\n")
+    print(f"{'delta':>6} {'TP%':>4} {'days':>10} | {'OUT-OF-SAMPLE':^42}")
+    print("  " + "-" * 76)
+    for delta in (0.20,):
+        for tp in (50, 90):
+            d_all, _ = run(sessions, by_day, delta, tp)
+            d_calm, _ = run(sessions, by_day, delta, tp, calm=calm, calm_only=True)
+            o_all, o_calm = score(d_all, lo=OOS_START), score(d_calm, lo=OOS_START)
+            print(f"{delta*100:>5.0f}Δ {tp:>3}% {'ALL':>10} | {_f(o_all)}")
+            print(f"{'':>6} {'':>4} {'CALM-only':>10} | {_f(o_calm)}")
+            print()
+    print("=" * 90)
+    print("Read: calm-OPEN filter did little for WAVE — its blowups are AFTERNOON moves on")
+    print("days that look calm at 10:30. The tail lever is exit SPEED, not day-selection.\n")
+
+    # ── HARD AFTERNOON EXIT — your idea: close everything by ~1:30-2:30pm ───
+    print("=" * 90)
+    print("HARD AFTERNOON EXIT — 20Δ / TP50, close ALL by the given ET time (cut afternoon risk):\n")
+    print(f"{'exit by':>9} {'days':>5} | {'OUT-OF-SAMPLE':^42} | {'(in-sample)':^30}")
+    print("  " + "-" * 86)
+    for hh, mm in ((13, 0), (13, 30), (14, 0), (14, 30), (15, 0), (15, 50)):
+        ebm = hh * 60 + mm
+        d, nt = run(sessions, by_day, 0.20, 50, exit_by_min=ebm)
+        oos, is_ = score(d, lo=OOS_START), score(d, hi=OOS_START)
+        tag = "  (baseline)" if (hh, mm) == (15, 50) else ""
+        print(f"{hh:02d}:{mm:02d} ET  {len(d):>4} | {_f(oos):<42} | {_f(is_)}{tag}")
+    print("\n" + "=" * 90)
+    print("Read: if an earlier hard exit SHRINKS the worst-day vs the 15:50 baseline, the")
+    print("tail really is afternoon-made and exit-speed is the lever. Watch worst-day, not")
+    print("mean (mean overstates). Nothing is real until clean broker-truth confirms it.")
     print("\nNote: 90% TP ≈ the current bot; 25-50% ≈ what you actually traded.")

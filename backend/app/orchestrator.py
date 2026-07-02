@@ -585,6 +585,7 @@ class Orchestrator:
         await self._maybe_build_eod_ic(bar)
         # NEW: IC stop-loss check (Theta Profits "Breakeven IC" rule)
         await self._check_ic_stop_loss(bar)
+        await self._maybe_assignment_guard(bar)
         await self._maybe_fire_eod_summary(bar)
         await self._broadcast()
 
@@ -778,11 +779,145 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001
                 log.warning("IC stop check failed for %s: %s", ic.build_id, e)
 
+    async def _pick_ic_nbbo(self, bar: Bar, et_now) -> dict | None:
+        """NBBO entry pick for the MEIC slot: SPY spot from the bar, today's
+        expiry, and EXCLUDE every leg strike of any still-open MEIC condor —
+        collisions are dodged at selection time instead of nudged at submit
+        (the one-shot nudge landed on the next blocked strike, Jun-30 13:00 422)."""
+        if getattr(self, "alpaca_trader", None) is None:
+            return None
+        from . import nbbo_chain
+        spot_spy = bar.close * 0.1
+        day_key = et_now.strftime("%Y-%m-%d")
+        exclude: set[float] = set()
+        for b in self.state.iron_condor_history:
+            if (not b.build_id or not b.build_id.startswith(f"ic_{day_key}")
+                    or b.broker_status != "submitted"):
+                continue
+            for lg in (b.call_leg, b.put_leg):   # one-sided builds contribute their one leg
+                if not lg:
+                    continue
+                exclude.add(float(round(lg.short_strike / 10.0)))
+                exclude.add(float(round(lg.long_strike / 10.0)))
+        chain = await nbbo_chain.fetch_chain_nbbo(
+            self.alpaca_trader, spot_spy, et_now.strftime("%y%m%d"),
+            span_pct=settings.IC_ENTRY_NBBO_SPAN_PCT,
+            max_stale_sec=settings.IC_STOP_NBBO_MAX_STALE_SEC,
+        )
+        return nbbo_chain.pick_iron_condor_nbbo(
+            chain, spot_spy, settings.EOD_IC_SHORT_DELTA,
+            settings.EOD_IC_WING_DOLLARS, et_now.strftime("%y%m%d"),
+            exclude_spy_strikes=exclude,
+            min_side_credit_usd=settings.IC_MIN_SIDE_CREDIT,
+            allow_one_sided=settings.IC_ONE_SIDED_ENABLED,
+        )
+
+    async def _ic_buyback_nbbo(self, ic):
+        """EXECUTABLE mark: cost to buy back the condor at live Alpaca SPY NBBO.
+        Returns SPX-scale (×10) (total_buyback, call_cost, put_cost, "nbbo") to
+        match the credit/threshold units, or None if ANY leg lacks a fresh,
+        two-sided quote — in which case the caller HOLDS (never closes on a bad
+        mark). This is the fix for the CBOE-delayed-mid phantom stops."""
+        if getattr(self, "alpaca_trader", None) is None:
+            return None
+        # Exact SPY strike mapping the close path uses → we mark the same symbols
+        # we'd actually trade to close (1/10 SPX-via-SPY convention). One-sided
+        # builds mark only their present side.
+        def spy(strike: float) -> float:
+            return float(round(strike / 10.0))
+        exp6 = datetime.now(ET).strftime("%y%m%d")
+        occ = self.alpaca_trader._occ_symbol
+        syms: dict[str, str] = {}
+        if ic.call_leg:
+            cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
+            if cl <= cs:
+                cl = cs + 1.0
+            syms["sc"] = occ("SPY", exp6, "call", cs)
+            syms["lc"] = occ("SPY", exp6, "call", cl)
+        if ic.put_leg:
+            ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
+            if pl >= ps:
+                pl = ps - 1.0
+            syms["sp"] = occ("SPY", exp6, "put", ps)
+            syms["lp"] = occ("SPY", exp6, "put", pl)
+        if not syms:
+            return None
+        quotes = await self.alpaca_trader.get_option_quotes(list(syms.values()))
+        now_ts = datetime.now(timezone.utc).timestamp()
+        mids: dict[str, float] = {}
+        for key, sym in syms.items():
+            q = quotes.get(sym)
+            if not q:
+                return None
+            bid, ask, ts = q.get("bid"), q.get("ask"), q.get("ts")
+            # Need a real, two-sided offer to buy back against.
+            if ask is None or bid is None or ask <= 0:
+                return None
+            # Freshness — a stale quote is exactly what caused the phantom stops.
+            if not ts:
+                return None
+            try:
+                qt = datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+            except (ValueError, TypeError):
+                return None
+            if now_ts - qt > settings.IC_STOP_NBBO_MAX_STALE_SEC:
+                return None
+            mids[key] = (bid + ask) / 2.0
+        # SPY-scale spread cost (×100 multiplier) → ×10 to SPX-scale.
+        call_cost = max(0.0, mids["sc"] - mids["lc"]) * 100 * 10 if "sc" in mids else 0.0
+        put_cost  = max(0.0, mids["sp"] - mids["lp"]) * 100 * 10 if "sp" in mids else 0.0
+        return call_cost + put_cost, call_cost, put_cost, "nbbo"
+
+    async def _ic_buyback_cboe(self, bar, ic, instr, instr_underlying):
+        """Legacy mark: CBOE delayed-mid chain. SPX-scale (buyback, call_cost,
+        put_cost, "cboe"), or None if the chain is unavailable/incomplete. Kept
+        as the IC_STOP_MARK_NBBO=false fallback only — it fired phantom stops."""
+        try:
+            chain = await self._get_chain_cached(instr, instr_underlying)
+        except Exception as e:
+            log.warning("IC stop check: chain fetch failed: %s", e)
+            chain = None
+        if not chain or "calls" not in chain or "puts" not in chain:
+            if instr == "SPX":
+                from . import gex as _gex
+                cached = getattr(self, "_cboe_mark_cache", None)
+                now_ts = datetime.now(timezone.utc).timestamp()
+                if cached and (now_ts - cached[0]) < 90:
+                    raw = cached[1]
+                else:
+                    raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
+                    if raw:
+                        self._cboe_mark_cache = (now_ts, raw)
+                if raw:
+                    exp = datetime.now(ET).strftime("%y%m%d")
+                    chain = _gex.chain_mids_for_expiry(raw, exp)
+            if not chain or not chain.get("calls") or not chain.get("puts"):
+                return None
+
+        def _mid(leg_data, target_strike):
+            row = next((r for r in leg_data if abs(r["strike"] - target_strike) < 0.01), None)
+            return row.get("mid") if row is not None else None
+
+        call_cost = put_cost = 0.0
+        if ic.call_leg:
+            sc_mid = _mid(chain["calls"], ic.call_leg.short_strike)
+            lc_mid = _mid(chain["calls"], ic.call_leg.long_strike)
+            if None in (sc_mid, lc_mid):
+                return None
+            call_cost = max(0.0, (sc_mid - lc_mid)) * 100
+        if ic.put_leg:
+            sp_mid = _mid(chain["puts"], ic.put_leg.short_strike)
+            lp_mid = _mid(chain["puts"], ic.put_leg.long_strike)
+            if None in (sp_mid, lp_mid):
+                return None
+            put_cost = max(0.0, (sp_mid - lp_mid)) * 100
+        return call_cost + put_cost, call_cost, put_cost, "cboe"
+
     async def _check_one_ic_stop(self, bar: Bar, ic):
         """Per-condor breakeven stop: if buyback-cost ≥ original credit, alert and
         (if executed) close it. Theta Profits' Breakeven IC rule."""
-        if not ic or not ic.available or not ic.call_leg or not ic.put_leg:
-            return
+        if not ic or not ic.available or (not ic.call_leg and not ic.put_leg):
+            return   # one-sided builds are valid: exactly one leg present
         if not ic.total_credit_dollars or ic.total_credit_dollars <= 0:
             return
         # Edge-trigger: only fire once per IC build (use build_id + dedup)
@@ -799,56 +934,25 @@ class Orchestrator:
         except (ValueError, TypeError):
             pass
 
-        # Fetch current chain to mark IC to market
-        instr = ic.call_leg.instrument
+        # ── Mark-to-market: cost to BUY BACK the condor right now ──
+        # Primary = Alpaca SPY NBBO (the EXECUTABLE price we'd really pay to
+        # close). The legacy CBOE delayed-mid ran ~4× the real fill on low-vol
+        # 0DTE, firing the stop on a phantom loss while the condor was in profit
+        # (Jun-30: 2/2 stopped in profit, SPY pinned, strikes never tested).
+        # Both marks return SPX-scale $, so base_credit/threshold below are
+        # unchanged. mark=None → FAIL-SAFE hold (never close on a bad mark).
+        instr = (ic.call_leg or ic.put_leg).instrument
         instr_scale = 0.1 if instr in ("XSP", "SPY") else 1.0
         instr_underlying = bar.close * instr_scale
-        try:
-            chain = await self._get_chain_cached(instr, instr_underlying)
-        except Exception as e:
-            log.warning("IC stop check: chain fetch failed: %s", e)
-            chain = None
-        if not chain or "calls" not in chain or "puts" not in chain:
-            # Fallback: mark to market off the CBOE delayed chain (same source the
-            # build used) — the Alpaca/yfinance feeds have no options chain, which
-            # left the stop-rule blind on an EXECUTED position.
-            if instr == "SPX":
-                from . import gex as _gex
-                # TTL-cache the CBOE chain (multiple condors share one mark per ~90s)
-                cached = getattr(self, "_cboe_mark_cache", None)
-                now_ts = datetime.now(timezone.utc).timestamp()
-                if cached and (now_ts - cached[0]) < 90:
-                    raw = cached[1]
-                else:
-                    raw = await _gex.fetch_chain(settings.GEX_SYMBOL)
-                    if raw:
-                        self._cboe_mark_cache = (now_ts, raw)
-                if raw:
-                    exp = datetime.now(ET).strftime("%y%m%d")
-                    chain = _gex.chain_mids_for_expiry(raw, exp)
-            if not chain or not chain.get("calls") or not chain.get("puts"):
-                return
-
-        # Find current mid for each leg
-        def _mid(leg_data, target_strike):
-            row = next((r for r in leg_data if abs(r["strike"] - target_strike) < 0.01), None)
-            if row is None:
-                return None
-            return row.get("mid")
-
-        sc_mid = _mid(chain["calls"], ic.call_leg.short_strike)
-        lc_mid = _mid(chain["calls"], ic.call_leg.long_strike)
-        sp_mid = _mid(chain["puts"],  ic.put_leg.short_strike)
-        lp_mid = _mid(chain["puts"],  ic.put_leg.long_strike)
-        if None in (sc_mid, lc_mid, sp_mid, lp_mid):
-            return  # incomplete chain data, retry next bar
-
-        # Mark-to-market spread cost (per-share × multiplier)
-        # Buy back call spread: pay (sc_mid − lc_mid). Same for put.
-        multiplier = 100
-        call_spread_cost = max(0.0, (sc_mid - lc_mid)) * multiplier
-        put_spread_cost  = max(0.0, (sp_mid - lp_mid)) * multiplier
-        total_buyback = call_spread_cost + put_spread_cost
+        if settings.IC_STOP_MARK_NBBO:
+            mark = await self._ic_buyback_nbbo(ic)
+        else:
+            mark = await self._ic_buyback_cboe(bar, ic, instr, instr_underlying)
+        if mark is None:
+            # No reliable executable quote → HOLD and re-check next bar. The
+            # defined-risk wings cap the downside while we wait for a clean mark.
+            return
+        total_buyback, call_spread_cost, put_spread_cost, mark_source = mark
 
         # Credit the stop anchors to. The model credit (total_credit_dollars) ran
         # too LOW vs the real fill, so the breakeven stop fired while still in
@@ -881,26 +985,26 @@ class Orchestrator:
         first = pend.get(ic.build_id)
         if first is None:
             pend[ic.build_id] = now_ts
-            log.info("IC stop PENDING (%s): buyback $%.0f ≥ $%.0f — awaiting confirm",
-                     ic.build_id, total_buyback, threshold)
+            log.info("IC stop PENDING (%s): buyback $%.0f ≥ $%.0f (%s mark) — awaiting confirm",
+                     ic.build_id, total_buyback, threshold, mark_source)
             return
         if now_ts - first < settings.IC_STOP_CONFIRM_SEC:
             return
         pend.pop(ic.build_id, None)
 
         log.warning(
-            "IC STOP triggered: buyback ${%.0f} ≥ credit ${%.0f} (%s anchor) (call_cost=${%.0f}, put_cost=${%.0f})",
+            "IC STOP triggered: buyback ${%.0f} ≥ credit ${%.0f} (%s anchor, %s mark) (call_cost=${%.0f}, put_cost=${%.0f})",
             total_buyback, base_credit,
             "real" if (settings.IC_STOP_ANCHOR_REAL and ic.real_credit_dollars) else "model",
-            call_spread_cost, put_spread_cost,
+            mark_source, call_spread_cost, put_spread_cost,
         )
         dedup.mark_done("ic_stop_fired", ic.build_id)
         try:
             tg.ping_ic_stop(
                 underlying_price=instr_underlying,
                 instrument=instr,
-                short_call=ic.call_leg.short_strike,
-                short_put=ic.put_leg.short_strike,
+                short_call=ic.call_leg.short_strike if ic.call_leg else 0.0,
+                short_put=ic.put_leg.short_strike if ic.put_leg else 0.0,
                 current_spread_cost=total_buyback,
                 original_credit=base_credit,
                 stop_threshold=base_credit,
@@ -910,36 +1014,112 @@ class Orchestrator:
             log.warning("ping_ic_stop failed: %s", e)
         # If this IC was EXECUTED, the stop actually closes it (two reverse spreads).
         if ic.broker_status == "submitted" and getattr(self, "alpaca_trader", None) is not None:
-            asyncio.create_task(self._close_alpaca_ic(ic))
+            asyncio.create_task(self._close_alpaca_ic(ic, reason=f"stop_{mark_source}"))
 
-    async def _close_alpaca_ic(self, ic):
-        """Close an executed IC at the breakeven stop: buy back both SPY spreads."""
+    async def _market_close_min_today(self) -> int:
+        """Today's close as minutes-after-midnight ET (Alpaca calendar, cached per
+        day; 16:00 fallback). Early-close aware — a 13:00 half-day moves every
+        close-relative behavior (assignment guard, late slots) automatically."""
+        today = datetime.now(ET).strftime("%Y-%m-%d")
+        cached = getattr(self, "_close_min_cache", None)
+        if cached and cached[0] == today:
+            return cached[1]
+        close_min = 16 * 60
+        try:
+            client = await self.alpaca_trader._ensure_client()
+            r = await client.get(f"{settings.ALPACA_BASE_URL}/v2/calendar",
+                                 params={"start": today, "end": today})
+            rows = r.json()
+            if rows and rows[0].get("close"):
+                hh, mm = rows[0]["close"].split(":")
+                close_min = int(hh) * 60 + int(mm)
+        except Exception as e:  # noqa: BLE001
+            log.debug("calendar close fetch failed (16:00 fallback): %s", e)
+        self._close_min_cache = (today, close_min)
+        return close_min
+
+    async def _maybe_assignment_guard(self, bar: Bar):
+        """Force-close any open condor whose SHORT strike is within BUFFER of spot
+        in the final minutes before the close. SPY is physical-delivery: an ITM
+        short at expiry assigns ±100 shares/contract and strangles the account's
+        margin overnight (the −600 SPY incident). Defense, not strategy."""
+        if not getattr(self, "_is_live_bar", False):
+            return
+        if not settings.IC_ASSIGN_GUARD_ENABLED or getattr(self, "alpaca_trader", None) is None:
+            return
+        now_et = datetime.now(ET)
+        now_min = now_et.hour * 60 + now_et.minute
+        close_min = await self._market_close_min_today()
+        if not (close_min - settings.IC_ASSIGN_GUARD_MIN_BEFORE_CLOSE <= now_min < close_min):
+            return
+        today = now_et.strftime("%Y-%m-%d")
+        spy_spot = bar.close * 0.1
+        buf = settings.IC_ASSIGN_GUARD_BUFFER
+        for ic in list(self.state.iron_condor_history):
+            if (not ic.build_id or not ic.build_id.startswith(f"ic_{today}")
+                    or ic.broker_status != "submitted"
+                    or (not ic.call_leg and not ic.put_leg)):
+                continue
+            if dedup.already_done("ic_assign_guard", ic.build_id):
+                continue
+            cs_spy = ic.call_leg.short_strike / 10.0 if ic.call_leg else None
+            ps_spy = ic.put_leg.short_strike / 10.0 if ic.put_leg else None
+            call_hot = cs_spy is not None and spy_spot >= cs_spy - buf
+            put_hot = ps_spy is not None and spy_spot <= ps_spy + buf
+            if not (call_hot or put_hot):
+                continue
+            dedup.mark_done("ic_assign_guard", ic.build_id)  # one attempt; failure alerts
+            side = "call" if call_hot else "put"
+            hot_k = cs_spy if call_hot else ps_spy
+            log.warning("ASSIGNMENT GUARD %s: SPY %.2f within $%.2f of short %s %.0f "
+                        "(close in %d min) — force-closing condor",
+                        ic.build_id, spy_spot, buf, side, hot_k, close_min - now_min)
+            await self._close_alpaca_ic(ic, reason="assignment_guard")
+
+    async def _close_alpaca_ic(self, ic, reason: str = "stop"):
+        """Close an executed IC (buy back both SPY spreads). `reason` drives the
+        recorded close_reason, broker_status, and the Telegram wording:
+        stop_* → breakeven stop; assignment_guard → pre-expiry ITM defense."""
         try:
             def spy(strike: float) -> float:
                 return float(round(strike / 10.0))
-            cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
-            ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
-            if cl <= cs:
-                cl = cs + 1.0
-            if pl >= ps:
-                pl = ps - 1.0
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
             qty = max(1, ic.contracts or 1)
-            r1 = await self.alpaca_trader.close_credit_spread(
-                underlying="SPY", expiry=today_str, side="call",
-                short_strike=cs, long_strike=cl, qty=qty, tag=f"meic-{ic.build_id}")
-            r2 = await self.alpaca_trader.close_credit_spread(
-                underlying="SPY", expiry=today_str, side="put",
-                short_strike=ps, long_strike=pl, qty=qty, tag=f"meic-{ic.build_id}")
-            ok = bool(r1 and not r1.get("shadow")) and bool(r2 and not r2.get("shadow"))
-            ic.broker_status = "closed_stop" if ok else "close_error"
-            log.info("IC stop close %s: call=%s put=%s", ic.build_id,
+            r1 = r2 = None
+            oks = []
+            if ic.call_leg:
+                cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
+                if cl <= cs:
+                    cl = cs + 1.0
+                r1 = await self.alpaca_trader.close_credit_spread(
+                    underlying="SPY", expiry=today_str, side="call",
+                    short_strike=cs, long_strike=cl, qty=qty, tag=f"meic-{ic.build_id}")
+                oks.append(bool(r1 and not r1.get("shadow")))
+            if ic.put_leg:
+                ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
+                if pl >= ps:
+                    pl = ps - 1.0
+                r2 = await self.alpaca_trader.close_credit_spread(
+                    underlying="SPY", expiry=today_str, side="put",
+                    short_strike=ps, long_strike=pl, qty=qty, tag=f"meic-{ic.build_id}")
+                oks.append(bool(r2 and not r2.get("shadow")))
+            ok = bool(oks) and all(oks)
+            is_assign = reason == "assignment_guard"
+            ic.broker_status = ("closed_assign" if is_assign else "closed_stop") if ok else "close_error"
+            ic.close_reason = reason if ok else f"{reason}_FAILED"
+            log.info("IC close (%s) %s: call=%s put=%s", reason, ic.build_id,
                      (r1 or {}).get("id", "?"), (r2 or {}).get("id", "?"))
             _bid = (ic.build_id or "")[-4:]
             _lbl = f"MEIC {_bid[:2]}:{_bid[2:]}" if settings.MEIC_ENABLED and len(_bid) == 4 else "IC"
+            if is_assign:
+                _msg_ok = (f"🛡️ {_lbl} closed by ASSIGNMENT GUARD — short strike within "
+                           f"${settings.IC_ASSIGN_GUARD_BUFFER:.2f} of SPY near the close "
+                           f"(physical delivery risk). Alpaca paper.")
+            else:
+                _msg_ok = f"🦅 {_lbl} stopped — closed both spreads at breakeven on Alpaca paper"
             self._tg(tg.ping_eod_iron_condor,
-                     f"🦅 {_lbl} stopped — closed both spreads at breakeven on Alpaca paper"
-                     if ok else f"⚠️ {_lbl} stop close FAILED — check Alpaca (position may still be open)")
+                     _msg_ok if ok else
+                     f"⚠️ {_lbl} close ({reason}) FAILED — check Alpaca (position may still be open)")
             self._persist_state()
         except Exception as e:  # noqa: BLE001
             ic.broker_status = "close_error"
@@ -1171,7 +1351,28 @@ class Orchestrator:
             # MEIC + Wave detail below. (Was two separate sends to two topics, which
             # read as duplicate/contradictory; the user asked for a single message.)
             _url = settings.DASHBOARD_PUBLIC_URL
-            _eod = "\n\n".join(p for p in (_book_hdr, ic_msg, wave_msg) if p)
+            # ── Integrity line: every slot accounted, every exit reasoned ──
+            # The autonomy contract: no silent skips, no mystery closes. A slot
+            # with no row or an exit with no reason is itself the alarm.
+            _integrity = ""
+            try:
+                _rows = [r for r in self.state.meic_slots if r.get("date") == date_str]
+                _slot_bits = [f"{r['slot']} {r['action']}" for r in _rows]
+                _ics_today = [b for b in self.state.iron_condor_history
+                              if b.build_id and b.build_id.startswith(f"ic_{date_str}")]
+                for b in _ics_today:
+                    if b.broker_status == "submitted" and not b.close_reason:
+                        b.close_reason = "expiry"   # rode to the bell — the goal state
+                _traded = [b for b in _ics_today
+                           if b.broker_status in ("submitted", "closed_stop", "closed_assign")]
+                _exits = ", ".join(f"{(b.build_id or '')[-4:]}→{b.close_reason or '⚠️unreasoned'}"
+                                   for b in _traded)
+                _fills_read = sum(1 for b in _traded if b.real_credit_dollars is not None)
+                _integrity = (f"🔍 slots: {' · '.join(_slot_bits) if _slot_bits else '⚠️ none recorded'}\n"
+                              f"   exits: {_exits or '—'} · fills read {_fills_read}/{len(_traded)}")
+            except Exception as e:  # noqa: BLE001
+                log.warning("EOD integrity line failed: %s", e)
+            _eod = "\n\n".join(p for p in (_book_hdr, _integrity, ic_msg, wave_msg) if p)
             if _url:
                 _eod = f"{_eod}\n📱 {_url}"
             eod_ok = tg.ping_eod_iron_condor(_eod)
@@ -1543,8 +1744,8 @@ class Orchestrator:
         if date_str != datetime.now(ET).strftime("%Y-%m-%d"):
             return
         bar_minute = et_time.hour * 60 + et_time.minute
-        if not self.state.regime.classified or self.state.regime.regime != "non_volatile":
-            return
+        regime_ok = (self.state.regime.classified
+                     and self.state.regime.regime == "non_volatile")
 
         # MEIC (multiple-entry iron condor): staggered entries across the day —
         # diversifies the single biggest IC risk (picking the wrong minute) and is
@@ -1566,22 +1767,65 @@ class Orchestrator:
                     continue
             return out or [("10:15", 10 * 60 + 15)]
 
+        close_min = 16 * 60
+        if getattr(self, "alpaca_trader", None) is not None:
+            close_min = await self._market_close_min_today()
         for slot, slot_min in _slot_minutes():
             if not (slot_min <= bar_minute <= slot_min + 25):
                 continue
             slot_key = f"{date_str}:{slot}"
-            if dedup.already_done("ic_slot_built", slot_key):
+            # PER-SLOT dedup keys. The old single-value key ("ic_slot_built" =
+            # latest slot) forgot earlier slots the moment a later one marked —
+            # same disease as the EOD-summary dedup bug (see dedup.eod_done).
+            # Legacy single-slot value still counts so an upgrade mid-day can't
+            # re-fire the current slot.
+            if dedup.get(f"ic_slot_built_{slot_key}") or dedup.get("ic_slot_built") == slot_key:
                 continue
-            dedup.mark_done("ic_slot_built", slot_key)  # mark FIRST: no per-bar retry loop
+            if not regime_ok:
+                # Recorded but NOT consumed: the regime can classify/calm within
+                # the 25-min window and the slot should then still fire.
+                self._record_slot(date_str, slot, "skip_regime",
+                                  f"regime={self.state.regime.regime or 'unclassified'}")
+                continue
+            if slot_min >= close_min - 45:
+                # Early-close day (13:00 half-session): a slot within 45 min of
+                # the close sells gamma with no runway — skip it loudly.
+                dedup.set(f"ic_slot_built_{slot_key}", True)
+                self._record_slot(date_str, slot, "skip_early_close",
+                                  f"market closes {close_min // 60:02d}:{close_min % 60:02d} ET")
+                continue
+            dedup.set(f"ic_slot_built_{slot_key}", True)  # mark FIRST: no per-bar retry loop
             self._eod_ic_built_today = date_str
+            self._current_slot = slot
+            self._ic_outcome = None
             log.info("IC ladder build — slot %s ET (%s) @ bar %s",
                      slot, "MEIC" if settings.MEIC_ENABLED else "single",
                      et_time.strftime("%H:%M"))
             try:
                 await self._build_eod_iron_condor(bar)
+                outcome = getattr(self, "_ic_outcome", None) or ("built_unrecorded", "")
             except Exception as e:
                 log.exception("IC build failed (slot %s): %s", slot, e)
+                outcome = ("error", str(e)[:140])
+            finally:
+                self._current_slot = None
+            self._record_slot(date_str, slot, outcome[0], outcome[1])
             break  # at most one build per bar
+
+    def _record_slot(self, date_str: str, slot: str, action: str, detail: str = ""):
+        """Append one decision row to the per-slot MEIC ledger (no per-bar spam:
+        consecutive identical actions for the same slot collapse)."""
+        rows = self.state.meic_slots
+        for r in reversed(rows):
+            if r.get("date") == date_str and r.get("slot") == slot:
+                if r.get("action") == action:
+                    return
+                break
+        rows.append({"date": date_str, "slot": slot, "action": action,
+                     "detail": str(detail)[:160],
+                     "at": datetime.now(ET).strftime("%H:%M:%S")})
+        if len(rows) > 200:
+            self.state.meic_slots = rows[-200:]
 
     async def _maybe_build_eod_ic_force(self, bar: Bar):
         """Force-build the IC right now, bypassing the 12:30 ET gate. Used by
@@ -1616,16 +1860,45 @@ class Orchestrator:
         from .models import StrikeSuggestion, IronCondorBuilder
         et_now = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
 
-        chain = await _gex.fetch_chain(settings.GEX_SYMBOL)
-        if not chain:
-            return False  # CBOE down → caller falls back to geometric
-        ic = _gex.pick_iron_condor(
-            chain, short_delta=settings.EOD_IC_SHORT_DELTA,
-            wing=settings.EOD_IC_WING_DOLLARS, min_dte_date=et_now.strftime("%y%m%d"),
-        )
-        if not ic.get("ok"):
-            log.warning("CBOE IC pick failed (%s) — falling back", ic.get("error"))
-            return False
+        # ── Entry plane: NBBO first (executable, smile-consistent), CBOE fallback ──
+        ic = None
+        ic_src = "CBOE"
+        if settings.IC_ENTRY_NBBO:
+            try:
+                ic = await self._pick_ic_nbbo(bar, et_now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("NBBO IC pick crashed (%s) — CBOE fallback", e)
+                ic = None
+            if ic and ic.get("ok"):
+                ic_src = "NBBO"
+                log.info("NBBO IC pick: SC %.0f (%.2fΔ) LC %.0f | SP %.0f (%.2fΔ) LP %.0f | "
+                         "credit $%.0f mid / $%.0f cons (call $%.0f + put $%.0f)",
+                         ic["short_call"], ic["short_call_delta"], ic["long_call"],
+                         ic["short_put"], ic["short_put_delta"], ic["long_put"],
+                         ic["total_credit_usd"],
+                         ic.get("call_credit_cons_usd", 0) + ic.get("put_credit_cons_usd", 0),
+                         ic["call_credit_usd"], ic["put_credit_usd"])
+            else:
+                log.warning("NBBO IC pick unavailable (%s) — CBOE fallback",
+                            (ic or {}).get("error", "none"))
+                ic = None
+        if ic is None:
+            chain = await _gex.fetch_chain(settings.GEX_SYMBOL)
+            if not chain:
+                return False  # CBOE down → caller falls back to geometric
+            ic = _gex.pick_iron_condor(
+                chain, short_delta=settings.EOD_IC_SHORT_DELTA,
+                wing=settings.EOD_IC_WING_DOLLARS, min_dte_date=et_now.strftime("%y%m%d"),
+            )
+            if not ic.get("ok"):
+                log.warning("CBOE IC pick failed (%s) — falling back", ic.get("error"))
+                return False
+
+        # One side failed the per-side credit floor but the other pays → trade
+        # the paying side alone as a plain credit spread (MEIC canon: never sell
+        # a side for free; never skip a side that pays).
+        if ic_src == "NBBO" and ic.get("sides") in ("call_only", "put_only"):
+            return await self._build_ic_one_sided(bar, ic, ph, pl, et_now)
 
         dlt = int(round(settings.EOD_IC_SHORT_DELTA * 100))
         date_key = et_now.strftime("%Y-%m-%d")
@@ -1637,6 +1910,9 @@ class Orchestrator:
                     f"< {settings.EOD_IC_MIN_CREDIT_PCT:.0f}% min — not worth the risk")
             log.info("EOD IC skipped (thin premium): %.1f%% < %.0f%%",
                      ic["credit_pct_of_wing"], settings.EOD_IC_MIN_CREDIT_PCT)
+            self._ic_outcome = ("skip_thin",
+                                f"{ic_src} ${ic['total_credit_usd']:.0f} "
+                                f"({ic['credit_pct_of_wing']}% < {settings.EOD_IC_MIN_CREDIT_PCT:.0f}%)")
             self.state.notes.append(note)
             if getattr(self, "_is_live_bar", False) and not dedup.already_done("ic_thin_skip", date_key):
                 dedup.mark_done("ic_thin_skip", date_key)
@@ -1676,7 +1952,10 @@ class Orchestrator:
         except (ValueError, AttributeError):
             target_min = 10 * 60 + 15
         in_auto = abs((et_now.hour * 60 + et_now.minute) - target_min) <= 10
-        trigger = "auto" if (in_auto and not already_today) else "icnow"
+        _slot = getattr(self, "_current_slot", None)
+        # Slot builds were mislabeled "icnow" (the auto test only knew the legacy
+        # 10:15 single-build time) — label by the actual MEIC slot when present.
+        trigger = f"slot{_slot}" if _slot else ("auto" if (in_auto and not already_today) else "icnow")
 
         new_ic = IronCondorBuilder(
             build_id=f"ic_{et_now.strftime('%Y-%m-%d_%H%M')}", built_at=et_now.isoformat(),
@@ -1685,15 +1964,15 @@ class Orchestrator:
             total_credit_dollars=ic["total_credit_usd"], total_max_loss_dollars=ic["max_loss_usd"],
             bpr_estimate_dollars=ic["max_loss_usd"], skew_direction="neutral",
             call_pct_otm=round(call_pct, 3), put_pct_otm=round(put_pct, 3),
-            notes=[f"trigger={trigger}; CBOE real-{dlt}Δ ${settings.EOD_IC_WING_DOLLARS:.0f}-wing; "
-                   f"credit {ic['credit_pct_of_wing']}% of wing; deploy ~13:00 ET"],
+            notes=[f"trigger={trigger}; {ic_src} real-{dlt}Δ ${settings.EOD_IC_WING_DOLLARS:.0f}-wing; "
+                   f"credit {ic['credit_pct_of_wing']}% of wing"],
         )
         self.state.iron_condor = new_ic
         self.state.iron_condor_history.append(new_ic)
         if len(self.state.iron_condor_history) > 30:
             self.state.iron_condor_history = self.state.iron_condor_history[-30:]
-        log.info("EOD IC (CBOE %dΔ): SC %s/%s SP %s/%s credit=$%.0f (%.0f%% of wing) maxloss=$%.0f",
-                 dlt, ic["short_call"], ic["long_call"], ic["short_put"], ic["long_put"],
+        log.info("EOD IC (%s %dΔ): SC %s/%s SP %s/%s credit=$%.0f (%.0f%% of wing) maxloss=$%.0f",
+                 ic_src, dlt, ic["short_call"], ic["long_call"], ic["short_put"], ic["long_put"],
                  ic["total_credit_usd"], ic["credit_pct_of_wing"], ic["max_loss_usd"])
         # Trade management: TP = buy back at (100−TP_PCT)% of credit (capture TP_PCT%);
         # SL = SL_MULT× credit loss, capped at the wing max loss.
@@ -1723,7 +2002,64 @@ class Orchestrator:
         # OUTSIDE the _is_live_bar ping gate: forced builds can ride a stale buffer
         # bar, and Alpaca itself rejects orders outside market hours. The CBOE path
         # has real strikes + credit; the geometric fallback stays alert-only.
+        self._ic_outcome = ("built", f"{ic_src} {new_ic.build_id} ${ic['total_credit_usd']:.0f}")
         asyncio.create_task(self._submit_alpaca_ic(new_ic))
+        return True
+
+    async def _build_ic_one_sided(self, bar: Bar, ic: dict, ph: float, pl: float,
+                                  et_now) -> bool:
+        """MEIC one-sided entry (NBBO plane only): the side that failed the
+        per-side credit floor is NOT traded; the surviving side trades as a
+        2-leg credit spread under the SAME builder/stop/guard machinery
+        (absent side's leg = None)."""
+        from .models import StrikeSuggestion, IronCondorBuilder
+        dlt = int(round(settings.EOD_IC_SHORT_DELTA * 100))
+        is_call = ic["sides"] == "call_only"
+        leg = StrikeSuggestion(
+            instrument="SPX",
+            side="sell_call_cs" if is_call else "sell_put_cs", mode="iron_condor",
+            short_strike=ic["short_call" if is_call else "short_put"],
+            long_strike=ic["long_call" if is_call else "long_put"],
+            wing_width=ic["call_wing" if is_call else "put_wing"], multiplier=100,
+            short_delta=ic["short_call_delta" if is_call else "short_put_delta"],
+            estimated_credit_dollars=ic["total_credit_usd"],
+            max_loss_dollars=ic["max_loss_usd"],
+        )
+        _slot = getattr(self, "_current_slot", None)
+        trigger = f"slot{_slot}" if _slot else "icnow"
+        new_ic = IronCondorBuilder(
+            build_id=f"ic_{et_now.strftime('%Y-%m-%d_%H%M')}", built_at=et_now.isoformat(),
+            trigger=trigger, available=True, expiry=ic["expiry"],
+            underlying_price=bar.close, proj_high=ph, proj_low=pl,
+            call_leg=leg if is_call else None, put_leg=None if is_call else leg,
+            total_credit_dollars=ic["total_credit_usd"],
+            total_max_loss_dollars=ic["max_loss_usd"],
+            bpr_estimate_dollars=ic["max_loss_usd"], skew_direction="neutral",
+            notes=[f"trigger={trigger}; NBBO {dlt}Δ ONE-SIDED ({ic['sides']}); "
+                   f"dropped: {'; '.join(ic.get('dropped') or []) or '—'}; "
+                   f"credit {ic['credit_pct_of_wing']}% of wing"],
+        )
+        self.state.iron_condor = new_ic
+        self.state.iron_condor_history.append(new_ic)
+        if len(self.state.iron_condor_history) > 30:
+            self.state.iron_condor_history = self.state.iron_condor_history[-30:]
+        side_txt = "CALL credit spread" if is_call else "PUT credit spread"
+        log.info("MEIC ONE-SIDED (%s): %s %.0f/%.0f credit=$%.0f (%s%% of wing); dropped %s",
+                 ic["sides"], side_txt, leg.short_strike, leg.long_strike,
+                 ic["total_credit_usd"], ic["credit_pct_of_wing"],
+                 "; ".join(ic.get("dropped") or []) or "—")
+        if getattr(self, "_is_live_bar", False):
+            _bid = (new_ic.build_id or "")[-4:]
+            _lbl = f"MEIC {_bid[:2]}:{_bid[2:]}" if len(_bid) == 4 else "MEIC"
+            self._tg(tg.ping_eod_iron_condor,
+                     f"🦅 {_lbl} · ONE-SIDED {side_txt} — other side pays under the "
+                     f"${settings.IC_MIN_SIDE_CREDIT:.0f} floor (free-risk ban)\n"
+                     f"SPX {leg.short_strike:.0f}/{leg.long_strike:.0f} · "
+                     f"credit ${ic['total_credit_usd']:.0f} · max loss ${ic['max_loss_usd']:.0f} · "
+                     f"breakeven stop armed (else expiry)")
+        self._ic_outcome = ("built_one_sided",
+                            f"{ic['sides']} {new_ic.build_id} ${ic['total_credit_usd']:.0f}")
+        asyncio.create_task(self._submit_alpaca_spread(new_ic))
         return True
 
     async def _build_eod_iron_condor(self, bar: Bar):
@@ -1742,10 +2078,12 @@ class Orchestrator:
         if _bar_et.strftime("%Y-%m-%d") != datetime.now(ET).strftime("%Y-%m-%d"):
             log.warning("IC build skipped: stale bar %s (today is %s)",
                         _bar_et.strftime("%Y-%m-%d %H:%M"), datetime.now(ET).strftime("%Y-%m-%d"))
+            self._ic_outcome = ("skip_stale_bar", _bar_et.strftime("%H:%M"))
             return
         ph = self.state.regime.proj_high
         pl = self.state.regime.proj_low
         if ph is None or pl is None:
+            self._ic_outcome = ("skip_no_projection", "proj_high/low not set")
             return
 
         # ── ADAPTIVE %OTM based on current VIX (calibrated 12mo backtest) ──
@@ -1765,6 +2103,7 @@ class Orchestrator:
 
             if decision.pct_otm is None:
                 # STAND ASIDE — extreme VIX bucket
+                self._ic_outcome = ("skip_vix", decision.bucket_label)
                 self.state.notes.append(
                     f"⚠️ IC skipped: {decision.bucket_label} — {decision.rationale}"
                 )
@@ -1799,6 +2138,8 @@ class Orchestrator:
             if handled:
                 return
             log.info("CBOE IC unavailable — falling back to geometric picker")
+            # Geometric picker is ALERT-ONLY (never submits) — record honestly.
+            self._ic_outcome = ("built_alert_only", "NBBO+CBOE unavailable → geometric")
 
         instr = settings.IC_INSTRUMENT or "XSP"
         instr_price_scale = 0.1 if instr in ("XSP", "SPY") else 1.0
@@ -2832,11 +3173,12 @@ class Orchestrator:
             short_calls, long_calls, short_puts, long_puts = set(), set(), set(), set()
             for b in self.state.iron_condor_history:
                 if (not b.build_id or not b.build_id.startswith(f"ic_{day_key}")
-                        or b.broker_status != "submitted" or b is ic
-                        or not b.call_leg or not b.put_leg):
+                        or b.broker_status != "submitted" or b is ic):
                     continue
-                short_calls.add(spy(b.call_leg.short_strike)); long_calls.add(spy(b.call_leg.long_strike))
-                short_puts.add(spy(b.put_leg.short_strike));   long_puts.add(spy(b.put_leg.long_strike))
+                if b.call_leg:   # one-sided builds contribute their one leg
+                    short_calls.add(spy(b.call_leg.short_strike)); long_calls.add(spy(b.call_leg.long_strike))
+                if b.put_leg:
+                    short_puts.add(spy(b.put_leg.short_strike));   long_puts.add(spy(b.put_leg.long_strike))
 
             def _nudge(val, blocked, step, tries=6):
                 for _ in range(tries):
@@ -2848,10 +3190,16 @@ class Orchestrator:
             cs0, cl0, ps0, pl0 = cs, cl, ps, pl
             cl = _nudge(cl, short_calls, +1.0)        # call long wing: buy_to_open, push up
             pl = _nudge(pl, short_puts, -1.0)         # put long wing: buy_to_open, push down
-            if cs in long_calls:                      # short call collides with an open long
-                cs = float(round(cs + 1.0)); cl = max(cl, cs + 1.0)
-            if ps in long_puts:                       # short put collides with an open long
-                ps = float(round(ps - 1.0)); pl = min(pl, ps - 1.0)
+            # Short legs: LOOPED nudge (the single-step version landed on the NEXT
+            # blocked strike — Jun-30 13:00 422 'sell_to_close': 752 nudged onto 753,
+            # both open longs). Shorts must clear ALL open long strikes.
+            cs = _nudge(cs, long_calls, +1.0)
+            ps = _nudge(ps, long_puts, -1.0)
+            cl = max(cl, cs + 1.0)
+            pl = min(pl, ps - 1.0)
+            # Re-clear the wings in case the short nudge dragged them onto a block.
+            cl = _nudge(cl, short_calls, +1.0)
+            pl = _nudge(pl, short_puts, -1.0)
             if cl <= cs:
                 cl = cs + 1.0
             if pl >= ps:
@@ -2876,6 +3224,7 @@ class Orchestrator:
                     tick_give_cents=settings.IC_LIMIT_TICK_GIVE_CENTS,
                     ladder_steps_cents=steps,
                     wait_sec=settings.IC_LIMIT_REPRICE_WAIT_SEC,
+                    tag=f"meic-{ic.build_id}",
                 )
             else:
                 result = await self.alpaca_trader.place_iron_condor(
@@ -2908,6 +3257,87 @@ class Orchestrator:
             ic.broker_status = "error"
             log.exception("IC execution failed for %s: %s", ic.build_id, e)
 
+    async def _submit_alpaca_spread(self, ic):
+        """Submit a ONE-SIDED MEIC build as a 2-leg SPY credit spread (tagged
+        meic-). Same protections as the condor path: exec flag, per-build dedup,
+        daily ceiling, per-leg collision avoidance vs today's open MEIC legs."""
+        if not settings.IC_EXECUTION_ENABLED or settings.PAPER_BROKER != "alpaca" \
+                or getattr(self, "alpaca_trader", None) is None:
+            log.info("spread submit skipped (%s): exec/broker/trader gate", ic.build_id)
+            return
+        if ic.broker_status in ("submitted", "shadow"):
+            return
+        day_key = datetime.now(ET).strftime("%Y-%m-%d")
+        if dedup.already_done("ic_exec_build", ic.build_id):
+            return
+        placed_today = sum(1 for b in self.state.iron_condor_history
+                           if b.build_id and b.build_id.startswith(f"ic_{day_key}")
+                           and b.broker_status == "submitted")
+        if placed_today >= settings.MEIC_MAX_PER_DAY:
+            log.warning("spread submit skipped (%s): daily ceiling %d reached",
+                        ic.build_id, settings.MEIC_MAX_PER_DAY)
+            return
+        try:
+            leg = ic.call_leg or ic.put_leg
+            is_call = ic.call_leg is not None
+
+            def spy(strike: float) -> float:
+                return float(round(strike / 10.0))
+            s, l = spy(leg.short_strike), spy(leg.long_strike)
+            if is_call and l <= s:
+                l = s + 1.0
+            if not is_call and l >= s:
+                l = s - 1.0
+            # Per-LEG collision sets (one-sided builds contribute their one leg).
+            blocked_shorts, blocked_longs = set(), set()
+            for b in self.state.iron_condor_history:
+                if (not b.build_id or not b.build_id.startswith(f"ic_{day_key}")
+                        or b.broker_status != "submitted" or b is ic):
+                    continue
+                for lg in (b.call_leg, b.put_leg):
+                    if not lg:
+                        continue
+                    blocked_shorts.add(spy(lg.short_strike))
+                    blocked_longs.add(spy(lg.long_strike))
+            step = 1.0 if is_call else -1.0
+            for _ in range(6):     # short leg (sell_to_open) must clear open LONGs
+                if s not in blocked_longs:
+                    break
+                s = float(round(s + step))
+            l = max(l, s + 1.0) if is_call else min(l, s - 1.0)
+            for _ in range(6):     # long leg (buy_to_open) must clear open SHORTs
+                if l not in blocked_shorts:
+                    break
+                l = float(round(l + step))
+            today_str = datetime.now(ET).strftime("%Y-%m-%d")
+            qty = max(1, settings.IC_CONTRACTS)
+            result = await self.alpaca_trader.place_credit_spread(
+                underlying="SPY", expiry=today_str,
+                side="call" if is_call else "put",
+                short_strike=s, long_strike=l, qty=qty,
+                tag=f"meic-{ic.build_id}",
+            )
+            if result and not result.get("shadow"):
+                ic.alpaca_order_id = result.get("id")
+                ic.broker_status = "submitted"
+                ic.contracts = qty
+                dedup.mark_done("ic_exec_build", ic.build_id)
+                log.info("MEIC one-sided EXECUTED: %s → SPY %s %.0f/%.0f ×%d order %s",
+                         ic.build_id, "C" if is_call else "P", s, l, qty,
+                         ic.alpaca_order_id)
+                asyncio.create_task(self._capture_ic_fill(ic))
+            elif result and result.get("shadow"):
+                ic.broker_status = "shadow"
+            else:
+                ic.broker_status = "error"
+                log.error("MEIC one-sided REJECTED for %s", ic.build_id)
+                self._tg(tg.ping_eod_iron_condor,
+                         "⚠️ MEIC one-sided spread NOT executed — Alpaca rejected (see logs).")
+            self._persist_state()
+        except Exception as e:  # noqa: BLE001
+            ic.broker_status = "error"
+            log.exception("MEIC one-sided submit failed (%s): %s", ic.build_id, e)
+
     async def _capture_ic_fill(self, ic):
         """Best-effort: read the IC's real fill cashflow (instrumentation only).
 
@@ -2934,11 +3364,34 @@ class Orchestrator:
             # model credit — a future scale/fill-read bug can't silently nuke the stop
             # (it falls back to the model anchor instead). Caught a 10× bug here on Jun 26.
             real_spx = abs(cf) / qty * 10.0
-            if ic.total_credit_dollars and 0.4 <= real_spx / (ic.total_credit_dollars or 1) <= 2.5:
+            # ABSOLUTE sanity only: a credit must be positive and can't exceed the
+            # combined wing width (max theoretical for the structure). The old
+            # RELATIVE band (0.4–2.5× model) rejected LEGIT rich fills whenever the
+            # CBOE model ran low (Jul-1: real 2.65×/4.6× model → guard fell back to
+            # the fictional model anchor → stop threshold instantly breached →
+            # churn-stops). The fill is broker truth; the model is the proven liar —
+            # the model never gets to veto the fill. Weird ratios stay LOUD but
+            # non-blocking.
+            wing_cap_spx = 0.0
+            try:
+                if ic.call_leg:
+                    wing_cap_spx += (ic.call_leg.long_strike - ic.call_leg.short_strike) * 100.0
+                if ic.put_leg:
+                    wing_cap_spx += (ic.put_leg.short_strike - ic.put_leg.long_strike) * 100.0
+            except (AttributeError, TypeError):
+                pass
+            if wing_cap_spx <= 0:
+                wing_cap_spx = 5000.0
+            if 0.0 < real_spx <= max(wing_cap_spx, 100.0):
                 ic.real_credit_dollars = round(real_spx, 2)
+                ratio = (real_spx / ic.total_credit_dollars) if ic.total_credit_dollars else None
+                if ratio is not None and not (0.5 <= ratio <= 3.0):
+                    log.warning("IC real-credit %s ratio %.2f× vs model ($%.0f vs $%.0f) — "
+                                "using REAL anchor anyway (model is the untrusted side)",
+                                ic.build_id, ratio, real_spx, ic.total_credit_dollars or 0)
             else:
-                log.warning("IC real-credit %s out of band ($%.0f vs model $%.0f) — keeping model anchor",
-                            ic.build_id, real_spx, ic.total_credit_dollars or 0)
+                log.warning("IC real-credit %s IMPLAUSIBLE ($%.0f, wing cap $%.0f) — keeping model anchor",
+                            ic.build_id, real_spx, wing_cap_spx)
             log.info("IC fill-read: %s real credit $%.2f (%.3f/share) | model $%.0f | per-ct $%.0f",
                      ic.build_id, cf, real_per_share, ic.total_credit_dollars or 0,
                      ic.real_credit_dollars)

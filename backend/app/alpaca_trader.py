@@ -232,6 +232,7 @@ class AlpacaTrader:
         tick_give_cents: int = 1,
         ladder_steps_cents: list[int] | None = None,
         wait_sec: int = 8,
+        tag: str | None = None,    # book attribution → client_order_id (Rule 2: EVERY order tags)
     ) -> dict | None:
         """LIVE marketable-limit IC execution with a reprice ladder.
 
@@ -262,7 +263,7 @@ class AlpacaTrader:
             result = await self._submit_ic_limit(
                 underlying, expiry,
                 call_short, call_long, put_short, put_long,
-                qty=qty, limit_price=limit_price,
+                qty=qty, limit_price=limit_price, tag=tag,
             )
             if not result or result.get("shadow"):
                 return result
@@ -286,7 +287,7 @@ class AlpacaTrader:
             underlying, expiry,
             call_short=call_short, call_long=call_long,
             put_short=put_short,   put_long=put_long,
-            qty=qty,
+            qty=qty, tag=tag,
         )
 
     async def _submit_ic_limit(
@@ -295,6 +296,7 @@ class AlpacaTrader:
         call_short: float, call_long: float,
         put_short: float,  put_long: float,
         qty: int, limit_price: float,
+        tag: str | None = None,
     ) -> dict | None:
         """Submit a 4-leg mleg LIMIT order. Internal helper for the ladder."""
         if not settings.TRADING_ENABLED:
@@ -323,6 +325,8 @@ class AlpacaTrader:
                     {"symbol": pl, "ratio_qty": "1", "side": "buy",  "position_intent": "buy_to_open"},
                 ],
             }
+            if tag:
+                order["client_order_id"] = f"{tag}-{uuid.uuid4().hex[:10]}"
             url = f"{settings.ALPACA_BASE_URL}/v2/orders"
             resp = await client.post(url, json=order)
             resp.raise_for_status()
@@ -532,6 +536,32 @@ class AlpacaTrader:
         except Exception as e:  # noqa: BLE001
             log.error("Alpaca get_fee_activities failed: %s", e)
             return out
+
+    async def get_option_quotes(self, symbols: list[str]) -> dict[str, dict]:
+        """READ-ONLY: latest NBBO for a list of OCC option symbols — the
+        EXECUTABLE mark used by the breakeven stop (replaces the stale CBOE
+        delayed-mid that fired phantom stops in profit). Uses the Alpaca options
+        data feed (settings.ALPACA_OPTIONS_FEED; "indicative" on paper).
+
+        Returns {sym: {"bid": float|None, "ask": float|None, "ts": str|None}}.
+        Empty dict on any failure — the caller treats a missing/incomplete quote
+        as "no reliable mark" and HOLDS (never closes on a bad mark)."""
+        if not symbols:
+            return {}
+        try:
+            client = await self._ensure_client()
+            url = "https://data.alpaca.markets/v1beta1/options/quotes/latest"
+            params = {"symbols": ",".join(symbols), "feed": settings.ALPACA_OPTIONS_FEED}
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            quotes = (resp.json() or {}).get("quotes", {}) or {}
+            out: dict[str, dict] = {}
+            for sym, q in quotes.items():
+                out[sym] = {"bid": q.get("bp"), "ask": q.get("ap"), "ts": q.get("t")}
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.warning("Alpaca get_option_quotes failed: %s", e)
+            return {}
 
     async def close_all_positions(self) -> dict:
         """Emergency flatten — liquidate ALL open positions AND cancel ALL open

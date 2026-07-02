@@ -263,6 +263,41 @@ class Settings:
     # profit → 100% stop-rate, every condor stopped (Jun 22-25). Default OFF for
     # safety; set true in .env to run the fix. Falls back to model until fill read.
     IC_STOP_ANCHOR_REAL: bool = _b("IC_STOP_ANCHOR_REAL", False)
+    # Mark the breakeven stop's buyback off Alpaca SPY NBBO (the EXECUTABLE price
+    # we'd really pay to close) instead of the CBOE delayed-mid chain. On low-vol
+    # 0DTE the CBOE mid ran ~4× the real fill → the stop fired on a phantom loss
+    # while the condor was in profit (Jun-30: 2/2 stopped in profit, SPY pinned,
+    # strikes never tested). NBBO is real-time + two-sided. Fail-safe: if no fresh
+    # two-sided quote for all 4 legs, the stop HOLDS (never closes on a bad mark).
+    IC_STOP_MARK_NBBO: bool = _b("IC_STOP_MARK_NBBO", True)
+    IC_STOP_NBBO_MAX_STALE_SEC: int = _i("IC_STOP_NBBO_MAX_STALE_SEC", 300)
+    # Alpaca options data feed for the NBBO mark. Paper accounts get "indicative"
+    # (free, real-time-derived NBBO); "opra" needs a paid subscription.
+    ALPACA_OPTIONS_FEED: str = os.getenv("ALPACA_OPTIONS_FEED", "indicative")
+    # ENTRY on the same NBBO plane: pick strikes by per-strike implied-vol delta
+    # from executable Alpaca quotes instead of the CBOE delayed-mid chain. The
+    # CBOE plane mispriced entries (model credit 2.6-4.6× under the fill Jul-1;
+    # '16Δ' strikes sold near-ATM on a trending day). CBOE remains the loud
+    # fallback when the NBBO chain is unavailable. Default OFF for safety.
+    IC_ENTRY_NBBO: bool = _b("IC_ENTRY_NBBO", False)
+    IC_ENTRY_NBBO_SPAN_PCT: float = _f("IC_ENTRY_NBBO_SPAN_PCT", 0.035)
+    # Assignment guard: SPY options are PHYSICAL-DELIVERY — a short leg ITM at
+    # expiry becomes ±100 shares/contract (the −600 SPY margin-strangle incident).
+    # In the final N minutes before the close (early-close aware via the Alpaca
+    # calendar), any open condor whose short strike is within BUFFER of spot is
+    # force-closed. Defense, not strategy — default ON.
+    IC_ASSIGN_GUARD_ENABLED: bool = _b("IC_ASSIGN_GUARD_ENABLED", True)
+    IC_ASSIGN_GUARD_MIN_BEFORE_CLOSE: int = _i("IC_ASSIGN_GUARD_MIN_BEFORE_CLOSE", 15)
+    IC_ASSIGN_GUARD_BUFFER: float = _f("IC_ASSIGN_GUARD_BUFFER", 0.50)  # SPY $
+    # MEIC canon (Chambless): each SIDE must pay for its own risk. A side whose
+    # CONSERVATIVE executable credit (short.bid − long.ask) is below this floor
+    # (SPX-scale $/contract; 100 = $0.10/share SPY) is NOT entered. One side
+    # passing → single credit spread; both failing → slot skipped. Jun-30 sold
+    # call spreads for $0.00-0.04 against $200 wing risk — free risk, never again.
+    IC_MIN_SIDE_CREDIT: float = _f("IC_MIN_SIDE_CREDIT", 100.0)
+    # One-sided entries only make sense on the NBBO plane (honest per-side
+    # credits). Default OFF until the one-sided stop/close paths are validated.
+    IC_ONE_SIDED_ENABLED: bool = _b("IC_ONE_SIDED_ENABLED", False)
 
     # CBOE-mid marketable-limit execution for MEIC condors. SHADOW first: still
     # submit market mleg, but stash the limit-price we WOULD have used (CBOE mid

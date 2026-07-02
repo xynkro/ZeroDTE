@@ -194,6 +194,9 @@ class IronCondorBuilder(BaseModel):
     # is on — the model credit it used before was mis-scaled/too low, firing the
     # stop while still in profit (100% stop-rate bug). None until the fill is read.
     real_credit_dollars: float | None = None
+    # WHY this condor closed: "stop_nbbo" / "stop_cboe" / "assignment_guard" /
+    # "expiry" — so debriefs never reverse-engineer exits from raw fills again.
+    close_reason: str | None = None
 
 
 class DashboardState(BaseModel):
@@ -215,5 +218,9 @@ class DashboardState(BaseModel):
     # /icnow), so EOD can score each one separately.
     iron_condor: IronCondorBuilder = IronCondorBuilder()
     iron_condor_history: list[IronCondorBuilder] = []
+    # Per-slot MEIC decision ledger: {date, slot, action, detail} for EVERY
+    # configured entry slot — built / skip_thin / skip_regime / skip_vix /
+    # skip_early_close / error. Kills the "why didn't 13:00 fire?" forensics.
+    meic_slots: list[dict] = []
     # Current dealer-gamma (GEX) snapshot — regime/walls for the dashboard. See gex.py.
     gex: dict | None = None

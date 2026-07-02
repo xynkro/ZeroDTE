@@ -2758,10 +2758,14 @@ class Orchestrator:
             log.info("Trade #%d closed: outcome=%s pnl=%.0f reason=%s",
                      pt.trade_no, pt.outcome, pt.pnl or 0.0, pt.exit_reason)
             self._persist_state()  # capture exit immediately
-            # Submit close order to Alpaca paper broker. Gate on "had a broker entry"
-            # (pt.id registered), NOT on alpaca_order_id — the entry task may not have
-            # set it yet. _submit_alpaca_exit awaits that entry task before deciding.
-            if settings.PAPER_BROKER == "alpaca" and pt.id in self._broker_entry_tasks \
+            # Submit close order to Alpaca paper broker. Gate on "had a broker entry":
+            # either the in-memory entry task is registered (same-process open) OR the
+            # trade carries an alpaca_order_id (RESTORED after a restart — the task dict
+            # is in-memory only, and gating on it alone silently SKIPPED the broker
+            # close for any position that survived a mid-day restart → unmanaged ride).
+            # _submit_alpaca_exit handles a missing entry task gracefully.
+            if settings.PAPER_BROKER == "alpaca" \
+               and (pt.id in self._broker_entry_tasks or pt.alpaca_order_id) \
                and hasattr(self, "alpaca_trader") and self.alpaca_trader is not None:
                 asyncio.create_task(self._submit_alpaca_exit(pt))
             # Telegram exit alert — only on LIVE bars (not mock-feed replay)

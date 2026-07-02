@@ -1,10 +1,42 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# 📍 CURRENT STATE — 2026-06-12 (read THIS first; history below is context)
+# 📍 CURRENT STATE — 2026-07-02 (read THIS first; history below is context)
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# 👥 TWO-AGENT DESK: 🦅 MEICZero (iron condors) + 🌊 WaveZero (credit spreads) share
-#    this account + backend. **READ OWNERS.md** — code ownership, the shared-file
-#    handshake, and the broker-truth rules that stop the two books conflating.
+# 🎯 **READ DECISION.md** — pre-registered scale/retire gates + what counts as a
+#    CLEAN night. The scale-vs-retire call is made by those rules, mechanically.
+#    Clean-night candidate #1 = 2026-07-02. Bug-nights Jun-22→Jul-1 count for NOTHING.
+#
+# 🚀 2026-07-02 REBUILD — ONE DATA PLANE (all live, flag-gated, proof-tested):
+#    • ENTRY: strikes by per-strike-IV delta off LIVE Alpaca NBBO (nbbo_chain.py,
+#      IC_ENTRY_NBBO=true; CBOE = loud fallback). Live probe 09:31 ET: NBBO picked
+#      Δ0.151/Δ0.172 @ $460 credit while CBOE's stale chain wanted the put 2
+#      strikes closer to the money (Jul-1's near-ATM disease, dodged live).
+#    • STOP: buyback marked off NBBO (IC_STOP_MARK_NBBO=true), anchored to the
+#      REAL fill credit ALWAYS (absolute wing-cap sanity only — the old 0.4-2.5×
+#      model band vetoed LEGIT rich fills on Jul-1 → instant churn-stops).
+#      Fail-safe: no fresh 2-sided quote on every leg → HOLD, never close on a
+#      phantom mark.
+#    • FREE-RISK BAN: per-side conservative-credit floor IC_MIN_SIDE_CREDIT=$100;
+#      one side pays → trades ALONE as a 2-leg credit spread (IC_ONE_SIDED_ENABLED
+#      =true; stop/close/guard/collision all one-sided-aware, proof suites green).
+#    • ASSIGNMENT GUARD: final 15 min, short within $0.50 SPY of spot → force-
+#      close (close_reason=assignment_guard). Early-close aware (Alpaca calendar).
+#    • NO SILENT DECISIONS: per-slot meic_slots ledger (built/skip_thin/skip_regime/
+#      skip_early_close/error), close_reason on every exit, EOD integrity line,
+#      per-slot dedup keys (old single-value key forgot earlier slots).
+#    • Fixes: option-quote requests chunked at 50 (endpoint 400s above ~100);
+#      collision nudge loops (Jun-30 13:00 422 was a one-shot nudge landing on the
+#      next blocked strike); limit-ladder path now tags meic- (Rule 2 gap).
+#    Verify scripts: scripts/verify_nbbo_entry.py / verify_nbbo_stop.py /
+#    verify_guard_ledger.py — run all three after ANY touch of these paths.
+#    ⏰ Session checkpoints (if session alive): 11:03 / 13:04 / 16:36 ET crons.
+#    Manual equivalents: reconcile_ledger.py + debrief_log tail + meic_slots +
+#    stderr grep "NBBO IC pick|IC STOP|ASSIGNMENT GUARD|MEIC ONE-SIDED".
+#
+# 👥 TWO-AGENT DESK: 🦅 MEICZero (iron condors) + 🌊 WaveZero (credit spreads) —
+#    now on SEPARATE accounts/backends (MEIC :8765 $10k acct; Wave :8766).
+#    **READ OWNERS.md** — code ownership, the shared-file handshake, and the
+#    broker-truth rules that stop the two books conflating.
 #
 # ⏭️  NEXT BUILD (queued 2026-06-25, do FRESH — don't rush the live order path):
 #     Wire the VALIDATED WAVE config flag-gated + default-OFF, then enable deliberately.

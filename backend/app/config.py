@@ -188,10 +188,16 @@ class Settings:
     # model overprices deep-OTM CALL spreads ~10× (trade #1 real credit $0.00, #2
     # $1/ct vs model ~$20/ct). Enforce the floor's INTENT against the REAL market:
     # at entry, quote the SPY spread mid (CBOE); walk toward spot (never inside the
-    # cushion) until real mid ≥ this $/contract floor, else SKIP the day. $3/ct =
-    # the backtest's $30 SPX floor at 0.1 exec scale. 0 disables (model-only floor).
-    # CBOE unquotable at entry → SKIP (fail-closed: protection > participation).
-    WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 3.0)
+    # cushion) until real mid ≥ this $/contract floor, else SKIP the day.
+    # CALIBRATION (2026-07-02, Caspar caught the $3 error): the backtest's $30-SPX
+    # floor was the never-binding MINIMUM — its OPERATING credits were median $307
+    # SPX (31% of width!), p25 $167, p10 $78. A $3/ct floor = risking $97 to make $3
+    # (97% breakeven WR) — trades the validated distribution never contained. Floor
+    # = backtest p10 ≈ $8/ct: only take trades the validated economics recognize.
+    # If reality NEVER pays p10 credit at cushion-legal strikes, the trial starves
+    # fast → that IS the verdict (model credit world = fantasy → retire early).
+    # 0 disables (model-only floor). CBOE unquotable at entry → SKIP (fail-closed).
+    WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 8.0)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

@@ -44,6 +44,16 @@ entries at true mid and meter slippage precisely. IBKR stays a DATA feed only �
 orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
+## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-07-02 — real-credit floor $3 → $8/ct** (before any trade ran under a floor).
+  Trades #1/#2 exposed that reality pays ~$0–1/ct for spreads the flat-IV model
+  prices at ~$20/ct. First floor ($3/ct) naively scaled the backtest's $30-SPX
+  *minimum*; Caspar flagged it as absurdly low. The backtest's OPERATING credits:
+  median $30.7/ct-scaled (31% of width), p25 $16.7, p10 $7.8. Floor set to p10
+  ($8/ct): only accept trades inside the validated credit distribution. Corollary:
+  if no cushion-legal strike ever pays p10, the trial starves quickly — which IS
+  the honest early verdict (the validated economics don't exist in reality).
+
 ## What was already fixed before the trial started (execution integrity)
 - One-attempt-per-day marker persists across restarts (no double-entry).
 - Exit: single mleg close; late (≥15:55 ET) fully-OTM spreads book

@@ -159,7 +159,8 @@ async def shadow_read_task(orch, bar, slot: str, engine_action: str,
                     f"{engine_action} {engine_detail}".strip())
         read = _parse_read(await _run_claude(prompt))
         row = {"date": datetime.now().strftime("%Y-%m-%d"), "slot": slot,
-               "ctx": ctx, "engine_action": engine_action,
+               "model": settings.CLAUDE_SHADOW_MODEL, "ctx": ctx,
+               "engine_action": engine_action,
                "engine_detail": engine_detail[:160], "read": read}
         _log_row(row)
         if read:

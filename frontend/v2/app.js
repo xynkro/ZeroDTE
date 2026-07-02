@@ -1015,14 +1015,17 @@ function PlaybookView() {
 
     <${Card} title="MEIC — Multiple-Entry Iron Condor" accent="var(--amber)"
       actions=${html`<${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? 'live' : 'off'}</${Badge}>`}>
-      <p class="pb-lead">Sells <b>${slotCount} iron condors</b> across the day at fixed times — pure premium-selling. Each one profits if SPX simply <b>stays range-bound</b> into the 4:00 PM expiry. Laddering the entries spreads timing risk instead of betting the whole day on one moment.</p>
+      <p class="pb-lead">Sells premium at <b>${slotCount} fixed times</b> across the day — an <b>iron condor when both sides pay</b>, a single put/call <b>credit spread when only one side does</b>. Each entry profits if SPX simply <b>stays range-bound</b> into the 4:00 PM expiry. Laddering spreads timing risk instead of betting the whole day on one moment.</p>
       <div class="pb-params">
         <${ParamRow} k="Entries" v=${(slots || '11:00 · 12:00 · 13:00 · 14:00') + ' ET'} />
         <${ParamRow} k="Size" v=${`${m.contracts_per_slot ?? 1} contract / slot · SPX built, SPY-executed (1/10)`} />
+        <${ParamRow} k="Pricing" v=${m.entry_plane === 'alpaca_nbbo' ? 'live NBBO + per-strike IV (executable quotes)' : 'CBOE delayed mids'} />
         <${ParamRow} k="Shorts" v=${dlt(m.short_delta) + ' call spread + ' + dlt(m.short_delta) + ' put spread'} />
-        <${ParamRow} k="Wings" v=${`SPX ${m.wing_spx ?? 10}pt → SPY $${m.wing_spy ?? 1}`} />
-        <${ParamRow} k="Min credit" v=${(m.min_credit_pct ?? 10) + '% of wing (else skip)'} />
-        <${ParamRow} k="Stop" v=${`breakeven — buy-back ≥ ${m.stop_buffer ?? 1.05}× credit, or a short-strike touch · else 16:00 expiry`} />
+        <${ParamRow} k="Wings" v=${`SPX ${m.wing_spx ?? 25}pt → SPY $${m.wing_spy ?? 2.5}`} />
+        <${ParamRow} k="Side floor" v=${`each side must pay ≥ $${m.min_side_credit_usd ?? 100}${m.one_sided_enabled ? ' · paying side trades alone' : ' (else skip)'}`} />
+        <${ParamRow} k="Min credit" v=${(m.min_credit_pct ?? 10) + '% of wing (else skip the slot)'} />
+        <${ParamRow} k="Stop" v=${`breakeven — buy-back ≥ ${m.stop_buffer ?? 1.05}× the REAL fill credit, marked on ${m.stop_mark === 'alpaca_nbbo' ? 'live NBBO' : 'CBOE mids'} · else 16:00 expiry`} />
+        <${ParamRow} k="Assign guard" v=${m.assignment_guard && m.assignment_guard.enabled ? `final ${m.assignment_guard.window_min_before_close ?? 15} min: force-close any short within $${m.assignment_guard.buffer_spy ?? 0.5} of spot` : 'off'} />
       </div>
       <p class="pb-note"><b>No early take-profit</b> — the backtest showed it caps the full-credit winners that ARE the edge. Expect many small scratched reds + occasional bigger green nights (the asymmetry). ≈ <b>$250–300/day defined risk</b> at 1 contract/slot.</p>
     </${Card}>

@@ -741,9 +741,23 @@ async def playbook_endpoint():
             "max_per_day": gv("MEIC_MAX_PER_DAY"),
             "instrument": gv("IC_INSTRUMENT"),
             "short_delta": gv("EOD_IC_SHORT_DELTA"),
-            "wing_spx": gv("IC_WING_WIDTH"), "wing_spy": gv("SPY_WING_DOLLARS"),
+            # MEIC trades the EOD_IC wing (25 SPX / 2.5 SPY) — IC_WING_WIDTH is the
+            # legacy single-IC field and misreported the playbook as 10/1.
+            "wing_spx": gv("EOD_IC_WING_DOLLARS"),
+            "wing_spy": (gv("EOD_IC_WING_DOLLARS") or 0) / 10.0,
             "min_credit_pct": gv("EOD_IC_MIN_CREDIT_PCT"),
             "stop_buffer": gv("IC_STOP_BUFFER"),
+            # The 2026-07 execution plane — what actually prices, stops, protects
+            "entry_plane": "alpaca_nbbo" if gv("IC_ENTRY_NBBO") else "cboe_delayed",
+            "stop_mark": "alpaca_nbbo" if gv("IC_STOP_MARK_NBBO") else "cboe_delayed",
+            "stop_anchor": "real_fill" if gv("IC_STOP_ANCHOR_REAL") else "model",
+            "min_side_credit_usd": gv("IC_MIN_SIDE_CREDIT"),
+            "one_sided_enabled": bool(gv("IC_ONE_SIDED_ENABLED")),
+            "assignment_guard": {
+                "enabled": bool(gv("IC_ASSIGN_GUARD_ENABLED")),
+                "window_min_before_close": gv("IC_ASSIGN_GUARD_MIN_BEFORE_CLOSE"),
+                "buffer_spy": gv("IC_ASSIGN_GUARD_BUFFER"),
+            },
         },
         "wave": {
             "enabled": bool(gv("DIRECTIONAL_SPREAD_ENABLED")),

@@ -125,6 +125,19 @@ def decide_band_trade(
                         vol_released=bool(vol_released), choppy=choppy, pct_otm=pct_otm, r5=r5)
 
 
+def spread_model_credit(S0: float, side: str, short_strike: float, wing: float,
+                        r5: float, periods_remaining: float,
+                        p: BandParams = BandParams()) -> float:
+    """Model (BS) credit $/contract for a candidate strike — the SAME tv construction
+    decide_band_trade uses internally. Lets the live real-credit walk recompute the
+    model credit when it moves a strike, without touching the parity-proven core."""
+    downtrend = side == "sell_put_cs"
+    sk = p.put_skew if downtrend else p.call_skew
+    tv0 = bs.total_vol_to_expiry(r5, periods_remaining, p.premium_mult) * sk
+    lng = short_strike - wing if downtrend else short_strike + wing
+    return bs.spread_value(side, S0, short_strike, lng, tv0) * MULT
+
+
 def seed_running_medians(bb_len: int = 14, bb_mult: float = 2.5) -> "RunningMedians":
     """Build a RunningMedians seeded from the historical SPX_5m_3y.json so the
     Schwartz/cushion gate is calibrated from day one — the live expanding median

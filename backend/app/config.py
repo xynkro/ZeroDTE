@@ -183,6 +183,15 @@ class Settings:
     # fire. Parity-proven to the validated backtest (OOS +$41.68/t5.85). Default OFF —
     # enable in .env only after review (this is a real paper-trading engine).
     WAVE_BAND_STRATEGY_ENABLED: bool = _b("WAVE_BAND_STRATEGY_ENABLED", False)
+    # Real-quote credit floor (2026-07-02, after trial trades #1/#2): the backtest's
+    # $30-SPX credit_floor exists to ensure we GET PAID for the risk — but the flat-IV
+    # model overprices deep-OTM CALL spreads ~10× (trade #1 real credit $0.00, #2
+    # $1/ct vs model ~$20/ct). Enforce the floor's INTENT against the REAL market:
+    # at entry, quote the SPY spread mid (CBOE); walk toward spot (never inside the
+    # cushion) until real mid ≥ this $/contract floor, else SKIP the day. $3/ct =
+    # the backtest's $30 SPX floor at 0.1 exec scale. 0 disables (model-only floor).
+    # CBOE unquotable at entry → SKIP (fail-closed: protection > participation).
+    WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 3.0)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

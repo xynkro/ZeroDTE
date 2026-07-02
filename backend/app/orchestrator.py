@@ -1108,21 +1108,35 @@ class Orchestrator:
             qty = max(1, ic.contracts or 1)
             r1 = r2 = None
             oks = []
+
+            async def _close_side(side: str, s_k: float, l_k: float):
+                # RETRY on transient failures: the 2026-07-02 assignment-guard
+                # closes died on a momentary DNS blip and were never retried —
+                # one attempt is not a close. 3 tries, short backoff; the caller
+                # alerts loudly if all fail.
+                for attempt in range(3):
+                    r = await self.alpaca_trader.close_credit_spread(
+                        underlying="SPY", expiry=today_str, side=side,
+                        short_strike=s_k, long_strike=l_k, qty=qty,
+                        tag=f"meic-{ic.build_id}")
+                    if r:
+                        return r
+                    log.warning("IC close %s side attempt %d/3 failed (%s) — retrying",
+                                side, attempt + 1, ic.build_id)
+                    await asyncio.sleep(5 * (attempt + 1))
+                return None
+
             if ic.call_leg:
                 cs, cl = spy(ic.call_leg.short_strike), spy(ic.call_leg.long_strike)
                 if cl <= cs:
                     cl = cs + 1.0
-                r1 = await self.alpaca_trader.close_credit_spread(
-                    underlying="SPY", expiry=today_str, side="call",
-                    short_strike=cs, long_strike=cl, qty=qty, tag=f"meic-{ic.build_id}")
+                r1 = await _close_side("call", cs, cl)
                 oks.append(bool(r1 and not r1.get("shadow")))
             if ic.put_leg:
                 ps, pl = spy(ic.put_leg.short_strike), spy(ic.put_leg.long_strike)
                 if pl >= ps:
                     pl = ps - 1.0
-                r2 = await self.alpaca_trader.close_credit_spread(
-                    underlying="SPY", expiry=today_str, side="put",
-                    short_strike=ps, long_strike=pl, qty=qty, tag=f"meic-{ic.build_id}")
+                r2 = await _close_side("put", ps, pl)
                 oks.append(bool(r2 and not r2.get("shadow")))
             ok = bool(oks) and all(oks)
             is_assign = reason == "assignment_guard"
@@ -1917,13 +1931,16 @@ class Orchestrator:
                 ic = None
             if ic and ic.get("ok"):
                 ic_src = "NBBO"
-                log.info("NBBO IC pick: SC %.0f (%.2fΔ) LC %.0f | SP %.0f (%.2fΔ) LP %.0f | "
-                         "credit $%.0f mid / $%.0f cons (call $%.0f + put $%.0f)",
-                         ic["short_call"], ic["short_call_delta"], ic["long_call"],
-                         ic["short_put"], ic["short_put_delta"], ic["long_put"],
-                         ic["total_credit_usd"],
-                         ic.get("call_credit_cons_usd", 0) + ic.get("put_credit_cons_usd", 0),
-                         ic["call_credit_usd"], ic["put_credit_usd"])
+                # Side-aware logging: a one-sided pick has only its own side's
+                # keys — reading both unconditionally KeyError'd the whole build
+                # (2026-07-02 14:00 slot lost to exactly that).
+                _c = (f"SC {ic['short_call']:.0f} ({ic['short_call_delta']:.2f}Δ) "
+                      f"LC {ic['long_call']:.0f}" if "short_call" in ic else "call side: cut")
+                _p = (f"SP {ic['short_put']:.0f} ({ic['short_put_delta']:.2f}Δ) "
+                      f"LP {ic['long_put']:.0f}" if "short_put" in ic else "put side: cut")
+                log.info("NBBO IC pick [%s]: %s | %s | credit $%.0f mid / $%.0f cons",
+                         ic.get("sides", "both"), _c, _p, ic["total_credit_usd"],
+                         ic.get("call_credit_cons_usd", 0) + ic.get("put_credit_cons_usd", 0))
             else:
                 log.warning("NBBO IC pick unavailable (%s) — CBOE fallback",
                             (ic or {}).get("error", "none"))

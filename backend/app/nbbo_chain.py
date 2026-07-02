@@ -94,7 +94,15 @@ def _pick_side(rows: list[dict], spot: float, target_delta: float,
         if tv is None:
             continue
         delta = bs.call_delta(spot, k, tv) if is_call else abs(bs.put_delta(spot, k, tv))
-        if delta > 0.45:      # never sell near-ATM no matter what the chain says
+        if delta > 0.30:      # never sell near-ATM no matter what the chain says
+            continue
+        # Hard OTM floor: wide/poisoned afternoon quotes can invert to garbage
+        # IV and make a near-money strike LOOK like target delta (2026-07-02
+        # 14:00 sold a 744C with spot 743.4 — 0.08% OTM — as '16Δ'; it finished
+        # ITM at the bell and only the assignment guard saved it). Distance is
+        # quote-independent: shorts must sit at least MIN_OTM_PCT away.
+        otm_pct = (k - spot) / spot if is_call else (spot - k) / spot
+        if otm_pct < 0.004:   # 0.4% ≈ 3 SPY pts — well outside one-bell noise
             continue
         long_k = float(round(k + wing_spy)) if is_call else float(round(k - wing_spy))
         lr = by_strike.get(long_k)

@@ -158,7 +158,11 @@ async def shadow_read_task(orch, bar, slot: str, engine_action: str,
                   + f"\n\nENGINE ACTION (already taken, do not second-guess): "
                     f"{engine_action} {engine_detail}".strip())
         read = _parse_read(await _run_claude(prompt))
-        row = {"date": datetime.now().strftime("%Y-%m-%d"), "slot": slot,
+        # ET session date, NOT Mac-local (Singapore) — an SGT stamp shifts
+        # evening-session reads to "tomorrow" and breaks the scorer's join.
+        from zoneinfo import ZoneInfo
+        row = {"date": datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"),
+               "slot": slot,
                "model": settings.CLAUDE_SHADOW_MODEL, "ctx": ctx,
                "engine_action": engine_action,
                "engine_detail": engine_detail[:160], "read": read}

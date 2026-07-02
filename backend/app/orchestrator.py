@@ -148,6 +148,26 @@ class Orchestrator:
             self._today_date = data.get("today_date")
             self._today_evaluated = int(data.get("today_evaluated") or 0)
             self._today_gated = dict(data.get("today_gated") or {})
+            # Per-slot MEIC decision ledger — must survive restarts or the EOD
+            # integrity line loses the morning's slots after a mid-day bounce.
+            self.state.meic_slots = [r for r in (data.get("meic_slots") or [])
+                                     if isinstance(r, dict)]
+            # Self-heal: a build that exists in history but lost its slot row
+            # (e.g. restart predating this persistence) gets a synthesized
+            # 'built' row — the integrity line must never under-report a fired
+            # slot just because the process bounced.
+            try:
+                have = {(r.get("date"), r.get("slot")) for r in self.state.meic_slots}
+                for b in self.state.iron_condor_history:
+                    trg, bid = (b.trigger or ""), (b.build_id or "")
+                    if trg.startswith("slot") and bid.startswith("ic_"):
+                        d_, s_ = bid[3:13], trg[4:]
+                        if (d_, s_) not in have:
+                            self.state.meic_slots.append(
+                                {"date": d_, "slot": s_, "action": "built",
+                                 "detail": f"backfilled from {bid}", "at": ""})
+            except Exception:  # noqa: BLE001
+                pass
             self.state.last_signals = self._signal_history[-20:]
             self.state.open_positions = [t for t in self.paper_trades if not t.closed]
             log.info(
@@ -177,6 +197,7 @@ class Orchestrator:
                 "trade_seq_today": self._trade_seq_today,
                 "trade_seq_date":  self._trade_seq_date,
                 "eod_ic_built_today": self._eod_ic_built_today,
+                "meic_slots": [dict(r) for r in list(self.state.meic_slots)],
                 # Today's heartbeat ledger — survives restarts so the dashboard
                 # never shows "0 signals" after a mid-session bounce.
                 "today_date": self._today_date,

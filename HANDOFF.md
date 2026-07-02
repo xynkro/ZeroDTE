@@ -1,4 +1,18 @@
 # ═══════════════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO 25-TRADE TRIAL — LIVE since 2026-07-01 (this instance, :8766)
+#    Band config ARMED (validated, parity-proven): one entry/day ~10:00 ET,
+#    Schwartz vol-released + BB 14/2.5 + cushion 0.5% + TP40/breach, ~40% of days,
+#    $10K acct PA34H0BS75JB, ~6ct (~$600 max-loss/trade). MEIC OFF here.
+#    GATES ARE PRE-REGISTERED — docs/TRIAL_GATES.md. Do NOT move them. Nightly
+#    debrief prints the 🧪 TRIAL scoreboard (n/25 real fills, $/trade, capture%, dd%).
+#    Telemetry: entry/exit CBOE mid on every trade (signal-vs-execution decomposition).
+#    Dashboard: Wave tab BandStatusCard shows armed/opened/why-gated each day.
+#    Exit hardening 2026-06-30: expired_otm booking, bounded retry, no post-15:55
+#    thrash, UNMANAGED-POSITION alert. Band day-marker survives restarts.
+#    Verdict at n=25 (~end-Sep) or on a HALT trigger — per the gates, incl. RETIRE.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 📍 CURRENT STATE — 2026-06-12 (read THIS first; history below is context)
 # ═══════════════════════════════════════════════════════════════════════════
 #

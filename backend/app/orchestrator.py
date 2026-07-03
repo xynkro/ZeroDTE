@@ -1433,9 +1433,15 @@ class Orchestrator:
             _url = settings.DASHBOARD_PUBLIC_URL
             _eod = "\n\n".join(p for p in (_book_hdr, ic_msg, wave_msg) if p)
             # Instance identity — WaveZero shares MEIC's bot for sends; the header
-            # keeps the two books' EODs unmistakable in the same chat.
+            # keeps the two books' EODs unmistakable in the same chat. DUAL-STAMPED
+            # (Caspar is in SG, UTC+8; the market is ET; the Mac clock is SGT — a
+            # Jul-2/3 mixup from unlabeled dates caused a phantom 'missed session').
             if not settings.MEIC_ENABLED:
-                _eod = f"🌊 WaveZero · $10K paper · 25-trade trial\n\n{_eod}"
+                from zoneinfo import ZoneInfo as _ZI
+                _now = datetime.now(ET)
+                _sg = _now.astimezone(_ZI("Asia/Singapore"))
+                _eod = (f"🌊 WaveZero · $10K paper · 25-trade trial\n"
+                        f"{_now:%a %d %b %H:%M} ET · {_sg:%a %d %b %H:%M} SG\n\n{_eod}")
             if _url:
                 _eod = f"{_eod}\n📱 {_url}"
             eod_ok = tg.ping_eod_iron_condor(_eod)

@@ -65,6 +65,13 @@ says execution is the binding constraint.
   if no cushion-legal strike ever pays p10, the trial starves quickly — which IS
   the honest early verdict (the validated economics don't exist in reality).
 
+- **2026-07-03 — daily-loss rail 2% → 12% (risk-owner approved, from the param
+  debrief).** The $200 limit predated $1,000/unit sizing: a NORMAL validated loss
+  day (−$90…−$304/unit) would trip it, making its breach-ping meaningless (and the
+  band path takes one trade/day, so it blocked nothing). At 12% ($1,200 — just above
+  one full-unit wipe) it is a genuine anomaly brake again. The pre-registered 15%
+  drawdown HALT is unchanged and remains the hard backstop.
+
 ## What was already fixed before the trial started (execution integrity)
 - One-attempt-per-day marker persists across restarts (no double-entry).
 - Exit: single mleg close; late (≥15:55 ET) fully-OTM spreads book

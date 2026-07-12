@@ -45,6 +45,7 @@ class AlpacaTrader:
 
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
+        self.last_error: str | None = None   # last order-path failure text (post-mortems)
 
     def _headers(self) -> dict:
         return {
@@ -410,10 +411,18 @@ class AlpacaTrader:
             return result
 
         except httpx.HTTPStatusError as e:
+            # Persist WHY for post-mortems: kickstart truncates the log files,
+            # so the week of Jul-7's four stop_nbbo_FAILED closes left no error
+            # text anywhere. The orchestrator copies this into ic.notes.
+            self.last_error = f"close {side} HTTP {e.response.status_code}: {e.response.text[:160]}"
             log.error("Alpaca close HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            self.last_error = f"close {side}: connection failed"
+            raise   # never delivered → the caller's retry loop handles it
         except Exception as e:
+            self.last_error = f"close {side}: {str(e)[:160]}"
             log.error("Alpaca close credit spread failed: %s", e)
             return None
 

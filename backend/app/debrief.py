@@ -219,7 +219,12 @@ def meic_history(log_path: str) -> dict:
                 except ValueError:
                     continue
                 d = r.get("date", "")
-                if (r.get("ic_executed") or 0) > 0 and r.get("ic_real_net") is not None:
+                # A night counts when condors traded AND we have EITHER number.
+                # (Jul-9: fills-capture missed ic_real_net but broker shows +$30
+                # — the old ic_real_net-only filter silently deleted the night.)
+                if (r.get("ic_executed") or 0) > 0 and (
+                        r.get("ic_real_net") is not None
+                        or r.get("ic_broker_net") is not None):
                     by_date[d] = r
     except OSError:
         by_date = {}

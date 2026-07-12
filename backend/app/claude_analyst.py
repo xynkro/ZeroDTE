@@ -102,6 +102,12 @@ async def _run_claude(prompt: str) -> str | None:
                      (err or b"")[:120])
             return None
         env = json.loads(out.decode())
+        if env.get("is_error"):
+            # e.g. '401 Invalid authentication credentials' — the CLI's stored
+            # OAuth died Jul-8 and every read silently returned None for days.
+            # Loud log so the EOD/ops sweep sees WHY instead of a mystery.
+            log.warning("claude shadow: CLI error result: %s", str(env.get("result"))[:160])
+            return None
         return env.get("result")
     except asyncio.TimeoutError:
         try:

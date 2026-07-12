@@ -131,6 +131,36 @@ at 2× alarm threshold, 15-min uptime guard); entry submits retry 3× on
 connect-class errors only (never-delivered = safe; read-timeouts never retried
 — the order may exist); ladder failures stay loud with no blind retry.
 
+## Amendment A4 — 2026-07-12 (Sun): week-one audit, reality correction, series v2
+**Timeline correction:** A3 (5 slots, limit-ladder, broker-PWA, self-heal) went
+live Sun Jul-12 — NOT before Jul-6 as the session's conversation-clock implied.
+The week Jul-6→10 traded the Jul-2 config (v1). Broker truth: **+42, −114, +8,
++30, +48 = +$14 for the week; book +$78 over 6 nights, equity $10,090.**
+
+**Week-one audit verdict: bug-nights, N stays 0.** Defects found+fixed Sunday:
+1. **The CBOE-fallback hole (the −$114 night):** when the NBBO picker
+   DELIBERATELY refused junk premium (both sides < $100 floor), the code fell
+   back to CBOE and sold anyway — near-ATM condors at $850/$1,150 real credit
+   (2.6-3.5× model), MAE −$780/−$545. FIX: deliberate refusal → slot stands
+   aside (skip_thin_nbbo); CBOE fallback only on chain OUTAGE, and now passes
+   quote-free floors (shorts ≥0.4% OTM + model side-credit ≥ floor).
+2. **4× stop_nbbo_FAILED closes,** error text lost to log truncation. FIX:
+   broker rejection text persists onto the build (ic.notes) + close-side
+   retries handle raised connect errors.
+3. **Opus shadow reads dead since Jul-8:** CLI headless auth 401 (needs Caspar
+   to run `claude login` once). FIX: error-envelope detection logs WHY; reads
+   stay fail-soft. Scoring clock pauses until auth returns.
+4. **Jul-9 deleted from the track record** (fills-capture missed; the history
+   filter required model real_net). FIX: nights count on broker OR model;
+   week broker-nets backfilled; EOD annotate falls back to day-total (per-book
+   misses untagged OCC settlement rows).
+
+**SERIES v2 STARTS MON 2026-07-13, N=0/20, config frozen:** NBBO plane +
+floors (0.4% OTM, $100/side, no-fallback-on-refusal) + one-sided + 1.5×
+disaster stop (real anchor, NBBO mark) + 5-slot ladder 10:00-14:00 +
+limit-ladder entries (NBBO-priced, rungs 0/2/5¢) + FOMC stand-aside +
+assignment guard + self-heal + retries. The gates in this file now judge v2.
+
 ## Standing constraints (unchanged, non-negotiable)
 Paper only · never touch CasaaFinance positions · `.env` never committed ·
 improve-loop gates not bypassed · WaveZero runs its own account/backend.

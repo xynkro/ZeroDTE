@@ -1134,12 +1134,17 @@ class Orchestrator:
                 # RETRY on transient failures: the 2026-07-02 assignment-guard
                 # closes died on a momentary DNS blip and were never retried —
                 # one attempt is not a close. 3 tries, short backoff; the caller
-                # alerts loudly if all fail.
+                # alerts loudly if all fail. Connect-class errors now RAISE from
+                # the trader (never-delivered) — caught here as retryable.
+                import httpx as _hx
                 for attempt in range(3):
-                    r = await self.alpaca_trader.close_credit_spread(
-                        underlying="SPY", expiry=today_str, side=side,
-                        short_strike=s_k, long_strike=l_k, qty=qty,
-                        tag=f"meic-{ic.build_id}")
+                    try:
+                        r = await self.alpaca_trader.close_credit_spread(
+                            underlying="SPY", expiry=today_str, side=side,
+                            short_strike=s_k, long_strike=l_k, qty=qty,
+                            tag=f"meic-{ic.build_id}")
+                    except (_hx.ConnectError, _hx.ConnectTimeout):
+                        r = None
                     if r:
                         return r
                     log.warning("IC close %s side attempt %d/3 failed (%s) — retrying",
@@ -1163,6 +1168,11 @@ class Orchestrator:
             is_assign = reason == "assignment_guard"
             ic.broker_status = ("closed_assign" if is_assign else "closed_stop") if ok else "close_error"
             ic.close_reason = reason if ok else f"{reason}_FAILED"
+            if not ok:
+                # Survive log truncation: the broker's actual rejection text
+                # rides on the build so Sunday-me can do forensics.
+                _err = getattr(self.alpaca_trader, "last_error", None) or "no error text captured"
+                ic.notes.append(f"close FAILED: {_err}")
             log.info("IC close (%s) %s: call=%s put=%s", reason, ic.build_id,
                      (r1 or {}).get("id", "?"), (r2 or {}).get("id", "?"))
             _bid = (ic.build_id or "")[-4:]
@@ -1382,16 +1392,20 @@ class Orchestrator:
                     _mc = (_byb.get("meic") or {}).get("realized")
                     _wv = (_byb.get("wave") or {}).get("realized")
                     _un = (_byb.get("untagged") or {}).get("realized")
-                    # Stamp the broker per-book net into tonight's debrief row —
-                    # the PWA/track-record headline reads THIS, not the model.
-                    if _mc is not None:
+                    # Stamp the broker net into tonight's debrief row — the
+                    # PWA/track-record headline reads THIS, not the model.
+                    # Fallback: on the DEDICATED MEIC account the day-total IS
+                    # the book, and per-book attribution misses untagged OCC
+                    # expiry-settlement rows (Jul-2: by-book +92 vs true +65).
+                    _stamp = _mc if _mc is not None else _broker
+                    if _stamp is not None:
                         try:
                             from . import debrief as _dbf2
                             import os as _os
                             _dbf2.annotate_log_row(
                                 _os.path.join(_os.path.dirname(__file__), "..",
                                               "data", "debrief_log.jsonl"),
-                                date_str, {"ic_broker_net": round(float(_mc), 2)})
+                                date_str, {"ic_broker_net": round(float(_stamp), 2)})
                         except Exception as e:  # noqa: BLE001
                             log.warning("broker-net annotate failed: %s", e)
                     _net = _rec.get("realized_net", _rec.get("realized"))
@@ -1974,6 +1988,16 @@ class Orchestrator:
                 log.info("NBBO IC pick [%s]: %s | %s | credit $%.0f mid / $%.0f cons",
                          ic.get("sides", "both"), _c, _p, ic["total_credit_usd"],
                          ic.get("call_credit_cons_usd", 0) + ic.get("put_credit_cons_usd", 0))
+            elif ic and ic.get("dropped"):  # non-empty = a side was FLOORED, not missing
+                # THE FALLBACK HOLE (week of Jul-7: −$113 night): the NBBO picker
+                # DELIBERATELY refusing junk premium (both sides under the $100
+                # floor) is a DECISION, not an outage — falling back to CBOE here
+                # sold near-ATM condors at $850-$1,150 'real credit' that the
+                # floors existed to ban. Deliberate refusal → the slot SKIPS.
+                log.info("NBBO pick refused all sides (%s) — slot stands aside "
+                         "(no CBOE fallback on a deliberate refusal)", ic.get("error"))
+                self._ic_outcome = ("skip_thin_nbbo", str(ic.get("error"))[:120])
+                return True
             else:
                 log.warning("NBBO IC pick unavailable (%s) — CBOE fallback",
                             (ic or {}).get("error", "none"))
@@ -1995,6 +2019,28 @@ class Orchestrator:
         # a side for free; never skip a side that pays).
         if ic_src == "NBBO" and ic.get("sides") in ("call_only", "put_only"):
             return await self._build_ic_one_sided(bar, ic, ph, pl, et_now)
+
+        # CBOE fallback safety net (belt over the fallback hole): the delayed
+        # chain has no executable quotes, so enforce the QUOTE-FREE floors —
+        # shorts ≥0.4% from spot AND each side's model credit ≥ the side floor.
+        # The week of Jul-7, unfloored CBOE fallbacks sold 0.2%-OTM condors at
+        # 2.6-3.5× model credit and ate −$780 MAEs.
+        if ic_src == "CBOE":
+            _spot = ic.get("spot") or bar.close
+            _cs_otm = (ic["short_call"] - _spot) / _spot if _spot else 0
+            _ps_otm = (_spot - ic["short_put"]) / _spot if _spot else 0
+            _floor = settings.IC_MIN_SIDE_CREDIT
+            if (_cs_otm < 0.004 or _ps_otm < 0.004
+                    or ic.get("call_credit_usd", 0) < _floor
+                    or ic.get("put_credit_usd", 0) < _floor):
+                log.info("CBOE fallback pick fails quote-free floors "
+                         "(otm %.2f%%/%.2f%%, credits $%.0f/$%.0f) — slot stands aside",
+                         _cs_otm * 100, _ps_otm * 100,
+                         ic.get("call_credit_usd", 0), ic.get("put_credit_usd", 0))
+                self._ic_outcome = ("skip_floor_cboe",
+                                    f"otm {_cs_otm*100:.2f}%/{_ps_otm*100:.2f}% "
+                                    f"cr ${ic.get('call_credit_usd',0):.0f}/${ic.get('put_credit_usd',0):.0f}")
+                return True
 
         dlt = int(round(settings.EOD_IC_SHORT_DELTA * 100))
         date_key = et_now.strftime("%Y-%m-%d")

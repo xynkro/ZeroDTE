@@ -210,6 +210,7 @@ class Orchestrator:
 
     async def start(self):
         log.info("Orchestrator starting...")
+        self._boot_wall = datetime.now(ET)   # uptime guard for the feed self-heal
         # Spin up Telegram bot command poller (handles /status, /shutup, etc.)
         from .telegram_bot import TelegramBotPoller
         self.bot_poller = TelegramBotPoller(self)
@@ -518,6 +519,26 @@ class Orchestrator:
                                            pwa_url=settings.DASHBOARD_PUBLIC_URL or None)
                     except Exception as e:
                         log.warning("feed-stale ping failed: %s", e)
+                # SELF-HEAL (2026-07-02 incident: ~20 min of unmanaged open
+                # condors until a HUMAN restarted the process). If the feed is
+                # still dead 2× the alarm threshold, exit hard — launchd
+                # KeepAlive relaunches us into the proven warmup/restore path.
+                # Uptime guard stops a boot-loop when the provider itself is down.
+                if age > STALE_SEC * 2:
+                    uptime = (datetime.now(ET) - getattr(self, "_boot_wall", datetime.now(ET))
+                              ).total_seconds()
+                    if uptime > 900:
+                        log.error("FEED STALE %.0fs — SELF-HEALING RESTART (launchd relaunch)", age)
+                        try:
+                            tg.ping_eod_iron_condor(
+                                f"🔄 feed dead {age/60:.0f} min — self-healing restart now "
+                                f"(positions re-managed on reboot)")
+                        except Exception:
+                            pass
+                        self._persist_state()
+                        await asyncio.sleep(2)
+                        import os as _os
+                        _os._exit(43)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -1361,6 +1382,18 @@ class Orchestrator:
                     _mc = (_byb.get("meic") or {}).get("realized")
                     _wv = (_byb.get("wave") or {}).get("realized")
                     _un = (_byb.get("untagged") or {}).get("realized")
+                    # Stamp the broker per-book net into tonight's debrief row —
+                    # the PWA/track-record headline reads THIS, not the model.
+                    if _mc is not None:
+                        try:
+                            from . import debrief as _dbf2
+                            import os as _os
+                            _dbf2.annotate_log_row(
+                                _os.path.join(_os.path.dirname(__file__), "..",
+                                              "data", "debrief_log.jsonl"),
+                                date_str, {"ic_broker_net": round(float(_mc), 2)})
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("broker-net annotate failed: %s", e)
                     _net = _rec.get("realized_net", _rec.get("realized"))
                     _md = lambda v: ("—" if v is None else f"{'+' if v >= 0 else '−'}${abs(v):,.0f}")
                     _hl = [f"{'✅ WON' if (_net or 0) > 0 else '❌ LOST'} {_md(_net)} · real Alpaca · {date_str}"]
@@ -2065,6 +2098,11 @@ class Orchestrator:
         # OUTSIDE the _is_live_bar ping gate: forced builds can ride a stale buffer
         # bar, and Alpaca itself rejects orders outside market hours. The CBOE path
         # has real strikes + credit; the geometric fallback stays alert-only.
+        if ic_src == "NBBO":
+            # The ladder's limit price comes from the SAME executable NBBO mids
+            # the strikes were picked from — never the stale CBOE mid (which
+            # ran 2.6-4.6× off and would peg unfillable limits).
+            new_ic.limit_shadow_credit_per_share_spy = round(ic["total_credit_usd"] / 1000.0, 4)
         self._ic_outcome = ("built", f"{ic_src} {new_ic.build_id} ${ic['total_credit_usd']:.0f}")
         asyncio.create_task(self._submit_alpaca_ic(new_ic))
         return True
@@ -3151,6 +3189,8 @@ class Orchestrator:
         `order_net_cashflow / (qty*100)` in _capture_ic_fill."""
         if not settings.IC_LIMIT_SHADOW_ENABLED:
             return
+        if getattr(ic, "limit_shadow_credit_per_share_spy", None) is not None:
+            return   # NBBO build already priced the limit — never overwrite with CBOE
         cl, pl = getattr(ic, "call_leg", None), getattr(ic, "put_leg", None)
         if cl is None or pl is None:
             return
@@ -3276,25 +3316,43 @@ class Orchestrator:
             # SHADOW: stash the CBOE-mid would-be limit BEFORE we submit, so the
             # market fill we measure against is timestamped to the same chain pull.
             await self._compute_ic_limit_shadow(ic)
+            import httpx as _hx
             if (settings.IC_LIMIT_LIVE_ENABLED
                     and ic.limit_shadow_credit_per_share_spy is not None):
                 steps = [int(x.strip()) for x in
                          settings.IC_LIMIT_LADDER_STEPS_CENTS.split(",") if x.strip()]
-                result = await self.alpaca_trader.place_iron_condor_limit_ladder(
-                    underlying="SPY", expiry=today_str,
-                    call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
-                    mid_credit_per_share=ic.limit_shadow_credit_per_share_spy,
-                    tick_give_cents=settings.IC_LIMIT_TICK_GIVE_CENTS,
-                    ladder_steps_cents=steps,
-                    wait_sec=settings.IC_LIMIT_REPRICE_WAIT_SEC,
-                    tag=f"meic-{ic.build_id}",
-                )
+                try:
+                    result = await self.alpaca_trader.place_iron_condor_limit_ladder(
+                        underlying="SPY", expiry=today_str,
+                        call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+                        mid_credit_per_share=ic.limit_shadow_credit_per_share_spy,
+                        tick_give_cents=settings.IC_LIMIT_TICK_GIVE_CENTS,
+                        ladder_steps_cents=steps,
+                        wait_sec=settings.IC_LIMIT_REPRICE_WAIT_SEC,
+                        tag=f"meic-{ic.build_id}",
+                    )
+                except (_hx.ConnectError, _hx.ConnectTimeout) as e:
+                    # NO blind retry mid-ladder (a prior rung's order could be
+                    # live) — fail loud; the error status + Telegram alert land.
+                    log.error("IC ladder submit connect-failure (%s): %s", ic.build_id, e)
+                    result = None
             else:
-                result = await self.alpaca_trader.place_iron_condor(
-                    underlying="SPY", expiry=today_str,
-                    call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
-                    tag=f"meic-{ic.build_id}",
-                )
+                result = None
+                for _try in range(3):
+                    try:
+                        result = await self.alpaca_trader.place_iron_condor(
+                            underlying="SPY", expiry=today_str,
+                            call_short=cs, call_long=cl, put_short=ps, put_long=pl, qty=qty,
+                            tag=f"meic-{ic.build_id}",
+                        )
+                        break
+                    except (_hx.ConnectError, _hx.ConnectTimeout) as e:
+                        # Connection never opened → not delivered → safe retry
+                        # (the 2am-SGT DNS blips). 3 tries, short backoff.
+                        log.warning("IC submit connect-fail %d/3 (%s): %s",
+                                    _try + 1, ic.build_id, e)
+                        if _try < 2:
+                            await asyncio.sleep(4 * (_try + 1))
             if result and not result.get("shadow"):
                 ic.alpaca_order_id = result.get("id")
                 ic.broker_status = "submitted"
@@ -3374,12 +3432,22 @@ class Orchestrator:
                 l = float(round(l + step))
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
             qty = max(1, settings.IC_CONTRACTS)
-            result = await self.alpaca_trader.place_credit_spread(
-                underlying="SPY", expiry=today_str,
-                side="call" if is_call else "put",
-                short_strike=s, long_strike=l, qty=qty,
-                tag=f"meic-{ic.build_id}",
-            )
+            import httpx as _hx
+            result = None
+            for _try in range(3):
+                try:
+                    result = await self.alpaca_trader.place_credit_spread(
+                        underlying="SPY", expiry=today_str,
+                        side="call" if is_call else "put",
+                        short_strike=s, long_strike=l, qty=qty,
+                        tag=f"meic-{ic.build_id}",
+                    )
+                    break
+                except (_hx.ConnectError, _hx.ConnectTimeout) as e:
+                    log.warning("spread submit connect-fail %d/3 (%s): %s",
+                                _try + 1, ic.build_id, e)
+                    if _try < 2:
+                        await asyncio.sleep(4 * (_try + 1))
             if result and not result.get("shadow"):
                 ic.alpaca_order_id = result.get("id")
                 ic.broker_status = "submitted"

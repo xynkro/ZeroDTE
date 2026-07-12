@@ -226,11 +226,16 @@ def meic_history(log_path: str) -> dict:
     nights, cum = [], 0.0
     for d in sorted(by_date):
         r = by_date[d]
-        net = float(r["ic_real_net"])
+        # BROKER-TRUTH headline (Rule 0: the screen never flatters): prefer the
+        # broker per-book net (ic_broker_net, annotated after the EOD fetch)
+        # over the model-side ic_real_net (Jul-2: model +$88 vs broker +$65).
+        _broker = r.get("ic_broker_net")
+        net = float(_broker) if _broker is not None else float(r["ic_real_net"])
         cum = round(cum + net, 2)
         nights.append({
             "date": d, "executed": r.get("ic_executed", 0), "stopped": r.get("ic_stopped", 0),
             "stop_rate": r.get("ic_stop_rate"), "real_net": round(net, 2),
+            "model_net": r.get("ic_real_net"), "is_broker": _broker is not None,
             "slippage_pct": r.get("ic_slippage_pct"), "cumulative": cum,
             # MAE/MFE excursion (None on nights logged before the telemetry shipped)
             "mfe_med_pct": r.get("ic_mfe_med_pct"), "mae_med_pct": r.get("ic_mae_med_pct"),
@@ -693,6 +698,34 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
     except OSError:
         pass
     return row
+
+
+def annotate_log_row(path: str, date: str, updates: dict) -> bool:
+    """Merge fields into the LAST log row for `date` (e.g. ic_broker_net, which
+    is only known after the per-book broker fetch that runs later in the EOD
+    sequence than the row write). Small file; whole-file rewrite is fine."""
+    import json
+    try:
+        with open(path) as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            try:
+                if json.loads(lines[i]).get("date") == date:
+                    idx = i
+                    break
+            except ValueError:
+                continue
+        if idx is None:
+            return False
+        row = json.loads(lines[idx])
+        row.update(updates)
+        lines[idx] = json.dumps(row)
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except OSError:
+        return False
 
 
 def format_debrief_telegram(d: dict) -> str:

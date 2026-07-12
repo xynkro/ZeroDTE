@@ -109,6 +109,28 @@ re-tested and re-rejected (−16% mean, worst unchanged). Half-size re-rejected
 cascades, PCE days) = candidates for the Opus shadow-read gate at N≥20, NOT
 for pre-series adoption.
 
+## Amendment A3 — 2026-07-03 (holiday), the "fire all these" batch — series still N=0
+Caspar green-lit all four debrief questions; each resolved by evidence:
+1. **Regime gate: INERT, keep.** Replicated the live rule (first-15-min range /
+   ATR14 > 1.5) over 4.2y: the ratio NEVER exceeded 0.91 (p99 0.60) — the gate
+   has never gated and practically cannot; its real job is projection bands.
+   No hidden skip-day filter. No change.
+2. **Slot ladder: ADD 10:00 → 5 slots** (`MEIC_ENTRY_TIMES_ET=10:00-14:00`,
+   max/day 6). Race: +30% mean/day ($85→$111 SPY 1-lot) AND better worst day
+   (−310 vs −328) AND t 25.3→27.0. 10-entry canon ladder REJECTED (2× tail,
+   ~12% theoretical worst-day at $10k breaks the sizing law); 6-slot adds
+   nothing over 5.
+3. **Limit-ladder entries: LIVE** (`IC_LIMIT_LIVE_ENABLED=true`), priced off
+   the NBBO pick mids (never CBOE), rungs 0/2/5¢, market fallback. Shadow
+   evidence: 100% would-fill, ~$0.2+/share better than market fills. Adopted
+   pre-series so the whole 20-night sample runs ONE execution method.
+4. **PWA/track-record headline = BROKER net** (`ic_broker_net` annotated into
+   the nightly row from the per-book fetch; model shown as secondary). Rule 0.
+Ops hardening (free lane): feed-stale SELF-HEALS (hard exit → launchd relaunch
+at 2× alarm threshold, 15-min uptime guard); entry submits retry 3× on
+connect-class errors only (never-delivered = safe; read-timeouts never retried
+— the order may exist); ladder failures stay loud with no blind retry.
+
 ## Standing constraints (unchanged, non-negotiable)
 Paper only · never touch CasaaFinance positions · `.env` never committed ·
 improve-loop gates not bypassed · WaveZero runs its own account/backend.

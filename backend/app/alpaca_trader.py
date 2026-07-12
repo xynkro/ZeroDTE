@@ -144,6 +144,11 @@ class AlpacaTrader:
             log.error("Alpaca order HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Connection never established → order DEFINITELY not delivered →
+            # safe for the caller to retry (2am-SGT DNS blips). Read timeouts
+            # stay swallowed: the order may have landed, retrying could double.
+            raise
         except Exception as e:
             log.error("Alpaca credit spread failed: %s", e)
             return None
@@ -217,6 +222,8 @@ class AlpacaTrader:
             log.error("Alpaca IC order HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            raise   # never delivered → caller may retry safely (see place_credit_spread)
         except Exception as e:
             log.error("Alpaca IC order failed: %s", e)
             return None

@@ -137,6 +137,19 @@ class Orchestrator:
             self.paper_trades = _safe_load(PaperTrade, data.get("paper_trades"), "paper_trade")
             self.state.iron_condor_history = _safe_load(
                 IronCondorBuilder, data.get("iron_condor_history"), "ic_build")
+            # GHOST SANITIZER (2026-07-15: a Jul-13 condor still 'submitted' got
+            # stop-checked after a restart, marked its EXPIRED legs to a phantom
+            # buyback, and 422'd trying to buy back options we no longer hold).
+            # 0DTE positions cannot outlive their day: any prior-day build still
+            # 'submitted' expired at ITS OWN bell — stamp it so no loop (stop,
+            # guard, collision, exclusion) can ever resurrect it.
+            _today_bid = f"ic_{datetime.now(ET).strftime('%Y-%m-%d')}"
+            for _b in self.state.iron_condor_history:
+                if (_b.build_id and not _b.build_id.startswith(_today_bid)
+                        and _b.broker_status == "submitted"):
+                    _b.broker_status = "expired"
+                    if not _b.close_reason:
+                        _b.close_reason = "expiry"
             if self.state.iron_condor_history:
                 # Restore latest as the active IC
                 latest = self.state.iron_condor_history[-1]
@@ -831,6 +844,7 @@ class Orchestrator:
         cands, seen = [], set()
         ic0 = self.state.iron_condor
         if (ic0 is not None and ic0.available and ic0.build_id
+                and ic0.build_id.startswith(f"ic_{today}")   # ghosts never stop-check
                 and ic0.broker_status == "submitted"):
             # broker_status guard: the latest build may be a rejected/errored/shadow
             # rung that never reached the broker — marking it fires a PHANTOM stop on
@@ -1474,6 +1488,7 @@ class Orchestrator:
                 for b in _ics_today:
                     if b.broker_status == "submitted" and not b.close_reason:
                         b.close_reason = "expiry"   # rode to the bell — the goal state
+                        b.broker_status = "expired"  # dead builds never re-enter any loop
                 _traded = [b for b in _ics_today
                            if b.broker_status in ("submitted", "closed_stop", "closed_assign")]
                 _exits = ", ".join(f"{(b.build_id or '')[-4:]}→{b.close_reason or '⚠️unreasoned'}"

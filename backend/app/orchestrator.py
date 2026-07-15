@@ -681,6 +681,21 @@ class Orchestrator:
 
         asyncio.create_task(_run())
 
+    def _band_journal(self, rec: dict) -> None:
+        """Append every band decision (opened AND gated, with why) to
+        data/band_decisions.jsonl. Exists because 8 sessions gated with only
+        INFO-level reasons → unreconstructable. Best-effort, never raises."""
+        try:
+            import json as _json
+            import os as _os
+            path = _os.path.join(_os.path.dirname(__file__), "..", "data",
+                                 "band_decisions.jsonl")
+            _os.makedirs(_os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as f:
+                f.write(_json.dumps(rec) + "\n")
+        except Exception as e:  # noqa: BLE001
+            log.debug("band journal append failed: %s", e)
+
     async def _maybe_open_band_trade(self, bar: Bar):
         """WaveZero VALIDATED band-anchored entry — TIME-triggered, ONE attempt/day at
         ~10:00 ET, gated entirely by decide_band_trade's own Schwartz vol-released +
@@ -733,8 +748,22 @@ class Orchestrator:
                 rm = self._band_medians.r5_median()
                 reason = ("vol not released (quiet/coiling day)" if rm and r5 <= rm
                           else "cushion/credit-floor unmet")
+                # journal enrichment: band geometry so gated days are QUANTIFIED
+                # (how far from tradable was the anchor?), not just labeled.
+                sma_j, up_j, lo_j, w_j = bollinger(buf, p.bb_len, p.bb_mult)
+                S0_j = buf[-1]
+                anchor = lo_j if S0_j < sma_j else up_j
                 self._band_last = {"date": date, "decision": "gated", "reason": reason,
                                    "r5": round(r5, 6), "r5_median": round(rm, 6) if rm else None}
+                self._band_journal({"date": date, "decision": "gated", "reason": reason,
+                                    "r5": round(r5, 6),
+                                    "r5_median": round(rm, 6) if rm else None,
+                                    "spot": round(S0_j, 1),
+                                    "band_anchor": round(anchor, 1),
+                                    "anchor_cushion_pct": round(100.0 * abs(S0_j - anchor) / S0_j, 3),
+                                    "band_width": round(w_j, 1),
+                                    "side_would_be": "put" if S0_j < sma_j else "call",
+                                    "feed": getattr(self.state, "feed_type", "?")})
                 log.info("Band: no trade %s — gated (%s). r5=%.5f r5_median=%s",
                          date, reason, r5, rm)
                 self._persist_state()   # gated day-marker must survive restarts too
@@ -789,6 +818,13 @@ class Orchestrator:
                               if rows else "options chain unquotable at entry")
                     self._band_last = {"date": date, "decision": "gated", "reason": reason,
                                        "r5": round(r5, 6)}
+                    self._band_journal({"date": date, "decision": "gated", "reason": reason,
+                                        "r5": round(r5, 6), "spot": round(S0, 1),
+                                        "band_short": d.short_strike,
+                                        "model_credit": round(model_credit, 0),
+                                        "real_floor": settings.WAVE_BAND_REAL_CREDIT_FLOOR,
+                                        "quotable": bool(rows),
+                                        "feed": getattr(self.state, "feed_type", "?")})
                     log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",
                                 date, reason, model_credit)
                     self._persist_state()
@@ -832,6 +868,9 @@ class Orchestrator:
                                "real_mid_ct": entry_mid,
                                "cushion_pct": round(final_cushion, 2), "choppy": d.choppy,
                                "r5": round(r5, 6)}
+            self._band_journal({**self._band_last, "trade_no": trade_no,
+                                "contracts": pt.contracts,
+                                "feed": getattr(self.state, "feed_type", "?")})
             if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:
                 pt.broker_status = "pending"
                 self._broker_entry_tasks[pt.id] = asyncio.create_task(

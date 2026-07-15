@@ -519,6 +519,34 @@ class Orchestrator:
                                            pwa_url=settings.DASHBOARD_PUBLIC_URL or None)
                     except Exception as e:
                         log.warning("feed-stale ping failed: %s", e)
+                # FEED PROMOTION (2026-07-15 incident: Sunday boot → Alpaca feed
+                # couldn't connect on a closed market → fell to YFinanceFeed and
+                # CAMPED there for 3 trading days of degraded bars + freezes).
+                # During RTH on a fallback feed with Alpaca keys configured →
+                # self-heal restart; boot during market hours lands on Alpaca.
+                feed_name_now = type(self.feed).__name__ if self.feed else "none"
+                if feed_name_now == "YFinanceFeed" and settings.ALPACA_API_KEY:
+                    since = getattr(self, "_wrong_feed_since", None)
+                    if since is None:
+                        self._wrong_feed_since = datetime.now(ET)
+                    elif (datetime.now(ET) - since).total_seconds() > 600:
+                        uptime = (datetime.now(ET) - getattr(self, "_boot_wall",
+                                  datetime.now(ET))).total_seconds()
+                        if uptime > 900:
+                            log.error("FEED PROMOTION: on %s during RTH >10min — "
+                                      "self-healing restart to reconnect Alpaca", feed_name_now)
+                            try:
+                                tg.ping_eod_iron_condor(
+                                    "🔄 running on fallback yfinance feed during market "
+                                    "hours — self-healing restart to reconnect Alpaca")
+                            except Exception:
+                                pass
+                            self._persist_state()
+                            await asyncio.sleep(2)
+                            import os as _os
+                            _os._exit(44)
+                else:
+                    self._wrong_feed_since = None
                 # SELF-HEAL (2026-07-02 incident: ~20 min of unmanaged open
                 # condors until a HUMAN restarted the process). If the feed is
                 # still dead 2× the alarm threshold, exit hard — launchd
@@ -1394,10 +1422,11 @@ class Orchestrator:
                     _un = (_byb.get("untagged") or {}).get("realized")
                     # Stamp the broker net into tonight's debrief row — the
                     # PWA/track-record headline reads THIS, not the model.
-                    # Fallback: on the DEDICATED MEIC account the day-total IS
-                    # the book, and per-book attribution misses untagged OCC
-                    # expiry-settlement rows (Jul-2: by-book +92 vs true +65).
-                    _stamp = _mc if _mc is not None else _broker
+                    # DAY-TOTAL FIRST: on the dedicated MEIC account the day
+                    # total IS the book, and per-book tag attribution misses
+                    # untagged OCC expiry-settlement rows (Jul-2: by-book +92
+                    # vs true +65; Jul-13: by-book +2 vs true −2).
+                    _stamp = _broker if _broker is not None else _mc
                     if _stamp is not None:
                         try:
                             from . import debrief as _dbf2

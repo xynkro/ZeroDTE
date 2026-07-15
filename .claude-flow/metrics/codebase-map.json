@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-07-11T22:20:19.492Z",
+  "timestamp": "2026-07-12T22:19:04.115Z",
   "projectRoot": "/Users/xynkro/Documents/Trading/ZeroDTE",
   "structure": {
     "hasPackageJson": false,
@@ -7,5 +7,5 @@
     "hasClaudeConfig": true,
     "hasClaudeFlow": true
   },
-  "scannedAt": 1783808419492
+  "scannedAt": 1783894744115
 }

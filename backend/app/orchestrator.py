@@ -1843,6 +1843,13 @@ class Orchestrator:
         """Auto-build the IC once per session at EOD_IC_BUILD_ET (default 09:45 ET).
         On non-volatile classified days only. Stays visible until next session.
         User can override with /icnow to rebuild any time."""
+        # ── WAVE-ONLY INSTANCE GUARD (2026-07-18) ── WaveZero must NEVER build
+        # condors. The Jul-2 kill (EOD_IC_BUILD_ET=off) FAILED silently: _slot_minutes
+        # has a `return out or [("10:15", ...)]` fallback, so an unparseable value
+        # resurrected the 10:15 build — the zombie traded EVERY session Jul-6→17 and
+        # bled $322 real on the trial account. Hard gate, independent of .env parsing.
+        if settings.WAVE_BAND_STRATEGY_ENABLED and not settings.MEIC_ENABLED:
+            return
         et_time = bar.time.astimezone(ET)
         date_str = et_time.strftime("%Y-%m-%d")
         # Stale-bar guard: warmup/backfill can re-dispatch YESTERDAY's bars after a

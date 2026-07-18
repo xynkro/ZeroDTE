@@ -804,11 +804,14 @@ class Orchestrator:
                 toward = -10.0 if d.side == "sell_call_cs" else +10.0   # walk toward spot
                 k = short_k
                 found = None
+                best_seen = None   # (strike, mid, cushion) — the real credit SURFACE record
                 for _ in range(30):
                     cushion = 100.0 * abs(S0 - k) / S0
                     if cushion < 0.50:      # never inside the validated cushion filter
                         break
                     m = _mid_at(k)
+                    if m is not None and (best_seen is None or m > best_seen[1]):
+                        best_seen = (k, m, round(cushion, 3))
                     if m is not None and m >= floor:
                         found = (k, m)
                         break
@@ -824,6 +827,11 @@ class Orchestrator:
                                         "model_credit": round(model_credit, 0),
                                         "real_floor": settings.WAVE_BAND_REAL_CREDIT_FLOOR,
                                         "quotable": bool(rows),
+                                        # the money question: what WOULD reality pay?
+                                        "best_real_ct": best_seen[1] if best_seen else None,
+                                        "best_real_strike": best_seen[0] if best_seen else None,
+                                        "best_real_cushion_pct": best_seen[2] if best_seen else None,
+                                        "side": d.side,
                                         "feed": getattr(self.state, "feed_type", "?")})
                     log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",
                                 date, reason, model_credit)

@@ -85,7 +85,41 @@ def gather_context(orch, bar, slot: str) -> dict:
     return ctx
 
 
+async def _run_api(prompt: str) -> str | None:
+    """Direct Anthropic API transport — no CLI, no OAuth, no keychain.
+
+    Preferred when CLAUDE_SHADOW_API_KEY (or ANTHROPIC_API_KEY) is set: the CLI
+    path's stored OAuth broke twice (Jul-8 401s; Jul-18 un-fixable authorize
+    loop) and this feature is 4-5 small calls/day — pennies on the API."""
+    key = settings.CLAUDE_SHADOW_API_KEY
+    if not key:
+        return None
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=settings.CLAUDE_SHADOW_TIMEOUT_SEC) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": settings.CLAUDE_SHADOW_MODEL,
+                      "max_tokens": 300,
+                      "messages": [{"role": "user", "content": prompt}]})
+            r.raise_for_status()
+            parts = r.json().get("content") or []
+            return "".join(p.get("text", "") for p in parts if p.get("type") == "text") or None
+    except Exception as e:  # noqa: BLE001
+        log.warning("claude shadow: API transport failed (%s)", str(e)[:140])
+        return None
+
+
 async def _run_claude(prompt: str) -> str | None:
+    """Transport dispatch: API key present → direct API; else headless CLI."""
+    if settings.CLAUDE_SHADOW_API_KEY:
+        return await _run_api(prompt)
+    return await _run_cli(prompt)
+
+
+async def _run_cli(prompt: str) -> str | None:
     """Headless CLI call. Returns the model's raw text or None."""
     bin_path = settings.CLAUDE_SHADOW_BIN
     try:

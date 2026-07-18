@@ -318,6 +318,10 @@ class Settings:
     CLAUDE_SHADOW_TIMEOUT_SEC: int = _i("CLAUDE_SHADOW_TIMEOUT_SEC", 45)
     CLAUDE_SHADOW_BIN: str = os.getenv("CLAUDE_SHADOW_BIN",
                                        "/Users/xynkro/.local/bin/claude")
+    # Direct-API transport (preferred when set): survives every CLI-OAuth
+    # failure mode. Console key from console.anthropic.com/settings/keys.
+    CLAUDE_SHADOW_API_KEY: str = os.getenv(
+        "CLAUDE_SHADOW_API_KEY", os.getenv("ANTHROPIC_API_KEY", ""))
 
     # CBOE-mid marketable-limit execution for MEIC condors. SHADOW first: still
     # submit market mleg, but stash the limit-price we WOULD have used (CBOE mid

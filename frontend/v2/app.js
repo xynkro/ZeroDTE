@@ -13,6 +13,9 @@ const html = htm.bind(h);
 // ── Environment ─────────────────────────────────────────────────────────────
 const STATIC = /\.github\.io$/i.test(location.hostname);
 const SNAPSHOT_URL = 'https://raw.githubusercontent.com/xynkro/ZeroDTE/data/monitor.json';
+// WaveZero's own snapshot (separate backend/account since 2026-06-30) — own orphan
+// branch because each publisher force-replaces its branch with a single-file tree.
+const WAVE_SNAPSHOT_URL = 'https://raw.githubusercontent.com/xynkro/ZeroDTE/wave-data/wave_monitor.json';
 const API = location.origin;          // backend serves this app same-origin in live mode
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 const BT_MAX_DD = 1581;               // validated-backtest max drawdown anchor
@@ -78,6 +81,19 @@ async function loadPlaybook() {
 
 async function loadWave() {
   if (STATIC) {
+    // Wave book reads WAVEZERO's own snapshot (`wave-data` branch) — Wave moved to
+    // its own backend/account on 2026-06-30, so the shared monitor.json's wave
+    // fields are a pre-split fossil (last trade Jun-26). Falls back if unpublished.
+    try {
+      const w = await fetch(`${WAVE_SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error('wave snapshot HTTP ' + r.status); return r.json(); });
+      return {
+        mode: 'static', generatedAt: w.generated_at,
+        history: w.wave_history || null, debrief: w.debrief || {},
+        trades: (w.trades || []).filter(t => t.strategy === 'directional_spread'),
+        band: w.band || null, bandJournal: w.band_journal || [], claudeScan: w.claude_scan || null,
+      };
+    } catch (e) { /* fall through to the legacy shared snapshot */ }
     const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
       .then(r => { if (!r.ok) throw new Error('snapshot HTTP ' + r.status); return r.json(); });
     return {

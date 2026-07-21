@@ -92,6 +92,7 @@ async function loadWave() {
         history: w.wave_history || null, debrief: w.debrief || {},
         trades: (w.trades || []).filter(t => t.strategy === 'directional_spread'),
         band: w.band || null, bandJournal: w.band_journal || [], claudeScan: w.claude_scan || null,
+        legacy: w.legacy || null,
       };
     } catch (e) { /* fall through to the legacy shared snapshot */ }
     const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
@@ -637,6 +638,40 @@ function BandStatusCard() {
   return html`<${Card} title="Band strategy (validated config)"><div style="font-size:.92em">${line}</div></${Card}>`;
 }
 
+// Full wave history — ALL eras, labeled, plus the gated days. Exists because the
+// fresh-baseline reset + the account split made the older trades invisible and the
+// month looked empty ("where are the last month of wave trades???").
+function WaveFullHistory({ trades, journal, legacy }) {
+  const fmt = (v, pre = '$') => (v == null ? '—' : `${v < 0 ? '−' : '+'}${pre}${Math.abs(v).toFixed(0)}`);
+  const row = (date, label, detail, cls) => html`
+    <div style="display:flex;gap:8px;font-size:.86em;padding:2px 0;border-bottom:1px solid rgba(128,128,128,.12)">
+      <span style="min-width:78px;opacity:.75">${date}</span>
+      <span style="min-width:86px" class=${cls || ''}>${label}</span>
+      <span style="flex:1;opacity:.9">${detail}</span>
+    </div>`;
+  const items = [];
+  (trades || []).forEach(t => {
+    const d = String(t.fired_at || '').slice(0, 10);
+    const era = d < '2026-07-03' ? 'shakedown' : 'trial';
+    items.push({ d, el: row(d, `${era} #${t.trade_no}`,
+      `${(t.side || '').includes('put') ? 'PUT' : 'CALL'} spread · real ${fmt(t.broker_realized_pnl)} (model ${fmt(t.pnl)}) · ${t.outcome || ''}`) });
+  });
+  (journal || []).filter(j => j.decision === 'gated').forEach(j => {
+    items.push({ d: j.date, el: row(j.date, '· gated', j.reason + (j.best_real_ct != null ? ` (best real $${j.best_real_ct}/ct)` : '')) });
+  });
+  ((legacy || {}).trades || []).forEach(t => {
+    const d = String(t.fired_at || '').slice(0, 10);
+    items.push({ d, el: row(d, `legacy #${t.trade_no}`,
+      `${(t.side || '').includes('put') ? 'PUT' : 'CALL'} spread · model ${fmt(t.pnl)} · old shared acct (pre-split)`) });
+  });
+  if (!items.length) return null;
+  items.sort((a, b) => (a.d < b.d ? 1 : -1));
+  return html`<${Card} title="Wave book — full history (all eras)">
+    <div style="max-height:300px;overflow-y:auto">${items.map(i => i.el)}</div>
+    <div style="font-size:.78em;opacity:.65;margin-top:6px">legacy = old shared account (closed Jun-30) · shakedown = pre-baseline · trial = counts toward 25</div>
+  </${Card}>`;
+}
+
 function WaveView() {
   const res = useResource(loadWave, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || (res.data?.history?.summary?.n)) : null);
@@ -649,6 +684,7 @@ function WaveView() {
       <div data-stagger><${BandStatusCard} /></div>
       <div data-stagger><${WaveTrackRecord} h=${d.history} /></div>
       <div data-stagger><${WaveTodayTrades} trades=${d.trades} /></div>
+      <div data-stagger><${WaveFullHistory} trades=${d.trades} journal=${d.bandJournal} legacy=${d.legacy} /></div>
       <div data-stagger><${DebriefCard} d=${d.debrief} /></div>
     </div>`;
 }

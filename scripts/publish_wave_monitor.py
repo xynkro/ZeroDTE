@@ -91,7 +91,18 @@ def build_snapshot() -> dict:
         "band": status.get("band"),              # armed / today's decision
         "band_journal": _jsonl_tail(JOURNAL, 15),  # why each day did/didn't trade
         "claude_scan": scan,
+        # The pre-split book (old shared account, stoch config, closed 2026-06-30) —
+        # rescued from the fossil monitor.json so the FULL month stays findable.
+        "legacy": _load_legacy(),
     }
+
+
+def _load_legacy():
+    try:
+        with open(os.path.join(REPO, "backend", "data", "legacy_wave_snapshot.json")) as f:
+            return json.load(f)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 _GIT_ENV = {

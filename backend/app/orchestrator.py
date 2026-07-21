@@ -780,25 +780,37 @@ class Orchestrator:
             # strike pays the floor → SKIP the day. CBOE unquotable → SKIP (fail-closed).
             entry_mid = None
             if settings.WAVE_BAND_REAL_CREDIT_FLOOR > 0:
-                from .gex import fetch_chain, chain_mids_for_expiry
+                from .gex import fetch_chain, _parse_occ
                 from .directional_spread_manager import spy_strike_params
                 from .wave_band_live import spread_model_credit
                 chain = await fetch_chain("SPY")
-                mids = chain_mids_for_expiry(chain, et.strftime("%y%m%d")) if chain else {}
-                rows = (mids.get("calls") if d.side == "sell_call_cs" else mids.get("puts")) or []
+                # CONSERVATIVE executable credit, not the optimistic mid (trade #1
+                # lesson: floor passed at $12/ct MID, market order FILLED at $3/ct —
+                # the risk-owner's "never risk $1k for $3" was violated by execution).
+                # Basis = sell the short at BID, buy the long at ASK: what a market
+                # order realistically collects. Rows built from the raw chain.
+                exp = et.strftime("%y%m%d")
+                rows = {}
+                want_call = d.side == "sell_call_cs"
+                for o_ in ((chain.get("data") or {}).get("options") or []) if chain else []:
+                    sym_ = o_.get("option", "")
+                    if exp not in sym_:
+                        continue
+                    parsed_ = _parse_occ(sym_)
+                    if parsed_ is None or parsed_[0] != want_call:
+                        continue
+                    rows[parsed_[1]] = {"bid": o_.get("bid") or 0.0,
+                                        "ask": o_.get("ask") or 0.0}
 
                 def _mid_at(k_spx: float):
+                    """Conservative net credit $/ct: short.bid − long.ask (executable)."""
                     prm = spy_strike_params(side=d.side, spx_short_strike=k_spx,
                                             spx_credit_dollars=None)
-                    ms = ml = None
-                    for r_ in rows:
-                        st_ = r_.get("strike") or 0.0
-                        if abs(st_ - prm["short_strike"]) < 0.01:
-                            ms = r_.get("mid")
-                        elif abs(st_ - prm["long_strike"]) < 0.01:
-                            ml = r_.get("mid")
-                    return (round((ms - ml) * 100, 2) if ms is not None and ml is not None
-                            else None)
+                    s_ = rows.get(prm["short_strike"])
+                    l_ = rows.get(prm["long_strike"])
+                    if not s_ or not l_ or s_["bid"] <= 0:
+                        return None
+                    return round((s_["bid"] - l_["ask"]) * 100, 2)
 
                 floor = settings.WAVE_BAND_REAL_CREDIT_FLOOR
                 toward = -10.0 if d.side == "sell_call_cs" else +10.0   # walk toward spot
@@ -831,6 +843,7 @@ class Orchestrator:
                                         "best_real_ct": best_seen[1] if best_seen else None,
                                         "best_real_strike": best_seen[0] if best_seen else None,
                                         "best_real_cushion_pct": best_seen[2] if best_seen else None,
+                                        "basis": "exec_bid_ask",
                                         "side": d.side,
                                         "feed": getattr(self.state, "feed_type", "?")})
                     log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",
@@ -876,7 +889,7 @@ class Orchestrator:
                                "real_mid_ct": entry_mid,
                                "cushion_pct": round(final_cushion, 2), "choppy": d.choppy,
                                "r5": round(r5, 6)}
-            self._band_journal({**self._band_last, "trade_no": trade_no,
+            self._band_journal({**self._band_last, "basis": "exec_bid_ask", "trade_no": trade_no,
                                 "contracts": pt.contracts,
                                 "feed": getattr(self.state, "feed_type", "?")})
             if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:

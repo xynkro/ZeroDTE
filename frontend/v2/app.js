@@ -92,6 +92,7 @@ async function loadWave() {
         history: w.wave_history || null, debrief: w.debrief || {},
         trades: (w.trades || []).filter(t => t.strategy === 'directional_spread'),
         band: w.band || null, bandJournal: w.band_journal || [], claudeScan: w.claude_scan || null,
+        legacy: w.legacy || null,
       };
     } catch (e) { /* fall through to the legacy shared snapshot */ }
     const s = await fetch(`${SNAPSHOT_URL}?t=${Date.now()}`, { cache: 'no-store' })
@@ -619,6 +620,58 @@ function WaveTodayTrades({ trades }) {
   </${Card}>`;
 }
 
+// Band strategy status — armed state + today's decision (why it did/didn't fire).
+// Live-only (reads /api/status); renders nothing on the static snapshot.
+function BandStatusCard() {
+  const load = useCallback(() => fetch(`${API}/api/status`).then(r => r.json()).then(s => s.band || null), []);
+  const res = useResource(load, 30000);
+  if (STATIC || res.status !== 'ready' || !res.data || !res.data.enabled) return null;
+  const b = res.data;
+  const last = b.last;
+  let line;
+  if (!b.armed) line = '⚠️ enabled but NOT armed (median seed failed — check logs)';
+  else if (!last) line = `\u{1F3AF} armed · waiting for the ~10:00 ET window (fires ~40% of days)`;
+  else if (last.decision === 'opened')
+    line = `✅ ${last.date}: OPENED ${last.side === 'sell_put_cs' ? 'PUT' : 'CALL'} spread ` +
+           `${last.short}/${last.long} · ~$${last.credit} credit · cushion ${last.cushion_pct}%`;
+  else line = `\u{1F6AB} ${last.date}: sat out — ${last.reason}`;
+  return html`<${Card} title="Band strategy (validated config)"><div style="font-size:.92em">${line}</div></${Card}>`;
+}
+
+// Full wave history — ALL eras, labeled, plus the gated days. Exists because the
+// fresh-baseline reset + the account split made the older trades invisible and the
+// month looked empty ("where are the last month of wave trades???").
+function WaveFullHistory({ trades, journal, legacy }) {
+  const fmt = (v, pre = '$') => (v == null ? '—' : `${v < 0 ? '−' : '+'}${pre}${Math.abs(v).toFixed(0)}`);
+  const row = (date, label, detail, cls) => html`
+    <div style="display:flex;gap:8px;font-size:.86em;padding:2px 0;border-bottom:1px solid rgba(128,128,128,.12)">
+      <span style="min-width:78px;opacity:.75">${date}</span>
+      <span style="min-width:86px" class=${cls || ''}>${label}</span>
+      <span style="flex:1;opacity:.9">${detail}</span>
+    </div>`;
+  const items = [];
+  (trades || []).forEach(t => {
+    const d = String(t.fired_at || '').slice(0, 10);
+    const era = d < '2026-07-03' ? 'shakedown' : 'trial';
+    items.push({ d, el: row(d, `${era} #${t.trade_no}`,
+      `${(t.side || '').includes('put') ? 'PUT' : 'CALL'} spread · real ${fmt(t.broker_realized_pnl)} (model ${fmt(t.pnl)}) · ${t.outcome || ''}`) });
+  });
+  (journal || []).filter(j => j.decision === 'gated').forEach(j => {
+    items.push({ d: j.date, el: row(j.date, '· gated', j.reason + (j.best_real_ct != null ? ` (best real $${j.best_real_ct}/ct)` : '')) });
+  });
+  ((legacy || {}).trades || []).forEach(t => {
+    const d = String(t.fired_at || '').slice(0, 10);
+    items.push({ d, el: row(d, `legacy #${t.trade_no}`,
+      `${(t.side || '').includes('put') ? 'PUT' : 'CALL'} spread · model ${fmt(t.pnl)} · old shared acct (pre-split)`) });
+  });
+  if (!items.length) return null;
+  items.sort((a, b) => (a.d < b.d ? 1 : -1));
+  return html`<${Card} title="Wave book — full history (all eras)">
+    <div style="max-height:300px;overflow-y:auto">${items.map(i => i.el)}</div>
+    <div style="font-size:.78em;opacity:.65;margin-top:6px">legacy = old shared account (closed Jun-30) · shakedown = pre-baseline · trial = counts toward 25</div>
+  </${Card}>`;
+}
+
 function WaveView() {
   const res = useResource(loadWave, STATIC ? 60000 : 8000);
   const staggerRef = useStagger(res.status === 'ready' ? (res.data?.generatedAt || (res.data?.history?.summary?.n)) : null);
@@ -628,8 +681,10 @@ function WaveView() {
   return html`
     <div ref=${staggerRef} class="grid" style="margin-top:8px" aria-busy=${res.status === 'refreshing'}>
       ${d.mode === 'static' && html`<div class="banner" data-stagger>\u{1F4F8} <span><strong>Read-only snapshot</strong>${d.generatedAt ? ' · ' + new Date(d.generatedAt).toLocaleString() : ''} — live trading runs on the backend.</span></div>`}
+      <div data-stagger><${BandStatusCard} /></div>
       <div data-stagger><${WaveTrackRecord} h=${d.history} /></div>
       <div data-stagger><${WaveTodayTrades} trades=${d.trades} /></div>
+      <div data-stagger><${WaveFullHistory} trades=${d.trades} journal=${d.bandJournal} legacy=${d.legacy} /></div>
       <div data-stagger><${DebriefCard} d=${d.debrief} /></div>
     </div>`;
 }
@@ -1031,17 +1086,14 @@ function PlaybookView() {
 
     <${Card} title="MEIC — Multiple-Entry Iron Condor" accent="var(--amber)"
       actions=${html`<${Badge} kind=${m.enabled ? 'ok' : 'neutral'}>${m.enabled ? 'live' : 'off'}</${Badge}>`}>
-      <p class="pb-lead">Sells premium at <b>${slotCount} fixed times</b> across the day — an <b>iron condor when both sides pay</b>, a single put/call <b>credit spread when only one side does</b>. Each entry profits if SPX simply <b>stays range-bound</b> into the 4:00 PM expiry. Laddering spreads timing risk instead of betting the whole day on one moment.</p>
+      <p class="pb-lead">Sells <b>${slotCount} iron condors</b> across the day at fixed times — pure premium-selling. Each one profits if SPX simply <b>stays range-bound</b> into the 4:00 PM expiry. Laddering the entries spreads timing risk instead of betting the whole day on one moment.</p>
       <div class="pb-params">
         <${ParamRow} k="Entries" v=${(slots || '11:00 · 12:00 · 13:00 · 14:00') + ' ET'} />
         <${ParamRow} k="Size" v=${`${m.contracts_per_slot ?? 1} contract / slot · SPX built, SPY-executed (1/10)`} />
-        <${ParamRow} k="Pricing" v=${m.entry_plane === 'alpaca_nbbo' ? 'live NBBO + per-strike IV (executable quotes)' : 'CBOE delayed mids'} />
         <${ParamRow} k="Shorts" v=${dlt(m.short_delta) + ' call spread + ' + dlt(m.short_delta) + ' put spread'} />
-        <${ParamRow} k="Wings" v=${`SPX ${m.wing_spx ?? 25}pt → SPY $${m.wing_spy ?? 2.5}`} />
-        <${ParamRow} k="Side floor" v=${`each side must pay ≥ $${m.min_side_credit_usd ?? 100}${m.one_sided_enabled ? ' · paying side trades alone' : ' (else skip)'}`} />
-        <${ParamRow} k="Min credit" v=${(m.min_credit_pct ?? 10) + '% of wing (else skip the slot)'} />
-        <${ParamRow} k="Stop" v=${`breakeven — buy-back ≥ ${m.stop_buffer ?? 1.05}× the REAL fill credit, marked on ${m.stop_mark === 'alpaca_nbbo' ? 'live NBBO' : 'CBOE mids'} · else 16:00 expiry`} />
-        <${ParamRow} k="Assign guard" v=${m.assignment_guard && m.assignment_guard.enabled ? `final ${m.assignment_guard.window_min_before_close ?? 15} min: force-close any short within $${m.assignment_guard.buffer_spy ?? 0.5} of spot` : 'off'} />
+        <${ParamRow} k="Wings" v=${`SPX ${m.wing_spx ?? 10}pt → SPY $${m.wing_spy ?? 1}`} />
+        <${ParamRow} k="Min credit" v=${(m.min_credit_pct ?? 10) + '% of wing (else skip)'} />
+        <${ParamRow} k="Stop" v=${`breakeven — buy-back ≥ ${m.stop_buffer ?? 1.05}× credit, or a short-strike touch · else 16:00 expiry`} />
       </div>
       <p class="pb-note"><b>No early take-profit</b> — the backtest showed it caps the full-credit winners that ARE the edge. Expect many small scratched reds + occasional bigger green nights (the asymmetry). ≈ <b>$250–300/day defined risk</b> at 1 contract/slot.</p>
     </${Card}>

@@ -460,6 +460,53 @@ class Orchestrator:
                         pass
                     ibkr_probe = None
 
+    async def _backfill_night_reals(self, date_str: str) -> bool:
+        """Re-derive tonight's REAL numbers from the broker after the activities
+        API has settled, and patch the debrief row. Fixes the clean-night killer:
+        the EOD pass can run before fills are queryable, logging ic_real_net=None.
+        Only fills in blanks — never overwrites a captured value."""
+        try:
+            import os
+            from . import debrief as _dbf
+            _log = os.path.join(os.path.dirname(__file__), "..", "data", "debrief_log.jsonl")
+            rows = _dbf.meic_history(_log).get("nights", [])
+            row = next((r for r in rows if r.get("date") == date_str), None)
+            # Nothing traded → nothing to backfill; mark done so we stop looking.
+            rungs = [b for b in self.state.iron_condor_history
+                     if (b.build_id or "").startswith(f"ic_{date_str}")]
+            if not rungs:
+                dedup.mark_done("ic_backfill_done", date_str)
+                return False
+            if row and row.get("model_net") is not None:
+                dedup.mark_done("ic_backfill_done", date_str)   # already captured
+                return False
+
+            real_book = await self._today_ic_real_book(date_str)
+            if not (real_book and real_book.get("entries")):
+                log.info("backfill %s: broker still shows no MEIC entries — will retry", date_str)
+                return False
+            db = _dbf.build_ic_debrief(self.state.iron_condor_history, date_str, real_book)
+            r = db.get("real") or {}
+            patch = {"ic_real_net": r.get("net_pnl"),
+                     "ic_entry_credit": r.get("entry_credit"),
+                     "ic_slippage_pct": r.get("slippage_pct"),
+                     "ic_slippage_ladder_pct": r.get("slippage_ladder_pct"),
+                     "ic_slippage_market_pct": r.get("slippage_market_pct"),
+                     "ic_executed": db.get("executed"),
+                     "ic_stopped": db.get("stopped"),
+                     "ic_stop_rate": db.get("stop_rate"),
+                     "ic_backfilled": True}
+            patch = {k: v for k, v in patch.items() if v is not None}
+            ok = _dbf.annotate_log_row(_log, date_str, patch)
+            if ok:
+                dedup.mark_done("ic_backfill_done", date_str)
+                log.info("backfill %s: patched real numbers (net=%s, entries=%s)",
+                         date_str, r.get("net_pnl"), r.get("entries"))
+            return ok
+        except Exception as e:  # noqa: BLE001
+            log.warning("night backfill failed (%s): %s", date_str, e)
+            return False
+
     async def _eod_safety_loop(self):
         """Wakes every 60s. If past 16:30 ET on a weekday and EOD summary
         hasn't fired today, fire it. Catches the case where bars stop arriving
@@ -481,6 +528,14 @@ class Orchestrator:
                 if now_et.hour < 16 or (now_et.hour == 16 and now_et.minute < 30):
                     continue
                 date_str = now_et.strftime("%Y-%m-%d")
+                # LATE FILL BACKFILL (17:10 ET): Alpaca's activities API lags the
+                # close, so the EOD debrief sometimes computed real_book=None and
+                # logged ic_real_net=None — costing us CLEAN NIGHTS (Jul-13,
+                # Jul-16) even though the fills existed minutes later. Re-fetch
+                # once, well after the close, and patch the row. Idempotent.
+                if now_et.hour >= 17 and now_et.minute >= 10 \
+                        and not dedup.already_done("ic_backfill_done", date_str):
+                    await self._backfill_night_reals(date_str)
                 # Check both in-memory and persistent dedup
                 if self._eod_summary_fired == date_str:
                     continue
@@ -1264,9 +1319,15 @@ class Orchestrator:
             from .alpaca_trader import order_net_cashflow
             hdr = {"APCA-API-KEY-ID": settings.ALPACA_API_KEY,
                    "APCA-API-SECRET-KEY": settings.ALPACA_SECRET_KEY}
+            # DATE-RANGED query. The old call pulled the latest 100 orders and
+            # filtered client-side, so any date that scrolled out of that window
+            # returned nothing — silently blanking ic_real_net (the clean-night
+            # killer) and making late backfills impossible.
             async with httpx.AsyncClient(timeout=15) as c:
                 r = await c.get(f"{settings.ALPACA_BASE_URL}/v2/orders",
-                                params={"status": "all", "limit": 100, "nested": "true"}, headers=hdr)
+                                params={"status": "all", "limit": 500, "nested": "true",
+                                        "after": f"{date_str}T00:00:00-04:00",
+                                        "until": f"{date_str}T23:59:59-04:00"}, headers=hdr)
                 orders = r.json()
             entries = exits = 0.0
             n_entry = 0
@@ -1277,10 +1338,23 @@ class Orchestrator:
                 if not legs:           # equity (CasaaFinance) — not ours
                     continue
                 cf = order_net_cashflow(o) or 0.0
-                if len(legs) >= 4:     # 4-leg condor entry
+                # Classify by INTENT, not leg count. Leg-count was wrong the day
+                # one-sided MEIC shipped: a one-sided ENTRY is a 2-leg order and
+                # got booked as an exit — so all-one-sided nights returned None
+                # (ic_real_net blank → lost clean nights, Jul-13/16) and mixed
+                # nights double-counted the credit as a debit (Jul-22 model +$77
+                # vs broker +$54). *_to_open = entry, *_to_close = exit.
+                intents = {str(l.get("position_intent", "")) for l in legs}
+                if any(i.endswith("_to_open") for i in intents):
+                    is_entry = True
+                elif any(i.endswith("_to_close") for i in intents):
+                    is_entry = False
+                else:
+                    is_entry = cf > 0     # fallback: credit in = entry
+                if is_entry:
                     entries += cf
                     n_entry += 1
-                else:                  # 2-leg close (reverse spread)
+                else:
                     exits += cf
             if n_entry == 0:
                 return None

@@ -593,11 +593,34 @@ def build_ic_debrief(ic_history, date: str, real_book: dict | None = None,
         real_entry = real_book.get("entry_credit") or 0.0       # SPY-scale real $
         real_net = real_book.get("net") or 0.0
         model_entry_spy = model_credit_spx / 10.0               # SPX→SPY ×1ct
+        # MATCHED-PAIR slippage: compare each condor's own model credit to its
+        # own fill. The old aggregate (all builds' model vs only-captured fills)
+        # read 27-60% on nights where fill-capture missed a rung — pure artifact.
+        # True per-condor slippage those same nights was ~1% (limit ladder) and
+        # ~9% (one-sided market orders). Never let a capture gap masquerade as
+        # an execution problem.
+        _pairs = [(b.total_credit_dollars, b.real_credit_dollars,
+                   getattr(b, "limit_shadow_credit_per_share_spy", None) is not None)
+                  for b in rungs
+                  if b.total_credit_dollars and b.real_credit_dollars]
+        slip_pct = None
+        slip_ladder = slip_market = None
+        if _pairs:
+            _sl = [(m - r) / m * 100 for m, r, _ in _pairs]
+            slip_pct = round(sum(_sl) / len(_sl), 1)
+            _lad = [(m - r) / m * 100 for m, r, isl in _pairs if isl]
+            _mkt = [(m - r) / m * 100 for m, r, isl in _pairs if not isl]
+            if _lad:
+                slip_ladder = round(sum(_lad) / len(_lad), 1)
+            if _mkt:
+                slip_market = round(sum(_mkt) / len(_mkt), 1)
         slip = model_entry_spy - real_entry
-        slip_pct = round(slip / model_entry_spy * 100, 1) if model_entry_spy else None
         out["real"] = {"entry_credit": round(real_entry, 2), "net_pnl": round(real_net, 2),
                        "entries": real_book.get("entries"),
-                       "model_entry_spy": round(model_entry_spy, 2), "slippage_pct": slip_pct}
+                       "model_entry_spy": round(model_entry_spy, 2), "slippage_pct": slip_pct,
+                       "slippage_matched_n": len(_pairs),
+                       "slippage_ladder_pct": slip_ladder,
+                       "slippage_market_pct": slip_market}
         if slip_pct is not None and slip_pct > IC_SLIP_TOLERANCE_PCT:
             flags.append(f"⚠️ entry slippage {slip_pct:.0f}% (model ${model_entry_spy:.0f}→real "
                          f"${real_entry:.0f}) — above the ~{IC_SLIP_TOLERANCE_PCT:.0f}% line where IC "

@@ -707,6 +707,12 @@ def log_assumptions(date: str, ic_d: dict, wave_d: dict, path: str) -> dict:
         "ic_real_net": r.get("net_pnl"),
         "ic_entry_credit": r.get("entry_credit"),
         "ic_slippage_pct": r.get("slippage_pct"),
+        # Execution split — the evidence for "route one-sided through the ladder
+        # too": ladder fills run ~1% off mid, market fills ~9%. Logged nightly so
+        # the N=20 review has a series, not one weekend's spot check.
+        "ic_slippage_ladder_pct": r.get("slippage_ladder_pct"),
+        "ic_slippage_market_pct": r.get("slippage_market_pct"),
+        "ic_slippage_matched_n": r.get("slippage_matched_n"),
         # MAE/MFE excursion — forward-looking stop-quality + decay-capture telemetry.
         "ic_mfe_med_pct": exc.get("mfe_med_pct"),
         "ic_mae_med_pct": exc.get("mae_med_pct"),

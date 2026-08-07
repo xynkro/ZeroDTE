@@ -215,6 +215,7 @@ class Orchestrator:
                 "claude_scan_last": self._claude_scan_last,
             }
             state_store.save_async(snapshot)
+            self._persist_trial_ledger()   # durable trial memory (survives day rollover)
         except Exception as e:
             log.warning("persist_state failed: %s", e)
 
@@ -680,6 +681,43 @@ class Orchestrator:
                 log.warning("claude scan task failed: %s", e)
 
         asyncio.create_task(_run())
+
+    def _persist_trial_ledger(self) -> None:
+        """Upsert closed directional trades into a DURABLE append-only ledger.
+
+        live_state.json is deliberately SESSION-SCOPED (state_store.load discards
+        state from a prior day), so the in-memory paper_trades list resets on any
+        cross-day restart — which silently zeroed the 25-trade trial scoreboard
+        during the 2026-08 migration. This ledger is the trial's real memory.
+        Keyed by trade id so late fill-reads (broker_realized_pnl) update in place.
+        Best-effort; never raises."""
+        try:
+            import json as _json
+            import os as _os
+            path = _os.path.join(_os.path.dirname(__file__), "..", "data",
+                                 "trial_trades.jsonl")
+            rows: dict[str, dict] = {}
+            if _os.path.exists(path):
+                with open(path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            r = _json.loads(line)
+                            if r.get("id"):
+                                rows[r["id"]] = r
+                        except ValueError:
+                            continue
+            for t in self.paper_trades:
+                if getattr(t, "strategy", None) == "directional_spread" and t.closed:
+                    rows[t.id] = t.model_dump()
+            _os.makedirs(_os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                for r in rows.values():
+                    f.write(_json.dumps(r, default=str) + "\n")
+        except Exception as e:  # noqa: BLE001
+            log.debug("trial ledger persist failed: %s", e)
 
     def _band_journal(self, rec: dict) -> None:
         """Append every band decision (opened AND gated, with why) to

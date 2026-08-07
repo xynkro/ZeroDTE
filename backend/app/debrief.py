@@ -314,10 +314,43 @@ TRIAL_ACCOUNT = 10_000.0            # WaveZero paper account
 TRIAL_MAX_DD_PCT = 15.0             # hard halt: real drawdown > 15% of account
 
 
+def _load_trial_ledger():
+    """Read the DURABLE trial ledger (trial_trades.jsonl). live_state.json is
+    session-scoped and resets on a cross-day restart, so the ledger — not the
+    in-memory list — is the trial's real memory. Returns [] if unavailable."""
+    import json
+    import os
+    path = os.path.join(os.path.dirname(__file__), "..", "data", "trial_trades.jsonl")
+    out = []
+    try:
+        from .models import PaperTrade
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(PaperTrade(**json.loads(line)))
+                except Exception:  # noqa: BLE001 — one bad row never kills the scoreboard
+                    continue
+    except OSError:
+        return []
+    return out
+
+
 def trial_status(trades) -> dict:
     """25-trade trial scoreboard vs the PRE-REGISTERED gates (docs/TRIAL_GATES.md).
     Counts band-era trades (fired >= TRIAL_START) with REAL fill P&L only — the
-    model never grades itself here. Returns {} until the first trial trade exists."""
+    model never grades itself here. Returns {} until the first trial trade exists.
+
+    Reads the DURABLE ledger and merges the in-memory list (ledger wins ties by id),
+    so a cross-day restart can never silently zero the scoreboard again."""
+    merged = {}
+    for t in list(_load_trial_ledger()) + list(trades):
+        tid = getattr(t, "id", None)
+        if tid:
+            merged[tid] = t
+    trades = list(merged.values()) or list(trades)
     ds = [t for t in trades
           if getattr(t, "strategy", None) == "directional_spread"
           and t.closed and (t.fired_at or "") >= TRIAL_START]

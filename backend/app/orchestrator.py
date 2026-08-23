@@ -113,6 +113,7 @@ class Orchestrator:
         # calibrated from day one (live expanding median == validated backtest's).
         self._band_medians = None
         self._band_opened_date: str | None = None
+        self._band_slots_done: set[str] = set()   # "YYYY-MM-DD:HH:MM" per-slot markers
         self._band_last: dict | None = None   # last band decision (dashboard visibility)
         self._claude_scan_date: str | None = None   # one advisor scan per session
         self._claude_scan_last: dict | None = None
@@ -169,6 +170,7 @@ class Orchestrator:
             self._today_evaluated = int(data.get("today_evaluated") or 0)
             self._today_gated = dict(data.get("today_gated") or {})
             self._band_opened_date = data.get("band_opened_date")
+            self._band_slots_done = set(data.get("band_slots_done") or [])
             self._band_last = data.get("band_last")
             self._claude_scan_date = data.get("claude_scan_date")
             self._claude_scan_last = data.get("claude_scan_last")
@@ -210,6 +212,7 @@ class Orchestrator:
                 # or a mid-session bounce could double-enter the same day. band_last
                 # rides along so the dashboard shows today's decision after a bounce.
                 "band_opened_date": self._band_opened_date,
+                "band_slots_done": sorted(self._band_slots_done),
                 "band_last": self._band_last,
                 "claude_scan_date": self._claude_scan_date,
                 "claude_scan_last": self._claude_scan_last,
@@ -750,10 +753,29 @@ class Orchestrator:
         if et.weekday() > 4:
             return
         bar_min = et.hour * 60 + et.minute
-        if bar_min < 10 * 60 or bar_min >= 16 * 60:   # entry window: 10:00 → 16:00 ET
-            return
         date = et.strftime("%Y-%m-%d")
-        if self._band_opened_date == date:
+        # ── Config B ENTRY LADDER ── independent attempt per configured slot. Each slot
+        # fires at most once/day (persisted marker) and only within 25 min of its time, so
+        # a mid-session restart can't machine-gun the whole ladder at one price.
+        slot_min = None
+        for _sv in str(settings.WAVE_BAND_ENTRY_SLOTS).split(","):
+            _sv = _sv.strip()
+            try:
+                _hh, _mm = _sv.split(":")
+                _m = int(_hh) * 60 + int(_mm)
+            except (ValueError, AttributeError):
+                continue
+            if _m <= bar_min < _m + 25 and f"{date}:{_sv}" not in self._band_slots_done:
+                slot_min, slot_key = _m, f"{date}:{_sv}"
+                break
+        if slot_min is None:
+            return
+        if bar_min >= 16 * 60:
+            return
+        # concurrency guard — never exceed the configured open-position ceiling
+        if sum(1 for t in self.paper_trades if not t.closed) >= settings.MAX_CONCURRENT_POSITIONS:
+            log.info("Band: slot %s skipped — %d positions already open", slot_key,
+                     settings.MAX_CONCURRENT_POSITIONS)
             return
         try:
             from . import bs_pricing as bs
@@ -773,14 +795,18 @@ class Orchestrator:
             if not r5 or r5 <= 0:
                 return
             pr = _periods_remaining(bar.time)
-            p = BandParams(premium_mult=settings.DIRECTIONAL_PREMIUM_MULT,
+            p = BandParams(cushion_pct=settings.WAVE_BAND_CUSHION_PCT,
+                           premium_mult=settings.DIRECTIONAL_PREMIUM_MULT,
                            put_skew=settings.DIRECTIONAL_SKEW_PUT_MULT,
                            call_skew=settings.DIRECTIONAL_SKEW_CALL_MULT)
             d = decide_band_trade(buf, r5, pr, self._band_medians.r5_median(),
                                   self._band_medians.width_median(), p)
             # record medians AFTER the decision (no lookahead); mark today attempted
             _, _, _, width = bollinger(buf, p.bb_len, p.bb_mult)
-            self._band_medians.record(r5, width)
+            # medians recorded ONCE per day (first slot only) — mirrors the backtest
+            if not any(k.startswith(f"{date}:") for k in self._band_slots_done):
+                self._band_medians.record(r5, width)
+            self._band_slots_done.add(slot_key)
             self._band_opened_date = date
             if d is None:
                 rm = self._band_medians.r5_median()
@@ -937,7 +963,8 @@ class Orchestrator:
             self._persist_state()
         except Exception as e:  # noqa: BLE001 — never crash the bar loop
             log.error("Band entry failed %s: %s", date, e, exc_info=True)
-            self._band_opened_date = date   # don't retry a crashing entry all day
+            self._band_slots_done.add(slot_key)   # don't retry a crashing slot all day
+            self._band_opened_date = date
 
     def _maybe_ping_morning_alive(self, bar: Bar):
         """Fire a 'good morning' heartbeat on the first live bar of each session.

@@ -50,6 +50,21 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-08-23 — CONFIG B (entry ladder). NOTE: this is a CONFIG CHANGE mid-trial.**
+  Trades 1-4 (+$272, 64% capture) were on the 1-entry config; Config B's sample starts
+  FRESH at n=0. Do not pool them for the verdict — report both lines separately.
+  Change: entry slots 10:00 -> 10:00/11:00/12:00, cushion 0.5% -> 0.4%, size cap
+  $1,000 -> $350/trade (3 x $350 = ~$810/day = LESS total risk than before).
+  Basis: scripts/wave_frequency_backtest.py — a reality-calibrated backtest (0.5
+  model->executable haircut measured on 7 live priced days). Its 1-entry baseline
+  predicted 20% fire / 1.0 trade-wk vs reality's 13% / 0.9, so the calibration is
+  trustworthy. Config B: 2x trades (4.1/fortnight), +42% $/day (+$40.4), t 6.18 ->
+  7.46, tail -159 -> -212. Rejected: 4-5 slots and dropping the vol gate (t collapses
+  to 4.1-5.6, tail ~triples). Vol gate and the 10%-of-width floor are UNCHANGED.
+  Purpose: 2 weeks of Config B tests ENGINEERING (3 clean fires/day, no collisions,
+  fills match the haircut) — it does NOT statistically validate; n=25 now ~3 months.
+
+
 - **2026-07-02 (later) — floor $8 → $10/ct (risk-owner rule).** Caspar: minimum
   10% of width when risking $1,000/SPX-equivalent. Backtest split at that line:
   the sub-10% trades were 55 tiny never-losing fillers (+$1,246 total, worst +$8)

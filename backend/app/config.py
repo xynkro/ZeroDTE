@@ -200,6 +200,14 @@ class Settings:
     # cushion-legal strikes, the trial starves fast → that IS the early verdict.
     # 0 disables (model-only floor). CBOE unquotable at entry → SKIP (fail-closed).
     WAVE_BAND_REAL_CREDIT_FLOOR: float = _f("WAVE_BAND_REAL_CREDIT_FLOOR", 10.0)
+    # ── Config B (2026-08-23): ENTRY LADDER + cushion, from the reality-calibrated
+    # frequency backtest (scripts/wave_frequency_backtest.py). Calibrated with a 0.5
+    # model->executable haircut measured on 7 live priced days; the 1-entry baseline
+    # predicted 20% fire / 1.0 trade-wk vs reality's 13% / 0.9 — the model matches now.
+    # 3 slots + 0.4% cushion: 2x trades, +42% $/day, t 6.18 -> 7.46, tail -159 -> -212.
+    # 4-5 slots or dropping the vol gate degrade t to 4-5.6 and ~triple the tail — don't.
+    WAVE_BAND_ENTRY_SLOTS: str = os.getenv("WAVE_BAND_ENTRY_SLOTS", "10:00")
+    WAVE_BAND_CUSHION_PCT: float = _f("WAVE_BAND_CUSHION_PCT", 0.5)
 
     # ── Claude morning scan — SCORED ADVISOR, never a decision-maker ──
     # One API call/session ~09:45-09:59 ET → structured risk verdict → logged to

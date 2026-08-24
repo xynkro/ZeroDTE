@@ -779,7 +779,8 @@ class Orchestrator:
             return
         try:
             from . import bs_pricing as bs
-            from .wave_band_live import decide_band_trade, bollinger, BandParams
+            from .wave_band_live import (decide_band_trade, decide_band_trades,
+                                         bollinger, BandParams)
             from .directional_spread_manager import _periods_remaining, open_directional_trade
             from .models import SignalEvent, StrikeSuggestion
 
@@ -799,8 +800,11 @@ class Orchestrator:
                            premium_mult=settings.DIRECTIONAL_PREMIUM_MULT,
                            put_skew=settings.DIRECTIONAL_SKEW_PUT_MULT,
                            call_skew=settings.DIRECTIONAL_SKEW_CALL_MULT)
-            d = decide_band_trade(buf, r5, pr, self._band_medians.r5_median(),
-                                  self._band_medians.width_median(), p)
+            # Config E: evaluate BOTH sides when enabled (condor); else the trend side.
+            _cands = decide_band_trades(buf, r5, pr, self._band_medians.r5_median(),
+                                        self._band_medians.width_median(), p,
+                                        both_sides=settings.WAVE_BAND_BOTH_SIDES)
+            d = _cands[0] if _cands else None
             # record medians AFTER the decision (no lookahead); mark today attempted
             _, _, _, width = bollinger(buf, p.bb_len, p.bb_mult)
             # medians recorded ONCE per day (first slot only) — mirrors the backtest
@@ -833,134 +837,136 @@ class Orchestrator:
                 self._persist_state()   # gated day-marker must survive restarts too
                 return
 
-            S0 = buf[-1]
-            wing = abs(d.long_strike - d.short_strike)
-            short_k, long_k, model_credit = d.short_strike, d.long_strike, d.est_credit
+            # Config E: open EVERY qualifying side this slot (condor = 2 trades).
+            for d in _cands:
+                S0 = buf[-1]
+                wing = abs(d.long_strike - d.short_strike)
+                short_k, long_k, model_credit = d.short_strike, d.long_strike, d.est_credit
 
-            # ── REAL-quote credit floor (fix for trial trades #1/#2) ──
-            # The model passes the $30 credit floor in fantasy space on call spreads the
-            # market pays ~$0 for. Enforce the floor's INTENT on real CBOE mids: walk
-            # toward spot (SPY $1 grid = SPX 10pt), never inside the cushion; if no
-            # strike pays the floor → SKIP the day. CBOE unquotable → SKIP (fail-closed).
-            entry_mid = None
-            if settings.WAVE_BAND_REAL_CREDIT_FLOOR > 0:
-                from .gex import fetch_chain, _parse_occ
-                from .directional_spread_manager import spy_strike_params
-                from .wave_band_live import spread_model_credit
-                chain = await fetch_chain("SPY")
-                # CONSERVATIVE executable credit, not the optimistic mid (trade #1
-                # lesson: floor passed at $12/ct MID, market order FILLED at $3/ct —
-                # the risk-owner's "never risk $1k for $3" was violated by execution).
-                # Basis = sell the short at BID, buy the long at ASK: what a market
-                # order realistically collects. Rows built from the raw chain.
-                exp = et.strftime("%y%m%d")
-                rows = {}
-                want_call = d.side == "sell_call_cs"
-                for o_ in ((chain.get("data") or {}).get("options") or []) if chain else []:
-                    sym_ = o_.get("option", "")
-                    if exp not in sym_:
-                        continue
-                    parsed_ = _parse_occ(sym_)
-                    if parsed_ is None or parsed_[0] != want_call:
-                        continue
-                    rows[parsed_[1]] = {"bid": o_.get("bid") or 0.0,
-                                        "ask": o_.get("ask") or 0.0}
+                # ── REAL-quote credit floor (fix for trial trades #1/#2) ──
+                # The model passes the $30 credit floor in fantasy space on call spreads the
+                # market pays ~$0 for. Enforce the floor's INTENT on real CBOE mids: walk
+                # toward spot (SPY $1 grid = SPX 10pt), never inside the cushion; if no
+                # strike pays the floor → SKIP the day. CBOE unquotable → SKIP (fail-closed).
+                entry_mid = None
+                if settings.WAVE_BAND_REAL_CREDIT_FLOOR > 0:
+                    from .gex import fetch_chain, _parse_occ
+                    from .directional_spread_manager import spy_strike_params
+                    from .wave_band_live import spread_model_credit
+                    chain = await fetch_chain("SPY")
+                    # CONSERVATIVE executable credit, not the optimistic mid (trade #1
+                    # lesson: floor passed at $12/ct MID, market order FILLED at $3/ct —
+                    # the risk-owner's "never risk $1k for $3" was violated by execution).
+                    # Basis = sell the short at BID, buy the long at ASK: what a market
+                    # order realistically collects. Rows built from the raw chain.
+                    exp = et.strftime("%y%m%d")
+                    rows = {}
+                    want_call = d.side == "sell_call_cs"
+                    for o_ in ((chain.get("data") or {}).get("options") or []) if chain else []:
+                        sym_ = o_.get("option", "")
+                        if exp not in sym_:
+                            continue
+                        parsed_ = _parse_occ(sym_)
+                        if parsed_ is None or parsed_[0] != want_call:
+                            continue
+                        rows[parsed_[1]] = {"bid": o_.get("bid") or 0.0,
+                                            "ask": o_.get("ask") or 0.0}
 
-                def _mid_at(k_spx: float):
-                    """Conservative net credit $/ct: short.bid − long.ask (executable)."""
-                    prm = spy_strike_params(side=d.side, spx_short_strike=k_spx,
-                                            spx_credit_dollars=None)
-                    s_ = rows.get(prm["short_strike"])
-                    l_ = rows.get(prm["long_strike"])
-                    if not s_ or not l_ or s_["bid"] <= 0:
-                        return None
-                    return round((s_["bid"] - l_["ask"]) * 100, 2)
+                    def _mid_at(k_spx: float):
+                        """Conservative net credit $/ct: short.bid − long.ask (executable)."""
+                        prm = spy_strike_params(side=d.side, spx_short_strike=k_spx,
+                                                spx_credit_dollars=None)
+                        s_ = rows.get(prm["short_strike"])
+                        l_ = rows.get(prm["long_strike"])
+                        if not s_ or not l_ or s_["bid"] <= 0:
+                            return None
+                        return round((s_["bid"] - l_["ask"]) * 100, 2)
 
-                floor = settings.WAVE_BAND_REAL_CREDIT_FLOOR
-                toward = -10.0 if d.side == "sell_call_cs" else +10.0   # walk toward spot
-                k = short_k
-                found = None
-                best_seen = None   # (strike, mid, cushion) — the real credit SURFACE record
-                for _ in range(30):
-                    cushion = 100.0 * abs(S0 - k) / S0
-                    if cushion < 0.50:      # never inside the validated cushion filter
-                        break
-                    m = _mid_at(k)
-                    if m is not None and (best_seen is None or m > best_seen[1]):
-                        best_seen = (k, m, round(cushion, 3))
-                    if m is not None and m >= floor:
-                        found = (k, m)
-                        break
-                    k += toward
-                if found is None:
-                    reason = ("real credit below floor at every cushion-legal strike"
-                              if rows else "options chain unquotable at entry")
-                    self._band_last = {"date": date, "decision": "gated", "reason": reason,
-                                       "r5": round(r5, 6)}
-                    self._band_journal({"date": date, "decision": "gated", "reason": reason,
-                                        "r5": round(r5, 6), "spot": round(S0, 1),
-                                        "band_short": d.short_strike,
-                                        "model_credit": round(model_credit, 0),
-                                        "real_floor": settings.WAVE_BAND_REAL_CREDIT_FLOOR,
-                                        "quotable": bool(rows),
-                                        # the money question: what WOULD reality pay?
-                                        "best_real_ct": best_seen[1] if best_seen else None,
-                                        "best_real_strike": best_seen[0] if best_seen else None,
-                                        "best_real_cushion_pct": best_seen[2] if best_seen else None,
-                                        "basis": "exec_bid_ask",
-                                        "side": d.side,
-                                        "feed": getattr(self.state, "feed_type", "?")})
-                    log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",
-                                date, reason, model_credit)
-                    self._persist_state()
-                    return
-                k, entry_mid = found
-                if abs(k - short_k) > 0.01:
-                    old = short_k
-                    short_k = k
-                    long_k = k + wing if d.side == "sell_call_cs" else k - wing
-                    model_credit = spread_model_credit(S0, d.side, short_k, wing, r5, pr)
-                    log.info("Band: walked strike for REAL credit %s: SPX %.0f→%.0f "
-                             "(real mid $%.2f/ct ≥ floor $%.2f)", date, old, short_k,
-                             entry_mid, floor)
+                    floor = settings.WAVE_BAND_REAL_CREDIT_FLOOR
+                    toward = -10.0 if d.side == "sell_call_cs" else +10.0   # walk toward spot
+                    k = short_k
+                    found = None
+                    best_seen = None   # (strike, mid, cushion) — the real credit SURFACE record
+                    for _ in range(30):
+                        cushion = 100.0 * abs(S0 - k) / S0
+                        if cushion < 0.50:      # never inside the validated cushion filter
+                            break
+                        m = _mid_at(k)
+                        if m is not None and (best_seen is None or m > best_seen[1]):
+                            best_seen = (k, m, round(cushion, 3))
+                        if m is not None and m >= floor:
+                            found = (k, m)
+                            break
+                        k += toward
+                    if found is None:
+                        reason = ("real credit below floor at every cushion-legal strike"
+                                  if rows else "options chain unquotable at entry")
+                        self._band_last = {"date": date, "decision": "gated", "reason": reason,
+                                           "r5": round(r5, 6)}
+                        self._band_journal({"date": date, "decision": "gated", "reason": reason,
+                                            "r5": round(r5, 6), "spot": round(S0, 1),
+                                            "band_short": d.short_strike,
+                                            "model_credit": round(model_credit, 0),
+                                            "real_floor": settings.WAVE_BAND_REAL_CREDIT_FLOOR,
+                                            "quotable": bool(rows),
+                                            # the money question: what WOULD reality pay?
+                                            "best_real_ct": best_seen[1] if best_seen else None,
+                                            "best_real_strike": best_seen[0] if best_seen else None,
+                                            "best_real_cushion_pct": best_seen[2] if best_seen else None,
+                                            "basis": "exec_bid_ask",
+                                            "side": d.side,
+                                            "feed": getattr(self.state, "feed_type", "?")})
+                        log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",
+                                    date, reason, model_credit)
+                        self._persist_state()
+                        continue   # Config E: this side is unpayable — still try the other side
+                    k, entry_mid = found
+                    if abs(k - short_k) > 0.01:
+                        old = short_k
+                        short_k = k
+                        long_k = k + wing if d.side == "sell_call_cs" else k - wing
+                        model_credit = spread_model_credit(S0, d.side, short_k, wing, r5, pr)
+                        log.info("Band: walked strike for REAL credit %s: SPX %.0f→%.0f "
+                                 "(real mid $%.2f/ct ≥ floor $%.2f)", date, old, short_k,
+                                 entry_mid, floor)
 
-            ev = SignalEvent(side=d.side, triggered_at=bar.time.isoformat(),
-                             underlying_price=S0, confluence={}, confluence_score=4)
-            sp = StrikeSuggestion(instrument="SPX", side=d.side, mode="directional_spread",
-                                  short_strike=short_k, long_strike=long_k,
-                                  wing_width=wing, multiplier=100,
-                                  estimated_credit_dollars=model_credit,
-                                  max_loss_dollars=wing * 100 - model_credit,
-                                  notional_per_contract=S0 * 100)
-            trade_no = self._next_trade_no(et)
-            pt, sizing_note = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
-            pt.proj_high_at_signal = self.state.regime.proj_high
-            pt.proj_low_at_signal = self.state.regime.proj_low
-            if self._gex is not None and getattr(self._gex, "ok", False):
-                pt.gex_regime = self._gex.regime
-                pt.gex_net_ratio = self._gex.net_ratio
-            self.paper_trades.append(pt)
-            pt.entry_mid_quote = entry_mid   # guaranteed entry telemetry (pre-trade quote)
-            final_cushion = 100.0 * abs(S0 - short_k) / S0
-            log.info("Band trade #%d OPENED [%s]: SPX short=%.0f long=%.0f model=$%.0f "
-                     "realmid=%s cushion=%.2f%% choppy=%s size=%dct (%s)", trade_no, d.side,
-                     short_k, long_k, model_credit,
-                     f"${entry_mid:.2f}/ct" if entry_mid is not None else "n/a",
-                     final_cushion, d.choppy, pt.contracts, sizing_note)
-            self._band_last = {"date": date, "decision": "opened", "side": d.side,
-                               "short": short_k, "long": long_k,
-                               "credit": round(model_credit, 0),
-                               "real_mid_ct": entry_mid,
-                               "cushion_pct": round(final_cushion, 2), "choppy": d.choppy,
-                               "r5": round(r5, 6)}
-            self._band_journal({**self._band_last, "basis": "exec_bid_ask", "trade_no": trade_no,
-                                "contracts": pt.contracts,
-                                "feed": getattr(self.state, "feed_type", "?")})
-            if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:
-                pt.broker_status = "pending"
-                self._broker_entry_tasks[pt.id] = asyncio.create_task(
-                    self._submit_alpaca_entry(pt, ev, sizing_note, True))
-            self._persist_state()
+                ev = SignalEvent(side=d.side, triggered_at=bar.time.isoformat(),
+                                 underlying_price=S0, confluence={}, confluence_score=4)
+                sp = StrikeSuggestion(instrument="SPX", side=d.side, mode="directional_spread",
+                                      short_strike=short_k, long_strike=long_k,
+                                      wing_width=wing, multiplier=100,
+                                      estimated_credit_dollars=model_credit,
+                                      max_loss_dollars=wing * 100 - model_credit,
+                                      notional_per_contract=S0 * 100)
+                trade_no = self._next_trade_no(et)
+                pt, sizing_note = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
+                pt.proj_high_at_signal = self.state.regime.proj_high
+                pt.proj_low_at_signal = self.state.regime.proj_low
+                if self._gex is not None and getattr(self._gex, "ok", False):
+                    pt.gex_regime = self._gex.regime
+                    pt.gex_net_ratio = self._gex.net_ratio
+                self.paper_trades.append(pt)
+                pt.entry_mid_quote = entry_mid   # guaranteed entry telemetry (pre-trade quote)
+                final_cushion = 100.0 * abs(S0 - short_k) / S0
+                log.info("Band trade #%d OPENED [%s]: SPX short=%.0f long=%.0f model=$%.0f "
+                         "realmid=%s cushion=%.2f%% choppy=%s size=%dct (%s)", trade_no, d.side,
+                         short_k, long_k, model_credit,
+                         f"${entry_mid:.2f}/ct" if entry_mid is not None else "n/a",
+                         final_cushion, d.choppy, pt.contracts, sizing_note)
+                self._band_last = {"date": date, "decision": "opened", "side": d.side,
+                                   "short": short_k, "long": long_k,
+                                   "credit": round(model_credit, 0),
+                                   "real_mid_ct": entry_mid,
+                                   "cushion_pct": round(final_cushion, 2), "choppy": d.choppy,
+                                   "r5": round(r5, 6)}
+                self._band_journal({**self._band_last, "basis": "exec_bid_ask", "trade_no": trade_no,
+                                    "contracts": pt.contracts,
+                                    "feed": getattr(self.state, "feed_type", "?")})
+                if settings.PAPER_BROKER == "alpaca" and getattr(self, "alpaca_trader", None) is not None:
+                    pt.broker_status = "pending"
+                    self._broker_entry_tasks[pt.id] = asyncio.create_task(
+                        self._submit_alpaca_entry(pt, ev, sizing_note, True))
+                self._persist_state()
         except Exception as e:  # noqa: BLE001 — never crash the bar loop
             log.error("Band entry failed %s: %s", date, e, exc_info=True)
             self._band_slots_done.add(slot_key)   # don't retry a crashing slot all day

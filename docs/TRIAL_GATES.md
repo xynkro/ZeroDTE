@@ -50,6 +50,23 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-08-23 — CONFIG E (iron condor on a dense ladder). SECOND config change; sample
+  restarts again.** Config B never traded live (built same day), so no live sample is lost.
+  Change: 3 slots -> 10 (10:00-14:30 /30m), one side -> BOTH sides per slot (condor),
+  MAX_CONCURRENT 3 -> 5, MAX_TRADES/DAY 3 -> 20. UNCHANGED: vol gate, 10%-of-width real
+  floor, 0.4% cushion, TP40 + breach-stop, no time exit, $350 size cap.
+  Basis: scripts/wave_final_strategy.py head-to-head, reality-calibrated. Config E =
+  2.79 trades/day, EV +$14.81/trade, WR 80.8%, avgW $43 / avgL $106, OOS +$118/day
+  t=9.26 — vs one-side 3 slots at +$37/day t=7.11. Passes the bear case's own test
+  (fattail.ai: win_rate x avgWin > loss_rate x avgLoss) because the breach-stop caps
+  avgLoss at ~$106 rather than the ~$900 an unmanaged condor eats. REJECTED: pushing to
+  5.56 trades/day (gate off, 7% floor) — money FALLS to +$73/day and the tail worsens to
+  -$1,181; and the bear case's own hard-14:00-exit fix, which halves EV to +$7.1.
+  Risk envelope: 3ct x ~$92 = ~$276/trade x 5 concurrent = ~$1,380 = 13.8% < the 15% halt.
+  Verified by a 10-gate ledger (GATES.md): 9/10 met with re-executed evidence; G10
+  (risk-owner acceptance of the exposure change) is OPEN pending Caspar.
+
+
 - **2026-08-23 — CONFIG B (entry ladder). NOTE: this is a CONFIG CHANGE mid-trial.**
   Trades 1-4 (+$272, 64% capture) were on the 1-entry config; Config B's sample starts
   FRESH at n=0. Do not pool them for the verdict — report both lines separately.

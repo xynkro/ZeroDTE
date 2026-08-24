@@ -125,6 +125,77 @@ def decide_band_trade(
                         vol_released=bool(vol_released), choppy=choppy, pct_otm=pct_otm, r5=r5)
 
 
+def _walk_side(side: str, S0: float, upper: float, lower: float, width: float,
+               r5: float, periods_remaining: float, choppy: bool,
+               p: "BandParams") -> "BandDecision | None":
+    """Strike walk for ONE side. Anchor at that side's band extreme, push further OTM on
+    choppy days, then walk toward spot until the credit clears the floor — never inside
+    the cushion. Mirrors decide_band_trade's inner logic exactly, but for an explicitly
+    chosen side (decide_band_trade picks by trend; the condor path evaluates both).
+    NOTE: decide_band_trade is deliberately NOT refactored to call this — it stays
+    byte-identical so the 378/378 backtest parity can never drift (gate G2)."""
+    down = side == "sell_put_cs"
+    sk = p.put_skew if down else p.call_skew
+    tv0 = bs.total_vol_to_expiry(r5, periods_remaining, p.premium_mult) * sk
+    atr = max(1.0, width / 4.0)
+    if down:
+        short = float(round(lower - (p.choppy_push_atr * atr if choppy else 0.0)))
+        sign, cap = +1.0, S0 * (1 - p.min_otm_pct / 100.0)
+    else:
+        short = float(round(upper + (p.choppy_push_atr * atr if choppy else 0.0)))
+        sign, cap = -1.0, S0 * (1 + p.min_otm_pct / 100.0)
+
+    def credit_at(s):
+        lng = s - p.wing if down else s + p.wing
+        return bs.spread_value(side, S0, s, lng, tv0) * MULT, lng
+
+    cr, lng = credit_at(short)
+    tries = 0
+    while cr < p.credit_floor and tries < 60:
+        ns = short + sign * STEP
+        if (down and ns > cap) or ((not down) and ns < cap):
+            break
+        short = ns
+        cr, lng = credit_at(short)
+        tries += 1
+    if cr < p.credit_floor:
+        return None
+    pct_otm = 100.0 * abs(S0 - short) / S0
+    if pct_otm < p.cushion_pct:
+        return None
+    return BandDecision(side=side, short_strike=short, long_strike=lng, est_credit=cr,
+                        vol_released=True, choppy=choppy, pct_otm=pct_otm, r5=r5)
+
+
+def decide_band_trades(closes, r5, periods_remaining, r5_median, width_median,
+                       p: "BandParams" = None, both_sides: bool = False):
+    """CONFIG E — return a LIST of qualifying trades for this slot.
+
+    both_sides=False -> at most one trade, side chosen by trend (Config B behaviour).
+    both_sides=True  -> evaluate the put AND the call independently; each is taken only
+                        if it clears the credit floor at a cushion-legal strike. Selling
+                        both is an iron condor: two credits collected, but only ONE side
+                        can finish in the money (CBOE/Schwartz), which is why the
+                        backtest's expectancy per DAY rises without the tail doubling.
+    Same Schwartz vol-released gate and cushion rules as the single-side path."""
+    p = p or BandParams()
+    if not closes or r5 <= 0 or periods_remaining <= 1:
+        return []
+    S0 = closes[-1]
+    sma, upper, lower, width = bollinger(closes, p.bb_len, p.bb_mult)
+    if r5_median is not None and r5 <= r5_median:
+        return []                      # vol not released — sit out (validated gate)
+    choppy = (width_median is not None and width > width_median)
+    sides = (["sell_put_cs", "sell_call_cs"] if both_sides
+             else ["sell_put_cs" if S0 < sma else "sell_call_cs"])
+    out = []
+    for side in sides:
+        d = _walk_side(side, S0, upper, lower, width, r5, periods_remaining, choppy, p)
+        if d is not None:
+            out.append(d)
+    return out
+
+
 def spread_model_credit(S0: float, side: str, short_strike: float, wing: float,
                         r5: float, periods_remaining: float,
                         p: BandParams = BandParams()) -> float:

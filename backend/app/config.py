@@ -208,6 +208,14 @@ class Settings:
     # 4-5 slots or dropping the vol gate degrade t to 4-5.6 and ~triple the tail — don't.
     WAVE_BAND_ENTRY_SLOTS: str = os.getenv("WAVE_BAND_ENTRY_SLOTS", "10:00")
     WAVE_BAND_CUSHION_PCT: float = _f("WAVE_BAND_CUSHION_PCT", 0.5)
+    # Config E (2026-08-23): sell BOTH sides at each slot = iron condor. Two credits
+    # collected but only ONE side can finish ITM (CBOE/Schwartz), so expectancy/day
+    # rises without the tail doubling. Head-to-head (scripts/wave_final_strategy.py,
+    # reality-calibrated): one-side 3 slots +$37/d t=7.11; both-sides 10 slots +$118/d
+    # t=9.26, EV +$14.8/trade, WR 80.8%. Passes the bear case's own EV test
+    # (win_rate x avgWin > loss_rate x avgLoss) because the breach-stop caps avgLoss
+    # at ~$106 instead of the ~$900 max loss an unmanaged condor eats.
+    WAVE_BAND_BOTH_SIDES: bool = _b("WAVE_BAND_BOTH_SIDES", False)
 
     # ── Claude morning scan — SCORED ADVISOR, never a decision-maker ──
     # One API call/session ~09:45-09:59 ET → structured risk verdict → logged to

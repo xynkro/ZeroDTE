@@ -216,6 +216,13 @@ class Settings:
     # (win_rate x avgWin > loss_rate x avgLoss) because the breach-stop caps avgLoss
     # at ~$106 instead of the ~$900 max loss an unmanaged condor eats.
     WAVE_BAND_BOTH_SIDES: bool = _b("WAVE_BAND_BOTH_SIDES", False)
+    # NBBO entry plane, ported from MEICZero (backend/app/nbbo_chain.py). The
+    # real-credit floor was pricing off CBOE 15-MINUTE-DELAYED mids: on 2026-07-20
+    # the floor passed at $12/ct and the market order FILLED at $3/ct. NBBO prices
+    # the SAME SPY strikes off the SAME feed that fills them. Fail-safe: no fresh
+    # two-sided quote -> fall back to the CBOE chain (never trade unpriced).
+    WAVE_BAND_ENTRY_NBBO: bool = _b("WAVE_BAND_ENTRY_NBBO", False)
+    ALPACA_OPTIONS_FEED: str = os.getenv("ALPACA_OPTIONS_FEED", "indicative")
 
     # ── Claude morning scan — SCORED ADVISOR, never a decision-maker ──
     # One API call/session ~09:45-09:59 ET → structured risk verdict → logged to

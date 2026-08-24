@@ -51,6 +51,14 @@ live on the paper account with concurrency capped under the 15% drawdown halt.
   EXPECT: GATE_G9_PASS
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/Users/xynkro/Trading/ZeroDTE-Wave; path=0dfdb8bd3ea2/53 entries; output=GATE_G9_PASS
 
+- [x] G11: NBBO entry plane wired and fails safe to CBOE when no fresh two-sided quote exists
+  CHECK: PYTHONPATH=. .venv/bin/python scripts/gates/g11_nbbo.py
+  EXPECT: GATE_G11_PASS
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/Users/xynkro/Trading/ZeroDTE-Wave; path=0dfdb8bd3ea2/53 entries; output=NBBO reachable, returned 0 quoted strikes; fallback wiring verified | GATE_G11_PASS
+
+- [ ] G12: NBBO prices the live chain during market hours and the floor binds on executable credit
+  EVIDENCE: pending
+
 - [x] G10: risk-owner accepts the Config E exposure change (up to 5 concurrent positions vs 3, ~20 trades/day vs 3)
   EVIDENCE: Risk owner (Caspar) instructed "build G10" on 2026-08-23 SGT after being shown the
   exposure change in full: 3 -> 5 concurrent positions and 3 -> 20 trades/day, sized at 3

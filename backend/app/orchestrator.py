@@ -853,16 +853,34 @@ class Orchestrator:
                     from .gex import fetch_chain, _parse_occ
                     from .directional_spread_manager import spy_strike_params
                     from .wave_band_live import spread_model_credit
-                    chain = await fetch_chain("SPY")
+                    # NBBO first (executable quotes, same feed that fills us); the
+                    # CBOE delayed chain is the fail-safe when NBBO is unavailable.
+                    nbbo_rows = None
+                    if settings.WAVE_BAND_ENTRY_NBBO and getattr(self, "alpaca_trader", None):
+                        try:
+                            from .nbbo_chain import fetch_chain_nbbo
+                            _nb = await fetch_chain_nbbo(self.alpaca_trader, S0 / 10.0,
+                                                         et.strftime("%y%m%d"))
+                            _side_rows = (_nb.get("calls") if d.side == "sell_call_cs"
+                                          else _nb.get("puts")) or []
+                            if _side_rows:
+                                nbbo_rows = {r["strike"]: {"bid": r["bid"], "ask": r["ask"]}
+                                             for r in _side_rows}
+                                log.info("Band: NBBO chain %d strikes (%s)",
+                                         len(nbbo_rows), d.side)
+                        except Exception as _e:  # noqa: BLE001 — fall back, never trade blind
+                            log.warning("Band: NBBO fetch failed (%s) — CBOE fallback", _e)
+                    chain = None if nbbo_rows else await fetch_chain("SPY")
                     # CONSERVATIVE executable credit, not the optimistic mid (trade #1
                     # lesson: floor passed at $12/ct MID, market order FILLED at $3/ct —
                     # the risk-owner's "never risk $1k for $3" was violated by execution).
                     # Basis = sell the short at BID, buy the long at ASK: what a market
                     # order realistically collects. Rows built from the raw chain.
                     exp = et.strftime("%y%m%d")
-                    rows = {}
+                    rows = dict(nbbo_rows) if nbbo_rows else {}
                     want_call = d.side == "sell_call_cs"
-                    for o_ in ((chain.get("data") or {}).get("options") or []) if chain else []:
+                    for o_ in (((chain.get("data") or {}).get("options") or [])
+                               if (chain and not nbbo_rows) else []):
                         sym_ = o_.get("option", "")
                         if exp not in sym_:
                             continue
@@ -913,7 +931,7 @@ class Orchestrator:
                                             "best_real_ct": best_seen[1] if best_seen else None,
                                             "best_real_strike": best_seen[0] if best_seen else None,
                                             "best_real_cushion_pct": best_seen[2] if best_seen else None,
-                                            "basis": "exec_bid_ask",
+                                            "basis": "exec_bid_ask_nbbo" if nbbo_rows else "exec_bid_ask_cboe",
                                             "side": d.side,
                                             "feed": getattr(self.state, "feed_type", "?")})
                         log.warning("Band: no trade %s — %s (model credit $%.0f was fantasy)",

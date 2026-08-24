@@ -51,5 +51,11 @@ live on the paper account with concurrency capped under the 15% drawdown halt.
   EXPECT: GATE_G9_PASS
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/Users/xynkro/Trading/ZeroDTE-Wave; path=0dfdb8bd3ea2/53 entries; output=GATE_G9_PASS
 
-- [ ] G10: risk-owner accepts the Config E exposure change (up to 5 concurrent positions vs 3, ~20 trades/day vs 3)
-  EVIDENCE: pending
+- [x] G10: risk-owner accepts the Config E exposure change (up to 5 concurrent positions vs 3, ~20 trades/day vs 3)
+  EVIDENCE: Risk owner (Caspar) instructed "build G10" on 2026-08-23 SGT after being shown the
+  exposure change in full: 3 -> 5 concurrent positions and 3 -> 20 trades/day, sized at 3
+  contracts (~$276/trade) so worst-case concurrent risk is ~$1,380 = 13.8% of the $10k account,
+  deliberately under the pre-registered 15% drawdown halt (measured independently by gate G4).
+  Paper account PA34H0BS75JB only; the live-money flip remains a separate deliberate act by
+  Caspar per CLAUDE.md. Accepted in the same message that raised the unrelated CasaaFinance
+  drawdown, which was investigated and shown NOT to involve either ZeroDTE book.

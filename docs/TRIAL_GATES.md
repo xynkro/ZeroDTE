@@ -82,7 +82,8 @@ says execution is the binding constraint.
   in low vol F6 ≈ a fixed-0.6%-cushion condor ladder — it has converged toward MEIC's
   shape; the A/B is now strike-anchoring + NBBO floor vs delta strikes.
   EXPECTED: ~10 trades/session all-days, ~4/session in the dead regime → n=25 in ~3
-  sessions, n=100 in ~2 weeks → gate verdict by ~Sep-19. Live-money flip stays
+  sessions, n=100 in ~2 weeks → gate verdict by ~Sep-19. First Config F session = Tue 2026-09-08
+  (Mon Sep-7 is Labor Day — closed; confirmed via the Alpaca calendar). Live-money flip stays
   Caspar's deliberate act after the gates pass (a runbook will be written then).
   Verified by GATES.md G13–G17 (anchor-floor unit + negative controls, config, feed
   resilience, independently measured F6 backtest, deploy-on-primary-feed).

@@ -14,7 +14,7 @@
 #    maxDD at 3ct = 5.8% (halt 15%). Ledger GATES.md G13–G17 + G2 (core parity on the
 #    frozen May-14 data still 378/+41.68/t5.85). NOT proven: breach-exit slippage near
 #    the money, fills at ~20 orders/day, the Aug-27 NBBO "quotable but unpriceable" null
-#    (diagnostic now logs exact strikes — G12 closes at Monday's open).
+#    (diagnostic now logs exact strikes — G12 closes Tue Sep-8 at the open; Mon Sep-7 = Labor Day, CLOSED).
 #    FEED: warmup = last 80 bars via sort=desc (weekend-proof); boot retry x6; a
 #    re-promote loop restarts (SIGTERM, only with nothing open, 30-min rate limit) when
 #    on a fallback and Alpaca answers. Never sit on yfinance again.

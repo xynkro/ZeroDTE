@@ -1,4 +1,33 @@
 # ═══════════════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO — CONFIG F LIVE (deployed Sun 2026-09-06 SGT / Sat Sep-5 ET, :8766)
+#    WHY: Config E took 0 trades in 10 sessions (Aug-24→Sep-4): 100 slots, 100 gated.
+#    Vol gate rejected 90+ in the year's deadest tape; on the one vol-released day the
+#    Bollinger band had collapsed INSIDE the cushion; and the engine ran the whole period
+#    on 15-min-delayed yfinance (Alpaca warmup was empty on any weekend restart).
+#    CONFIG F = vol gate OFF (cost 49% of total profit on refreshed data; r5 still
+#    journaled, scorable) + ANCHOR-FLOOR (band inside cushion → anchor AT the cushion,
+#    5-pt grid outward) + cushion 0.6% + NBBO 10%-of-width real-credit floor + 10 slots
+#    (10:00–14:30 /30m) both sides + TP40/breach, 3ct (~$276/trade, 5 concurrent = 13.8%).
+#    EVIDENCE (scripts/wave_lowvol_backtest.py, data through Sep-4): OOS +$154.8/session
+#    vs E +$51.5, t 11.9 vs 7.8, WR 89%; better in every year; low-vol fire 6%→66%; the
+#    zero-trade fortnight = 43 trades / WR 95% / +$253 at live scale / no losing day;
+#    maxDD at 3ct = 5.8% (halt 15%). Ledger GATES.md G13–G17 + G2 (core parity on the
+#    frozen May-14 data still 378/+41.68/t5.85). NOT proven: breach-exit slippage near
+#    the money, fills at ~20 orders/day, the Aug-27 NBBO "quotable but unpriceable" null
+#    (diagnostic now logs exact strikes — G12 closes at Monday's open).
+#    FEED: warmup = last 80 bars via sort=desc (weekend-proof); boot retry x6; a
+#    re-promote loop restarts (SIGTERM, only with nothing open, 30-min rate limit) when
+#    on a fallback and Alpaca answers. Never sit on yfinance again.
+#    EXPECT: ~10 trades/session all-days, ~4 in a dead regime → n=25 in ~3 sessions,
+#    n=100 in ~2 weeks → gate verdict ~Sep-19 (docs/TRIAL_GATES.md: retire ≤$0 /
+#    investigate <40% capture / scale ≥60% & t≥2 / HALT >15% dd). Sample restarts at 0
+#    (E never accumulated one). Live-money flip = Caspar's deliberate act after the gates.
+#    DESK NOTE: MEIC Aug-7→Sep-4 = 17 nights −$61, 41% green (not a live candidate);
+#    MEIC has a STRAY 2nd process on :8765 (pid 13179, Python 3.14, since Aug-25) that
+#    makes its API hang — MEICZero's lane; not touched.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO 25-TRADE TRIAL — LIVE since 2026-07-01 (this instance, :8766)
 #    Band config ARMED (validated, parity-proven): one entry/day ~10:00 ET,
 #    Schwartz vol-released + BB 14/2.5 + cushion 0.5% + TP40/breach, ~40% of days,

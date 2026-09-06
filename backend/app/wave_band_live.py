@@ -127,7 +127,7 @@ def decide_band_trade(
 
 def _walk_side(side: str, S0: float, upper: float, lower: float, width: float,
                r5: float, periods_remaining: float, choppy: bool,
-               p: "BandParams") -> "BandDecision | None":
+               p: "BandParams", anchor_floor: bool = False) -> "BandDecision | None":
     """Strike walk for ONE side. Anchor at that side's band extreme, push further OTM on
     choppy days, then walk toward spot until the credit clears the floor — never inside
     the cushion. Mirrors decide_band_trade's inner logic exactly, but for an explicitly
@@ -145,6 +145,24 @@ def _walk_side(side: str, S0: float, upper: float, lower: float, width: float,
         short = float(round(upper + (p.choppy_push_atr * atr if choppy else 0.0)))
         sign, cap = -1.0, S0 * (1 + p.min_otm_pct / 100.0)
 
+    # ── ANCHOR-FLOOR (Config F, 2026-09-06) ── on a dead tape Bollinger(14/2.5)
+    # collapses inside the cushion (Aug-27 live: anchor 0.05-0.21% from spot), and the
+    # cushion filter then rejects EVERY slot — Config E fired 6% of low-vol days.
+    # Instead of rejecting, anchor AT the cushion boundary (snapped OUTWARD to the 5-pt
+    # grid). Backtest (scripts/wave_lowvol_backtest.py): low-vol fire 6% -> 66%, OOS
+    # +$155/session vs +$52, every year better, t 7.8 -> 11.9. The walk below then
+    # never steps inside the cushion when this mode is on.
+    if anchor_floor:
+        cd = S0 * p.cushion_pct / 100.0
+        if down and short > S0 - cd:
+            short = float(round((S0 - cd) / 5.0) * 5.0)
+            if short > S0 - cd:
+                short -= 5.0
+        elif (not down) and short < S0 + cd:
+            short = float(round((S0 + cd) / 5.0) * 5.0)
+            if short < S0 + cd:
+                short += 5.0
+
     def credit_at(s):
         lng = s - p.wing if down else s + p.wing
         return bs.spread_value(side, S0, s, lng, tv0) * MULT, lng
@@ -155,6 +173,8 @@ def _walk_side(side: str, S0: float, upper: float, lower: float, width: float,
         ns = short + sign * STEP
         if (down and ns > cap) or ((not down) and ns < cap):
             break
+        if anchor_floor and 100.0 * abs(S0 - ns) / S0 < p.cushion_pct:
+            break   # never walk inside the cushion in anchor-floor mode
         short = ns
         cr, lng = credit_at(short)
         tries += 1
@@ -168,7 +188,8 @@ def _walk_side(side: str, S0: float, upper: float, lower: float, width: float,
 
 
 def decide_band_trades(closes, r5, periods_remaining, r5_median, width_median,
-                       p: "BandParams" = None, both_sides: bool = False):
+                       p: "BandParams" = None, both_sides: bool = False,
+                       anchor_floor: bool = False):
     """CONFIG E — return a LIST of qualifying trades for this slot.
 
     both_sides=False -> at most one trade, side chosen by trend (Config B behaviour).
@@ -177,7 +198,10 @@ def decide_band_trades(closes, r5, periods_remaining, r5_median, width_median,
                         both is an iron condor: two credits collected, but only ONE side
                         can finish in the money (CBOE/Schwartz), which is why the
                         backtest's expectancy per DAY rises without the tail doubling.
-    Same Schwartz vol-released gate and cushion rules as the single-side path."""
+    Vol gate: pass r5_median=None to DISABLE it (Config F). On the refreshed 2022-2026
+    data the gate cost 49% of total profit and, in the current dead regime, 100% of
+    trades; the journal still records r5 so the gate stays scorable post hoc.
+    anchor_floor: see _walk_side — the Config F fix for band collapse in low vol."""
     p = p or BandParams()
     if not closes or r5 <= 0 or periods_remaining <= 1:
         return []
@@ -190,7 +214,8 @@ def decide_band_trades(closes, r5, periods_remaining, r5_median, width_median,
              else ["sell_put_cs" if S0 < sma else "sell_call_cs"])
     out = []
     for side in sides:
-        d = _walk_side(side, S0, upper, lower, width, r5, periods_remaining, choppy, p)
+        d = _walk_side(side, S0, upper, lower, width, r5, periods_remaining, choppy, p,
+                       anchor_floor=anchor_floor)
         if d is not None:
             out.append(d)
     return out

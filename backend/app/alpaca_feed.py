@@ -170,15 +170,18 @@ class AlpacaFeed:
         """
         try:
             client = await self._ensure_client()
-            if self._last_bar_ts and limit <= 10:
+            warm = not (self._last_bar_ts and limit <= 10)
+            if not warm:
                 # Polling: start from near the last known bar to get recent data
                 poll_start = self._last_bar_ts - timedelta(minutes=10)
                 start = poll_start.isoformat()
             else:
-                # Warmup: fetch today + yesterday for full coverage
-                start = (datetime.now(ET) - timedelta(days=1)).replace(
-                    hour=9, minute=30, second=0, microsecond=0
-                ).isoformat()
+                # Warmup (2026-09-06 fix): the most RECENT `limit` bars, weekend- and
+                # holiday-proof. It used to query from "yesterday 09:30" — EMPTY on any
+                # Sunday / Monday-morning / post-holiday restart -> "no bars" -> a silent
+                # fall to 15-min-delayed yfinance with no way back. Every weekend restart
+                # of WaveZero landed there, and Config E ran its whole trial on it.
+                start = (datetime.now(ET) - timedelta(days=7)).isoformat()
             url = f"{settings.ALPACA_DATA_URL}/v2/stocks/{SYMBOL}/bars"
             params = {
                 "timeframe": "5Min",
@@ -187,12 +190,16 @@ class AlpacaFeed:
                 "feed": settings.ALPACA_FEED,
                 "adjustment": "raw",
             }
+            if warm:
+                params["sort"] = "desc"          # newest first => the LAST `limit` bars
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
             bars_raw = data.get("bars", [])
             if not bars_raw:
                 return []
+            if warm:
+                bars_raw = sorted(bars_raw, key=lambda b: b["t"])   # ascending for dispatch
 
             bars: list[Bar] = []
             for b in bars_raw:

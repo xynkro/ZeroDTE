@@ -50,6 +50,44 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-09-06 (SGT) — CONFIG F: vol gate OFF + ANCHOR-FLOOR + cushion 0.6 + feed
+  resilience. THIRD config change; Config E never accumulated a sample (0 trades in 10
+  sessions, Aug-24→Sep-4), so nothing is lost by restarting the count.**
+  ROOT CAUSES, from the decision journal (100 slots, 100 gated): (1) the Schwartz vol
+  gate rejected 90+ slots — August/early-Sep is the year's deadest tape; (2) on the one
+  day vol fired (Aug-27) the Bollinger(14/2.5) band had collapsed to 0.05–0.21% from
+  spot, inside the 0.4% cushion, so every slot self-rejected before the floor was
+  asked; (3) the engine ran the ENTIRE period on the 15-min-delayed yfinance fallback
+  (Alpaca warmup queried "yesterday 09:30" → empty on any weekend restart → no way
+  back; 66/78 other failures were boot-time DNS). Stale bars depress realised vol;
+  even Config E should have fired 6× on real Alpaca data that fortnight.
+  MY ERROR: I rejected gate-OFF on the conditional $/trading-day (+$73 vs +$118). On
+  total profit per session — the objective — gate-OFF wins on every axis (+49% total,
+  t 8.85 vs 7.21, same worst day). And I never ran the backtest on the low-vol slice
+  before promising 2.79 trades/day: on that slice Config E fires 6%, which is what
+  reality delivered.
+  FIX (scripts/wave_lowvol_backtest.py, data refreshed through Sep-4 from the same
+  Alpaca iex source, seam diff 0.000%): when the band collapses inside the cushion,
+  anchor AT the cushion boundary (5-pt grid, outward) instead of rejecting. F6 =
+  gate OFF, cushion 0.6, anchor-floor, NBBO 10%-of-width floor, 10 slots, both sides,
+  TP40 + breach, 3ct. Evidence: OOS +$154.8/session vs E +$51.5 (t 11.9 vs 7.8, WR
+  89%); better than E in EVERY year 2022–2026 by 3–9×; low-vol days fire 66% vs 6%;
+  the exact Aug-24→Sep-4 fortnight = 43 trades, WR 95%, +$253 at live scale, no losing
+  day; max drawdown at deployed 3ct = 5.8% (halt gate 15%); avgW $38 / avgL $126 /
+  breach 14% per SPX unit. Rejected: cushion 0.4 (WR 81%, closer to ATM than the
+  0.5–0.8% range the haircut was calibrated on).
+  NOT PROVEN — the trial's job: breach-exit slippage near the money (no live trade has
+  breached yet), fill quality at ~20 orders/day, and the Aug-27 NBBO "quotable but
+  unpriceable" null (diagnostic now logs the exact strikes). Honest structural note:
+  in low vol F6 ≈ a fixed-0.6%-cushion condor ladder — it has converged toward MEIC's
+  shape; the A/B is now strike-anchoring + NBBO floor vs delta strikes.
+  EXPECTED: ~10 trades/session all-days, ~4/session in the dead regime → n=25 in ~3
+  sessions, n=100 in ~2 weeks → gate verdict by ~Sep-19. Live-money flip stays
+  Caspar's deliberate act after the gates pass (a runbook will be written then).
+  Verified by GATES.md G13–G17 (anchor-floor unit + negative controls, config, feed
+  resilience, independently measured F6 backtest, deploy-on-primary-feed).
+
+
 - **2026-08-23 — CONFIG E (iron condor on a dense ladder). SECOND config change; sample
   restarts again.** Config B never traded live (built same day), so no live sample is lost.
   Change: 3 slots -> 10 (10:00-14:30 /30m), one side -> BOTH sides per slot (condor),

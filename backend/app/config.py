@@ -222,6 +222,20 @@ class Settings:
     # the SAME SPY strikes off the SAME feed that fills them. Fail-safe: no fresh
     # two-sided quote -> fall back to the CBOE chain (never trade unpriced).
     WAVE_BAND_ENTRY_NBBO: bool = _b("WAVE_BAND_ENTRY_NBBO", False)
+    # ── Config F (2026-09-06) — the fix for 0 trades in 10 sessions ──
+    # Journal showed Config E died at the vol gate 90+/100 slots, and on the one day vol
+    # fired, at the cushion (band collapsed to 0.05-0.21% from spot). Refreshed backtest
+    # (through Sep-4, scripts/wave_lowvol_backtest.py): gate OFF + ANCHOR-FLOOR + cushion
+    # 0.6 = OOS +$155/session (E: +$52), every year better, low-vol fire 6% -> 66%,
+    # t 7.8 -> 11.9, worst day -$965 vs -$934. r5 is still journaled -> gate scorable.
+    WAVE_BAND_VOL_GATE: bool = _b("WAVE_BAND_VOL_GATE", True)
+    WAVE_BAND_ANCHOR_FLOOR: bool = _b("WAVE_BAND_ANCHOR_FLOOR", False)
+    # Feed resilience: 66 of 78 Alpaca failures were boot-time DNS races; the engine then
+    # sat on 15-min-delayed yfinance for the ENTIRE Config E period. Retry at boot, and
+    # re-promote (clean restart) when Alpaca is reachable again and nothing is open.
+    ALPACA_FEED_RETRIES: int = _i("ALPACA_FEED_RETRIES", 6)
+    ALPACA_FEED_RETRY_SEC: int = _i("ALPACA_FEED_RETRY_SEC", 20)
+    FEED_REPROMOTE_ENABLED: bool = _b("FEED_REPROMOTE_ENABLED", True)
     ALPACA_OPTIONS_FEED: str = os.getenv("ALPACA_OPTIONS_FEED", "indicative")
 
     # ── Claude morning scan — SCORED ADVISOR, never a decision-maker ──

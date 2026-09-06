@@ -240,6 +240,8 @@ class Orchestrator:
         self._eod_safety_task = asyncio.create_task(self._eod_safety_loop())
         # Feed-staleness alarm (detects a frozen feed during RTH)
         self._staleness_task = asyncio.create_task(self._feed_staleness_watchdog())
+        # Feed re-promotion: never stay on a fallback feed once Alpaca is back
+        self._repromote_task = asyncio.create_task(self._feed_repromote_loop())
         # Dealer-gamma (GEX) regime refresh — context for sizing/analysis
         if settings.GEX_ENABLED:
             self._gex_task = asyncio.create_task(self._gex_refresh_loop())
@@ -266,7 +268,16 @@ class Orchestrator:
             from .alpaca_feed import AlpacaFeed
             alpaca = AlpacaFeed()
             alpaca.on_bar(self.handle_bar)
-            alpaca_ok = await alpaca.start_spx_5m()
+            alpaca_ok = False
+            for _try in range(1, max(1, settings.ALPACA_FEED_RETRIES) + 1):
+                alpaca_ok = await alpaca.start_spx_5m()
+                if alpaca_ok:
+                    break
+                # Boot-time DNS race ("nodename nor servname provided") was 66 of 78
+                # failures; one attempt then 2 weeks on yfinance. Retry with backoff.
+                log.warning("Alpaca feed attempt %d/%d failed — retrying in %ds",
+                            _try, settings.ALPACA_FEED_RETRIES, settings.ALPACA_FEED_RETRY_SEC)
+                await asyncio.sleep(settings.ALPACA_FEED_RETRY_SEC)
             if alpaca_ok:
                 self.feed = alpaca
                 self.alpaca_feed = alpaca  # keep reference for options chain access
@@ -509,6 +520,55 @@ class Orchestrator:
             return False
         m = now.hour * 60 + now.minute
         return 9 * 60 + 30 <= m < 16 * 60
+
+    async def _feed_repromote_loop(self):
+        """Every 5 min: if we are NOT on the Alpaca feed, probe Alpaca; when it answers
+        and nothing is open, restart gracefully (SIGTERM -> uvicorn shutdown -> launchd
+        KeepAlive -> boot retry picks Alpaca). State, trial ledger and slot markers all
+        persist, so a restart costs ~15s. Rate-limited to one attempt per 30 min via a
+        file marker (survives the restart it triggers). Never runs with open positions."""
+        import os, signal, time
+        marker = os.path.join(os.path.dirname(__file__), "..", "data", ".feed_repromote_last")
+        while True:
+            try:
+                await asyncio.sleep(300)
+                if not settings.FEED_REPROMOTE_ENABLED or not settings.ALPACA_API_KEY:
+                    continue
+                if getattr(self.state, "feed_type", "") == "alpaca":
+                    continue
+                if any(not t.closed for t in self.paper_trades):
+                    continue                                   # never with open risk
+                try:
+                    last = os.path.getmtime(marker)
+                except OSError:
+                    last = 0.0
+                if time.time() - last < 1800:
+                    continue
+                from .alpaca_feed import AlpacaFeed
+                probe = AlpacaFeed()
+                try:
+                    bars = await probe._fetch_bars(limit=2)
+                finally:
+                    try:
+                        await probe.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if not bars:
+                    continue
+                os.makedirs(os.path.dirname(marker), exist_ok=True)
+                with open(marker, "w") as f:
+                    f.write(str(time.time()))
+                log.warning("FEED RE-PROMOTE: on %s but Alpaca answers — restarting to "
+                            "reclaim the primary feed (no open positions).",
+                            getattr(self.state, "feed_type", "?"))
+                self._persist_state()
+                await asyncio.sleep(3)                         # let the async writer flush
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+            except asyncio.CancelledError:
+                return
+            except Exception as e:  # noqa: BLE001
+                log.debug("feed re-promote probe failed: %s", e)
 
     async def _feed_staleness_watchdog(self):
         """Alarm if the feed stops delivering bars during RTH.
@@ -801,9 +861,11 @@ class Orchestrator:
                            put_skew=settings.DIRECTIONAL_SKEW_PUT_MULT,
                            call_skew=settings.DIRECTIONAL_SKEW_CALL_MULT)
             # Config E: evaluate BOTH sides when enabled (condor); else the trend side.
-            _cands = decide_band_trades(buf, r5, pr, self._band_medians.r5_median(),
+            _gate_med = self._band_medians.r5_median() if settings.WAVE_BAND_VOL_GATE else None
+            _cands = decide_band_trades(buf, r5, pr, _gate_med,
                                         self._band_medians.width_median(), p,
-                                        both_sides=settings.WAVE_BAND_BOTH_SIDES)
+                                        both_sides=settings.WAVE_BAND_BOTH_SIDES,
+                                        anchor_floor=settings.WAVE_BAND_ANCHOR_FLOOR)
             d = _cands[0] if _cands else None
             # record medians AFTER the decision (no lookahead); mark today attempted
             _, _, _, width = bollinger(buf, p.bb_len, p.bb_mult)
@@ -814,7 +876,8 @@ class Orchestrator:
             self._band_opened_date = date
             if d is None:
                 rm = self._band_medians.r5_median()
-                reason = ("vol not released (quiet/coiling day)" if rm and r5 <= rm
+                reason = ("vol not released (quiet/coiling day)"
+                          if (settings.WAVE_BAND_VOL_GATE and rm and r5 <= rm)
                           else "cushion/credit-floor unmet")
                 # journal enrichment: band geometry so gated days are QUANTIFIED
                 # (how far from tradable was the anchor?), not just labeled.
@@ -919,6 +982,15 @@ class Orchestrator:
                     if found is None:
                         reason = ("real credit below floor at every cushion-legal strike"
                                   if rows else "options chain unquotable at entry")
+                        if nbbo_rows and best_seen is None:
+                            # NBBO had rows yet NO strike priced — say exactly why (G12)
+                            _prm = spy_strike_params(side=d.side, spx_short_strike=short_k,
+                                                     spx_credit_dollars=None)
+                            _near = {k: v for k, v in nbbo_rows.items()
+                                     if abs(k - _prm["short_strike"]) <= 3}
+                            log.warning("Band: NBBO unpriceable %s — SPY short %.0f long %.0f; "
+                                        "nbbo strikes near: %s", d.side, _prm["short_strike"],
+                                        _prm["long_strike"], _near)
                         self._band_last = {"date": date, "decision": "gated", "reason": reason,
                                            "r5": round(r5, 6)}
                         self._band_journal({"date": date, "decision": "gated", "reason": reason,

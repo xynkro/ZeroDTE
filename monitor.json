@@ -1,0 +1,839 @@
+{
+  "generated_at": "2026-09-07T04:13:08+00:00",
+  "stats": {
+    "total": 0,
+    "wins": 0,
+    "losses": 0,
+    "wr_pct": 0,
+    "total_pnl": 0,
+    "avg_win": 0,
+    "avg_loss": 0,
+    "max_drawdown": 0,
+    "profit_factor": 0,
+    "daily": [],
+    "equity_curve": [],
+    "open_trades": []
+  },
+  "trades": [],
+  "alpaca": {
+    "enabled": true,
+    "trading_enabled": true,
+    "open_orders": 0,
+    "base_url": "https://paper-api.alpaca.markets"
+  },
+  "telegram_prefs": {
+    "types": {
+      "entry": true,
+      "exit": true,
+      "iron_condor": true,
+      "ic_stop": true,
+      "daily_loss_limit": true,
+      "feed_stale": true,
+      "iv_gate_skip": true,
+      "session_open": true,
+      "morning_alive": true,
+      "midday_status": true,
+      "macro_blackout": true,
+      "macro_news": true,
+      "eod_wave": true,
+      "eod_iron_condor": true
+    },
+    "prefix": "",
+    "footer": "",
+    "link": {
+      "enabled": true,
+      "style": "plain"
+    },
+    "detail": {
+      "factors": true,
+      "plan": true,
+      "sizing": true
+    }
+  },
+  "telegram_types": [
+    {
+      "key": "entry",
+      "label": "Entry signals",
+      "group": "Trades"
+    },
+    {
+      "key": "exit",
+      "label": "Exit / TP / stop",
+      "group": "Trades"
+    },
+    {
+      "key": "iron_condor",
+      "label": "Iron Condor build",
+      "group": "Trades"
+    },
+    {
+      "key": "ic_stop",
+      "label": "IC breakeven stop",
+      "group": "Trades"
+    },
+    {
+      "key": "daily_loss_limit",
+      "label": "Daily loss-limit hit",
+      "group": "Risk"
+    },
+    {
+      "key": "feed_stale",
+      "label": "Feed-stale warning",
+      "group": "Risk"
+    },
+    {
+      "key": "iv_gate_skip",
+      "label": "IC skipped (VIX too high)",
+      "group": "Risk"
+    },
+    {
+      "key": "session_open",
+      "label": "Session open + regime",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "morning_alive",
+      "label": "Good-morning heartbeat",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "midday_status",
+      "label": "Midday status (quiet days)",
+      "group": "Heartbeat"
+    },
+    {
+      "key": "macro_blackout",
+      "label": "Macro don't-trade",
+      "group": "Macro"
+    },
+    {
+      "key": "macro_news",
+      "label": "Macro news",
+      "group": "Macro"
+    },
+    {
+      "key": "eod_wave",
+      "label": "EOD wave summary",
+      "group": "Summaries"
+    },
+    {
+      "key": "eod_iron_condor",
+      "label": "EOD Iron Condor summary",
+      "group": "Summaries"
+    }
+  ],
+  "debrief": {
+    "date": null,
+    "session_pnl": 0,
+    "wins": 0,
+    "losses": 0,
+    "trades": [],
+    "flags": {},
+    "verdict": "No closed trades yet \u2014 nothing to debrief.",
+    "discipline": "Validated on 153 trades. You have 0.",
+    "cum_pnl": 0,
+    "dd_vs_backtest_pct": 0.0,
+    "book_split": {
+      "put": {
+        "n": 0,
+        "wins": 0,
+        "win_rate": null,
+        "total_pnl": 0,
+        "mean_pnl": null
+      },
+      "call": {
+        "n": 0,
+        "wins": 0,
+        "win_rate": null,
+        "total_pnl": 0,
+        "mean_pnl": null
+      },
+      "note": null
+    },
+    "broker_realized": {
+      "n": 0,
+      "note": "no real fills captured yet \u2014 P&L is model-only"
+    },
+    "confidence": {
+      "n": 0,
+      "note": "no closed trades yet"
+    }
+  },
+  "signals": {
+    "generated_at": "2026-09-07T04:12:58.217059+00:00",
+    "underlying": 7701.799999999999,
+    "feed": "alpaca",
+    "backend_status": "ok",
+    "regime": {
+      "regime": "non_volatile",
+      "classified": true,
+      "proj_high": 7742.15,
+      "proj_low": 7705.750000000002,
+      "obs_drift_pct": 0.013600419670095034
+    },
+    "today": {
+      "date": "2026-09-07",
+      "weekday": true,
+      "market_open": false,
+      "last_bar_et": "00:12 ET",
+      "evaluated": 0,
+      "fired": 0,
+      "gated": {},
+      "status": "No signal today"
+    },
+    "meic": {
+      "enabled": true,
+      "contracts": 1,
+      "rungs": [
+        {
+          "slot": "10:00",
+          "status": "pending"
+        },
+        {
+          "slot": "11:00",
+          "status": "pending"
+        },
+        {
+          "slot": "12:00",
+          "status": "pending"
+        },
+        {
+          "slot": "13:00",
+          "status": "pending"
+        },
+        {
+          "slot": "14:00",
+          "status": "pending"
+        }
+      ]
+    },
+    "latest_signal": {
+      "side": "sell_put_cs",
+      "triggered_at": "2026-09-02T12:30:00-04:00",
+      "underlying_price": 7648.5,
+      "confluence_score": 2,
+      "instrument": "XSP",
+      "short_strike": 760.0,
+      "long_strike": 755.0,
+      "credit": null,
+      "roi_pct": null
+    },
+    "recent_signals": [
+      {
+        "side": "sell_put_cs",
+        "triggered_at": "2026-09-02T12:30:00-04:00",
+        "underlying_price": 7648.5,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 755.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_put_cs",
+        "triggered_at": "2026-09-02T11:50:00-04:00",
+        "underlying_price": 7655.4,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 755.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_put_cs",
+        "triggered_at": "2026-09-01T12:25:00-04:00",
+        "underlying_price": 7628.200000000001,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 755.0,
+        "long_strike": 750.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-09-01T11:55:00-04:00",
+        "underlying_price": 7644.5,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 765.0,
+        "long_strike": 770.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_call_cs",
+        "triggered_at": "2026-09-01T11:50:00-04:00",
+        "underlying_price": 7644.0,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 765.0,
+        "long_strike": 770.0,
+        "credit": null,
+        "roi_pct": null
+      },
+      {
+        "side": "sell_put_cs",
+        "triggered_at": "2026-08-31T14:45:00-04:00",
+        "underlying_price": 7653.9,
+        "confluence_score": 2,
+        "instrument": "XSP",
+        "short_strike": 760.0,
+        "long_strike": 755.0,
+        "credit": null,
+        "roi_pct": null
+      }
+    ],
+    "open_positions": [],
+    "time_stop_at": "2026-09-07T15:45:00-04:00",
+    "time_stop_min": 15,
+    "tp_target_pct": 95.0,
+    "tv_chart_url": "https://www.tradingview.com/chart/?symbol=SP%3ASPX&interval=5"
+  },
+  "meic_history": {
+    "nights": [
+      {
+        "date": "2026-07-02",
+        "executed": 2,
+        "stopped": 1,
+        "stop_rate": 50.0,
+        "real_net": 64.0,
+        "model_net": 88.0,
+        "is_broker": true,
+        "slippage_pct": -26.5,
+        "cumulative": 64.0,
+        "mfe_med_pct": 44.4,
+        "mae_med_pct": -37.5,
+        "mae_min_pct": -42.4
+      },
+      {
+        "date": "2026-07-06",
+        "executed": 1,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 42.0,
+        "model_net": 48.0,
+        "is_broker": true,
+        "slippage_pct": -68.4,
+        "cumulative": 106.0,
+        "mfe_med_pct": 168.4,
+        "mae_med_pct": -98.2,
+        "mae_min_pct": -98.2
+      },
+      {
+        "date": "2026-07-07",
+        "executed": 3,
+        "stopped": 1,
+        "stop_rate": 33.3,
+        "real_net": -114.0,
+        "model_net": -109.0,
+        "is_broker": true,
+        "slippage_pct": -257.1,
+        "cumulative": -8.0,
+        "mfe_med_pct": 68.8,
+        "mae_med_pct": -43.8,
+        "mae_min_pct": -209.6
+      },
+      {
+        "date": "2026-07-08",
+        "executed": 3,
+        "stopped": 1,
+        "stop_rate": 33.3,
+        "real_net": 8.0,
+        "model_net": 10.0,
+        "is_broker": true,
+        "slippage_pct": 51.3,
+        "cumulative": 0.0,
+        "mfe_med_pct": 76.9,
+        "mae_med_pct": -30.8,
+        "mae_min_pct": -45.5
+      },
+      {
+        "date": "2026-07-09",
+        "executed": 2,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 30.0,
+        "model_net": null,
+        "is_broker": true,
+        "slippage_pct": null,
+        "cumulative": 30.0,
+        "mfe_med_pct": 82.5,
+        "mae_med_pct": -10.7,
+        "mae_min_pct": -21.4
+      },
+      {
+        "date": "2026-07-10",
+        "executed": 2,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 48.0,
+        "model_net": 56.0,
+        "is_broker": true,
+        "slippage_pct": 17.5,
+        "cumulative": 78.0,
+        "mfe_med_pct": 111.5,
+        "mae_med_pct": -7.5,
+        "mae_min_pct": -14.9
+      },
+      {
+        "date": "2026-07-13",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -2.0,
+        "model_net": 2.0,
+        "is_broker": true,
+        "slippage_pct": 2.9,
+        "cumulative": 76.0,
+        "mfe_med_pct": 33.3,
+        "mae_med_pct": -60.0,
+        "mae_min_pct": -80.0
+      },
+      {
+        "date": "2026-07-14",
+        "executed": 2,
+        "stopped": 1,
+        "stop_rate": 50.0,
+        "real_net": 36.0,
+        "model_net": 36.0,
+        "is_broker": true,
+        "slippage_pct": 29.0,
+        "cumulative": 112.0,
+        "mfe_med_pct": 85.1,
+        "mae_med_pct": -58.6,
+        "mae_min_pct": -71.4
+      },
+      {
+        "date": "2026-07-15",
+        "executed": 2,
+        "stopped": 2,
+        "stop_rate": 100.0,
+        "real_net": -23.0,
+        "model_net": -23.0,
+        "is_broker": true,
+        "slippage_pct": 41.9,
+        "cumulative": 89.0,
+        "mfe_med_pct": 41.3,
+        "mae_med_pct": -64.0,
+        "mae_min_pct": -66.7
+      },
+      {
+        "date": "2026-07-16",
+        "executed": 3,
+        "stopped": 3,
+        "stop_rate": 100.0,
+        "real_net": -52.0,
+        "model_net": -52.0,
+        "is_broker": true,
+        "slippage_pct": 19.0,
+        "cumulative": 37.0,
+        "mfe_med_pct": 45.0,
+        "mae_med_pct": -103.7,
+        "mae_min_pct": -120.0
+      },
+      {
+        "date": "2026-07-17",
+        "executed": 4,
+        "stopped": 3,
+        "stop_rate": 75.0,
+        "real_net": -28.0,
+        "model_net": -24.0,
+        "is_broker": true,
+        "slippage_pct": 42.3,
+        "cumulative": 9.0,
+        "mfe_med_pct": 19.7,
+        "mae_med_pct": -60.2,
+        "mae_min_pct": -84.6
+      },
+      {
+        "date": "2026-07-20",
+        "executed": 4,
+        "stopped": 2,
+        "stop_rate": 50.0,
+        "real_net": 48.0,
+        "model_net": 56.0,
+        "is_broker": true,
+        "slippage_pct": 27.4,
+        "cumulative": 57.0,
+        "mfe_med_pct": 79.3,
+        "mae_med_pct": -63.5,
+        "mae_min_pct": -156.3
+      },
+      {
+        "date": "2026-07-21",
+        "executed": 2,
+        "stopped": 1,
+        "stop_rate": 50.0,
+        "real_net": 4.0,
+        "model_net": 4.0,
+        "is_broker": true,
+        "slippage_pct": 28.7,
+        "cumulative": 61.0,
+        "mfe_med_pct": 81.1,
+        "mae_med_pct": -35.5,
+        "mae_min_pct": -52.2
+      },
+      {
+        "date": "2026-07-22",
+        "executed": 3,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 54.0,
+        "model_net": 77.0,
+        "is_broker": true,
+        "slippage_pct": 55.0,
+        "cumulative": 115.0,
+        "mfe_med_pct": 91.7,
+        "mae_med_pct": -25.7,
+        "mae_min_pct": -33.3
+      },
+      {
+        "date": "2026-07-23",
+        "executed": 4,
+        "stopped": 1,
+        "stop_rate": 25.0,
+        "real_net": 66.0,
+        "model_net": 102.0,
+        "is_broker": true,
+        "slippage_pct": 5.5,
+        "cumulative": 181.0,
+        "mfe_med_pct": 82.8,
+        "mae_med_pct": -51.9,
+        "mae_min_pct": -57.1
+      },
+      {
+        "date": "2026-07-24",
+        "executed": 4,
+        "stopped": 4,
+        "stop_rate": 100.0,
+        "real_net": -54.0,
+        "model_net": -54.0,
+        "is_broker": true,
+        "slippage_pct": 59.8,
+        "cumulative": 127.0,
+        "mfe_med_pct": 48.6,
+        "mae_med_pct": -59.9,
+        "mae_min_pct": -71.4
+      },
+      {
+        "date": "2026-07-27",
+        "executed": 4,
+        "stopped": 2,
+        "stop_rate": 50.0,
+        "real_net": -10.0,
+        "model_net": 7.0,
+        "is_broker": true,
+        "slippage_pct": 4.8,
+        "cumulative": 117.0,
+        "mfe_med_pct": 52.3,
+        "mae_med_pct": -56.4,
+        "mae_min_pct": -83.8
+      },
+      {
+        "date": "2026-07-28",
+        "executed": 3,
+        "stopped": 3,
+        "stop_rate": 100.0,
+        "real_net": -59.0,
+        "model_net": -59.0,
+        "is_broker": true,
+        "slippage_pct": 4.3,
+        "cumulative": 58.0,
+        "mfe_med_pct": 12.5,
+        "mae_med_pct": -50.0,
+        "mae_min_pct": -92.5
+      },
+      {
+        "date": "2026-08-07",
+        "executed": 1,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 35.0,
+        "model_net": 39.0,
+        "is_broker": true,
+        "slippage_pct": -5.4,
+        "cumulative": 93.0,
+        "mfe_med_pct": 105.4,
+        "mae_med_pct": -32.4,
+        "mae_min_pct": -32.4
+      },
+      {
+        "date": "2026-08-10",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -12.0,
+        "model_net": -12.0,
+        "is_broker": true,
+        "slippage_pct": 33.3,
+        "cumulative": 81.0,
+        "mfe_med_pct": 66.7,
+        "mae_med_pct": -73.3,
+        "mae_min_pct": -73.3
+      },
+      {
+        "date": "2026-08-12",
+        "executed": 1,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 37.0,
+        "model_net": 41.0,
+        "is_broker": true,
+        "slippage_pct": 6.8,
+        "cumulative": 118.0,
+        "mfe_med_pct": 93.2,
+        "mae_med_pct": -23.9,
+        "mae_min_pct": -23.9
+      },
+      {
+        "date": "2026-08-13",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -11.0,
+        "model_net": -11.0,
+        "is_broker": true,
+        "slippage_pct": 5.9,
+        "cumulative": 107.0,
+        "mfe_med_pct": 52.9,
+        "mae_med_pct": -82.4,
+        "mae_min_pct": -82.4
+      },
+      {
+        "date": "2026-08-14",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -9.0,
+        "model_net": -9.0,
+        "is_broker": true,
+        "slippage_pct": 8.3,
+        "cumulative": 98.0,
+        "mfe_med_pct": 50.0,
+        "mae_med_pct": -83.3,
+        "mae_min_pct": -83.3
+      },
+      {
+        "date": "2026-08-18",
+        "executed": 2,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 41.0,
+        "model_net": 45.0,
+        "is_broker": true,
+        "slippage_pct": 11.6,
+        "cumulative": 139.0,
+        "mfe_med_pct": 88.4,
+        "mae_med_pct": 0.3,
+        "mae_min_pct": -5.6
+      },
+      {
+        "date": "2026-08-19",
+        "executed": 2,
+        "stopped": 2,
+        "stop_rate": 100.0,
+        "real_net": -35.0,
+        "model_net": -35.0,
+        "is_broker": true,
+        "slippage_pct": 15.8,
+        "cumulative": 104.0,
+        "mfe_med_pct": 19.0,
+        "mae_med_pct": -55.8,
+        "mae_min_pct": -61.5
+      },
+      {
+        "date": "2026-08-21",
+        "executed": 1,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 16.0,
+        "model_net": 16.0,
+        "is_broker": true,
+        "slippage_pct": -6.7,
+        "cumulative": 120.0,
+        "mfe_med_pct": 106.7,
+        "mae_med_pct": -13.3,
+        "mae_min_pct": -13.3
+      },
+      {
+        "date": "2026-08-26",
+        "executed": 4,
+        "stopped": 4,
+        "stop_rate": 100.0,
+        "real_net": -90.0,
+        "model_net": -90.0,
+        "is_broker": true,
+        "slippage_pct": 8.7,
+        "cumulative": 30.0,
+        "mfe_med_pct": 33.4,
+        "mae_med_pct": -68.2,
+        "mae_min_pct": -73.3
+      },
+      {
+        "date": "2026-08-27",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -18.0,
+        "model_net": -18.0,
+        "is_broker": true,
+        "slippage_pct": 5.0,
+        "cumulative": 12.0,
+        "mfe_med_pct": 57.5,
+        "mae_med_pct": -60.0,
+        "mae_min_pct": -60.0
+      },
+      {
+        "date": "2026-08-28",
+        "executed": 4,
+        "stopped": 1,
+        "stop_rate": 25.0,
+        "real_net": 7.0,
+        "model_net": 10.0,
+        "is_broker": true,
+        "slippage_pct": 3.2,
+        "cumulative": 19.0,
+        "mfe_med_pct": 98.6,
+        "mae_med_pct": -23.1,
+        "mae_min_pct": -292.1
+      },
+      {
+        "date": "2026-08-31",
+        "executed": 2,
+        "stopped": 2,
+        "stop_rate": 100.0,
+        "real_net": -26.0,
+        "model_net": -26.0,
+        "is_broker": true,
+        "slippage_pct": 1.2,
+        "cumulative": -7.0,
+        "mfe_med_pct": 5.5,
+        "mae_med_pct": -87.0,
+        "mae_min_pct": -89.5
+      },
+      {
+        "date": "2026-09-01",
+        "executed": 2,
+        "stopped": 2,
+        "stop_rate": 100.0,
+        "real_net": -9.0,
+        "model_net": -9.0,
+        "is_broker": true,
+        "slippage_pct": 25.0,
+        "cumulative": -16.0,
+        "mfe_med_pct": 20.8,
+        "mae_med_pct": -54.2,
+        "mae_min_pct": -75.0
+      },
+      {
+        "date": "2026-09-02",
+        "executed": 2,
+        "stopped": 1,
+        "stop_rate": 50.0,
+        "real_net": -13.0,
+        "model_net": -8.0,
+        "is_broker": true,
+        "slippage_pct": 15.3,
+        "cumulative": -29.0,
+        "mfe_med_pct": 44.4,
+        "mae_med_pct": -55.0,
+        "mae_min_pct": -80.6
+      },
+      {
+        "date": "2026-09-03",
+        "executed": 1,
+        "stopped": 0,
+        "stop_rate": 0.0,
+        "real_net": 17.0,
+        "model_net": 17.0,
+        "is_broker": true,
+        "slippage_pct": -6.2,
+        "cumulative": -12.0,
+        "mfe_med_pct": 106.2,
+        "mae_med_pct": -87.5,
+        "mae_min_pct": -87.5
+      },
+      {
+        "date": "2026-09-04",
+        "executed": 1,
+        "stopped": 1,
+        "stop_rate": 100.0,
+        "real_net": -14.0,
+        "model_net": -14.0,
+        "is_broker": true,
+        "slippage_pct": 5.3,
+        "cumulative": -26.0,
+        "mfe_med_pct": 5.3,
+        "mae_med_pct": -57.9,
+        "mae_min_pct": -57.9
+      }
+    ],
+    "summary": {
+      "n": 34,
+      "total": -26.0,
+      "green": 16,
+      "green_rate": 47,
+      "best": 66.0,
+      "worst": -114.0
+    }
+  },
+  "wave_history": {
+    "nights": [],
+    "summary": {
+      "n": 0,
+      "total": 0.0,
+      "green": 0,
+      "green_rate": null,
+      "best": null,
+      "worst": null,
+      "trades": 0,
+      "wins": 0,
+      "win_rate": null
+    },
+    "pnl_basis": "model_estimate"
+  },
+  "playbook": {
+    "meic": {
+      "enabled": true,
+      "slots": "10:00,11:00,12:00,13:00,14:00",
+      "contracts_per_slot": 1,
+      "max_per_day": 6,
+      "instrument": "SPX",
+      "short_delta": 0.16,
+      "wing_spx": 25.0,
+      "wing_spy": 2.5,
+      "min_credit_pct": 10.0,
+      "stop_buffer": 1.5,
+      "entry_plane": "alpaca_nbbo",
+      "stop_mark": "alpaca_nbbo",
+      "stop_anchor": "real_fill",
+      "min_side_credit_usd": 100.0,
+      "one_sided_enabled": true,
+      "assignment_guard": {
+        "enabled": true,
+        "window_min_before_close": 15,
+        "buffer_spy": 0.5
+      }
+    },
+    "wave": {
+      "enabled": false,
+      "short_delta": 30,
+      "wing_spx": 10.0,
+      "wing_spy": 1.0,
+      "tp_target": 95.0,
+      "min_confluence": 2,
+      "full_size_confluence": 4,
+      "risk_pct": 4.5,
+      "size_cap": 500.0,
+      "account": 10000.0,
+      "vix_standaside": 30.0,
+      "vix_up_only": true,
+      "time_stop_min": 15,
+      "cutoff_et": null,
+      "max_per_day": 3
+    }
+  }
+}

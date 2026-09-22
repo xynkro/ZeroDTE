@@ -164,3 +164,50 @@ assignment guard + self-heal + retries. The gates in this file now judge v2.
 ## Standing constraints (unchanged, non-negotiable)
 Paper only · never touch CasaaFinance positions · `.env` never committed ·
 improve-loop gates not bypassed · WaveZero runs its own account/backend.
+
+## VERDICT — 2026-09-22: R1 TRIPPED. No edge. Retire this configuration.
+
+The pre-registered gate fired. Recorded here so no future session re-litigates it.
+
+**Evidence (broker truth, series v2 Jul-13 → Sep-22):**
+| measure | value |
+|---|---|
+| traded nights | 32 |
+| total | **−$67** |
+| mean / traded night | **−$2.09** |
+| mean / session (unconditional, 47 sessions) | **−$1.43** |
+| HAC t | **−0.38** |
+| has_edge | **False** |
+| drop-best-night total | −$133 |
+| extension alone (12 nights, Aug-24→Sep-22) | **−$109, mean −$9.08, t −1.07** |
+
+**R1 = "RETIRE if mean/day ≤ $0 over the series" → mean is −$2.09. MET.**
+R2 (friction) not tripped: slippage ran 5–15%, ladder ~1%. R3 (structure) not
+tripped: worst night −$90 = 0.9% of account. R4 (stop dysfunction) not tripped:
+stops fired on deep MAEs, i.e. real breaches.
+
+**What this does and does not prove.** t = −0.38 does NOT establish a negative
+edge; it establishes NO DETECTABLE EDGE in either direction after 32 nights. The
+machine was not the problem — floors refused junk premium, stops cut real
+threats, the FOMC filter stood aside correctly, execution ran ~1% off mid on the
+ladder. The honest finding is narrower and more useful: **at 16Δ / $25 wings,
+0DTE SPY condors did not pay in the 2026 low-vol grind.** Current tape:
+SPY 774, full condor collects $130 = 4.3% of wing against a 10% floor — the
+book has correctly refused to trade for weeks.
+
+**Not retired for:** bugs, execution, or discipline. Those were fixed and held.
+
+**Open structural options (NEW decision, not a continuation of this series —
+each needs its own pre-registration before any capital, paper or real):**
+1. Wait for vol. The structure is regime-dependent; the regime may return.
+2. Re-spec for the regime: tighter wings / closer deltas collect more, risk more.
+3. XSP/SPX migration (European, cash-settled, §1256) — always the scale path.
+4. Transfer the machinery to Wave: broker-truth ledger, NBBO plane, book tags,
+   assignment guard, decision framework. None of that is wasted.
+
+**Known defects left open at retirement (would need fixing before any restart):**
+- `regime=pre_obs` after a mid-session restart silently eats entry slots
+  (cost 4 slots on Sep-21, 3 on Aug-17). Never fixed — deprioritised as ops.
+- `meic_slots` decision ledger lost history (7 rows retained, oldest Sep-21):
+  the "no silent decisions" guarantee does not survive some restarts.
+- Opus shadow analyst dark since Jul-8 (CLI OAuth loop); zero reads scored.

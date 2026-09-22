@@ -23,7 +23,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-REPO = os.path.expanduser("~/Documents/Trading/ZeroDTE")
+REPO = os.path.expanduser("~/Trading/ZeroDTE")
 BACKEND = "http://127.0.0.1:8765"
 BRANCH = "data"
 

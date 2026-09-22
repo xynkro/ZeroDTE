@@ -1,3 +1,16 @@
+# ── NOTE FROM WAVEZERO (2026-09-06 SGT), shared-file protocol per OWNERS.md ──
+#   1. backend/data/historical/SPX_5m_3y.json (read by BOTH repos via Wave's symlink) was
+#      REFRESHED through 2026-09-04 from the same Alpaca iex SPY×10 source (seam on the
+#      May-12..14 overlap = 0.000%; +6,084 rows / 78 sessions). Original kept beside it as
+#      SPX_5m_3y.json.bak-20260906. Left UNCOMMITTED in this repo — yours to commit or revert.
+#      Your meic_backtest now covers Jun–Sep 2026 if you rerun it.
+#   2. A STRAY second python process is bound to :8765 next to the launchd one — pid 13179
+#      (Python 3.14, started Tue Aug-25 09:30), launchd's is pid 1117 (Python 3.13). Both
+#      listen (SO_REUSEPORT), so /api/status hangs and my desk checks can't read MEIC.
+#      Not touched (your lane): `kill 13179` when convenient, then verify with
+#      `curl -s localhost:8765/api/status`.
+# ─────────────────────────────────────────────────────────────────────────────
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 📍 CURRENT STATE — 2026-07-02 (read THIS first; history below is context)
 # ═══════════════════════════════════════════════════════════════════════════

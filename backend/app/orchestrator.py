@@ -174,6 +174,29 @@ class Orchestrator:
             self._band_last = data.get("band_last")
             self._claude_scan_date = data.get("claude_scan_date")
             self._claude_scan_last = data.get("claude_scan_last")
+            # GHOST SANITIZER (ported from MEIC 2026-09-22). A 0DTE position
+            # cannot outlive its own session, yet a restart can restore one still
+            # flagged open. That is not cosmetic here: MAX_CONCURRENT_POSITIONS
+            # counts open trades, so a single ghost silently throttles new entries
+            # — and a stale condor gets marked to a phantom price and 422s trying
+            # to buy back legs we no longer hold (seen live on MEIC, Jul-15).
+            _today = datetime.now(ET).strftime("%Y-%m-%d")
+            for _t in self.paper_trades:
+                if _t.closed:
+                    continue
+                _d = str(getattr(_t, "entry_time", "") or "")[:10]
+                if _d and _d < _today:
+                    _t.closed = True
+                    _t.closed_at = _t.closed_at or f"{_d}T16:00:00-04:00"
+                    _t.exit_reason = _t.exit_reason or "expiry (ghost sanitizer)"
+                    log.warning("GHOST SANITIZER: trade from %s was still open at "
+                                "restore — 0DTE expired, marking closed", _d)
+            for _b in self.state.iron_condor_history:
+                if (_b.build_id and not _b.build_id.startswith(f"ic_{_today}")
+                        and _b.broker_status == "submitted"):
+                    _b.broker_status = "expired"
+                    log.warning("GHOST SANITIZER: condor %s still 'submitted' at "
+                                "restore — stamping expired", _b.build_id)
             self.state.last_signals = self._signal_history[-20:]
             self.state.open_positions = [t for t in self.paper_trades if not t.closed]
             log.info(
@@ -224,6 +247,7 @@ class Orchestrator:
 
     async def start(self):
         log.info("Orchestrator starting...")
+        self._boot_wall = datetime.now(ET)   # uptime guard for the feed self-heal
         # Spin up Telegram bot command poller (handles /status, /shutup, etc.)
         # SEND-ONLY instances (WaveZero) disable the poller: two pollers on one bot
         # token 409-war over getUpdates, but plain sends never conflict — so WaveZero
@@ -598,6 +622,41 @@ class Orchestrator:
                                            pwa_url=settings.DASHBOARD_PUBLIC_URL or None)
                     except Exception as e:
                         log.warning("feed-stale ping failed: %s", e)
+                # FEED PROMOTION (ported from MEIC 2026-09-22): a boot while the
+                # market is closed can't reach Alpaca, falls back to YFinanceFeed
+                # and then CAMPS there for days on degraded bars. If we're on the
+                # fallback during RTH with Alpaca keys configured, restart into it.
+                feed_name_now = type(self.feed).__name__ if self.feed else "none"
+                if feed_name_now == "YFinanceFeed" and settings.ALPACA_API_KEY:
+                    since = getattr(self, "_wrong_feed_since", None)
+                    if since is None:
+                        self._wrong_feed_since = datetime.now(ET)
+                    elif (datetime.now(ET) - since).total_seconds() > 600:
+                        up = (datetime.now(ET) - getattr(self, "_boot_wall",
+                              datetime.now(ET))).total_seconds()
+                        if up > 900:
+                            log.error("FEED PROMOTION: on %s during RTH >10min — "
+                                      "self-healing restart to reconnect Alpaca", feed_name_now)
+                            self._persist_state()
+                            await asyncio.sleep(2)
+                            import os as _os
+                            _os._exit(44)
+                else:
+                    self._wrong_feed_since = None
+                # SELF-HEALING RESTART: feed dead at 2x the alarm threshold means
+                # open positions are unmanaged. Exit hard; launchd KeepAlive (
+                # verified true for com.caspar.wavezero-backend) relaunches us into
+                # the proven warmup/restore path. Uptime guard stops a boot-loop
+                # when the data provider itself is down.
+                if age > STALE_SEC * 2:
+                    up = (datetime.now(ET) - getattr(self, "_boot_wall",
+                          datetime.now(ET))).total_seconds()
+                    if up > 900:
+                        log.error("FEED STALE %.0fs — SELF-HEALING RESTART (launchd relaunch)", age)
+                        self._persist_state()
+                        await asyncio.sleep(2)
+                        import os as _os
+                        _os._exit(43)
             except asyncio.CancelledError:
                 break
             except Exception as e:

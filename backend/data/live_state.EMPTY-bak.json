@@ -1,0 +1,17 @@
+{
+"signal_history": [],
+"paper_trades": [],
+"iron_condor_history": [],
+"trade_seq_today": 0,
+"trade_seq_date": null,
+"eod_ic_built_today": null,
+"today_date": null,
+"today_evaluated": 0,
+"today_gated": {},
+"band_opened_date": null,
+"band_last": null,
+"claude_scan_date": null,
+"claude_scan_last": null,
+"session_date": "2026-08-07",
+"last_written": "2026-08-07T04:16:06.024403"
+}

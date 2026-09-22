@@ -45,6 +45,7 @@ class AlpacaTrader:
 
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
+        self.last_error: str | None = None   # last order-path failure text (post-mortems)
 
     def _headers(self) -> dict:
         return {
@@ -144,6 +145,13 @@ class AlpacaTrader:
             log.error("Alpaca order HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Connection never established → the order was NOT delivered →
+            # safe for the caller to retry. Read-timeouts stay swallowed: the
+            # order may have landed and a retry could double it. Ported from
+            # MEIC 2026-09-22 (2am-SGT DNS blips ate live orders there).
+            self.last_error = "credit spread: connection failed"
+            raise
         except Exception as e:
             log.error("Alpaca credit spread failed: %s", e)
             return None
@@ -217,6 +225,13 @@ class AlpacaTrader:
             log.error("Alpaca IC order HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Connection never established → the order was NOT delivered →
+            # safe for the caller to retry. Read-timeouts stay swallowed: the
+            # order may have landed and a retry could double it. Ported from
+            # MEIC 2026-09-22 (2am-SGT DNS blips ate live orders there).
+            self.last_error = "IC order: connection failed"
+            raise
         except Exception as e:
             log.error("Alpaca IC order failed: %s", e)
             return None
@@ -402,6 +417,13 @@ class AlpacaTrader:
             log.error("Alpaca close HTTP %d: %s",
                       e.response.status_code, e.response.text[:300])
             return None
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            # Connection never established → the order was NOT delivered →
+            # safe for the caller to retry. Read-timeouts stay swallowed: the
+            # order may have landed and a retry could double it. Ported from
+            # MEIC 2026-09-22 (2am-SGT DNS blips ate live orders there).
+            self.last_error = "close credit spread: connection failed"
+            raise
         except Exception as e:
             log.error("Alpaca close credit spread failed: %s", e)
             return None

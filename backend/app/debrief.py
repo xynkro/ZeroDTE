@@ -829,3 +829,34 @@ def format_debrief_telegram(d: dict) -> str:
     lines.append(f"verdict: {d['verdict']}")
     lines.append(d["discipline"])
     return "\n".join(lines)
+
+
+def annotate_log_row(path: str, date: str, updates: dict) -> bool:
+    """Merge fields into the LAST log row for `date`. Ported from MEIC 2026-09-22.
+
+    Exists because the broker number is only knowable AFTER the fetch that runs
+    later in the EOD sequence than the row write — so the nightly row would
+    otherwise carry the MODEL P&L forever. Wave's known integrity gap (it reports
+    model, not real fills) is exactly this shape. Small file; whole-file rewrite."""
+    import json
+    try:
+        with open(path) as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            try:
+                if json.loads(lines[i]).get("date") == date:
+                    idx = i
+                    break
+            except ValueError:
+                continue
+        if idx is None:
+            return False
+        row = json.loads(lines[idx])
+        row.update(updates)
+        lines[idx] = json.dumps(row)
+        with open(path, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return True
+    except OSError:
+        return False

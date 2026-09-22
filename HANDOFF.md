@@ -1,3 +1,35 @@
+# ══════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO — STATE AT 2026-09-22 (Tue 10:30 ET / 22:30 SGT). READ THIS FIRST.
+#    CONFIG F FIRST FORTNIGHT (Sep-8→22, 10 sessions): 2 trades, both Sep-11, both TP,
+#    +$57 real (F trial 2/25; account $9,871). Two causes, neither a bug:
+#    (1) THE MAC SLEPT. This is a MacBook Pro on battery: pmset shows maintenance-sleep
+#        cycling from Sep-15 22:32 SGT; Sep-14→17 produced ZERO decisions on BOTH books
+#        (MEIC's GEX logger dark too); Sep-18 woke for 2 slots; reboot Sep-21 14:16 SGT.
+#        caffeinate -i does NOT stop lid-close/battery sleep. An always-on host is a
+#        prerequisite for "autonomous"; interim = plugged in + `sudo pmset -a disablesleep 1`
+#        (Caspar's call, system setting). Sep-21 also logged 5 FEED STALE stalls (6–8 min).
+#    (2) THE FLOOR IS THE VOL GATE NOW. 66 of 68 slot-sides gated; NBBO best executable
+#        credit at ≥0.6% OTM = median $0–3.5/ct, max $8, vs the $10 floor (journal; G12 PASS
+#        on ≥54 NBBO-priced sides). Live surface Tue 10:28 ET (SPY 773.6): $10/ct exists only
+#        at ~0.2% OTM (772P $12, 775C $20); 0.6% pays $2 / −$3. Real 5-min paths, P(touch)
+#        after a 10:00 entry over the last 20 sessions, per side: 0.2% 50–60%, 0.4% 15–20%,
+#        0.6% 0–5%. TP40+breach breakeven at $10–12 credit needs P(touch) < ~10–24% →
+#        NO strike satisfies the 10%-of-width floor AND positive EV in this tape. The
+#        backtest's 0.5 haircut overstated credit ~5–10× at 0.6% OTM (the "43 trades in
+#        the zero-trade fortnight" was fantasy). NOTHING MOVED — no config change.
+#        Sep-11 (r5 ≈ median) is what F does when vol is merely normal: 2 entries at $12/$10
+#        executable, fills $11/$5 per ct, both won.
+#    DESK: MEIC recorded R1 TRIPPED 2026-09-22 (32 nights −$67, t −0.38; its DECISION.md):
+#        retire that configuration pending Caspar. Same wall — 0DTE SPY premium at safe
+#        distances does not pay in the 2026 low-vol grind.
+#    HOUSEKEEPING: the Sep-8 scheduled checkpoint died after 12 s (no Telegram, no G12);
+#        G12 closed today from journal evidence (scripts/gates/g12_nbbo_live.py). Publisher
+#        failed 10:49–11:24 SGT (no network, git exit 128), self-healed; REPO path committed.
+#    NEXT: (a) Caspar decides the host and whether to stand armed for vol (recommended) or
+#        pre-register a NEW structure (any change = a new docs/TRIAL_GATES.md entry first);
+#        (b) credentials pasted in chat 2026-06-30 still need rotation.
+# ══════════════════════════════════════════════════════════════════
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO — CONFIG F LIVE (deployed Sun 2026-09-06 SGT / Sat Sep-5 ET, :8766)
 #    WHY: Config E took 0 trades in 10 sessions (Aug-24→Sep-4): 100 slots, 100 gated.

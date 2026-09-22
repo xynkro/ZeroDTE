@@ -23,7 +23,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-REPO = os.path.expanduser("~/Documents/Trading/ZeroDTE-Wave")
+REPO = os.path.expanduser("~/Trading/ZeroDTE-Wave")
 BACKEND = "http://127.0.0.1:8766"
 BRANCH = "wave-data"
 FILENAME = "wave_monitor.json"

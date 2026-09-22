@@ -58,8 +58,10 @@ config gate, abandoned; G14 is its Config F successor.)
   EXPECT: GATE_G11_PASS
   EVIDENCE: exit=0; shell=/bin/sh; cwd=/Users/xynkro/Trading/ZeroDTE-Wave; path=d634fd18c422/48 entries; output=NBBO reachable, returned 0 quoted strikes; fallback wiring verified | GATE_G11_PASS
 
-- [ ] G12: NBBO prices the live chain during market hours and the floor binds on executable credit
-  EVIDENCE: pending
+- [x] G12: NBBO prices the live chain during market hours and the floor binds on executable credit
+  CHECK: .venv/bin/python scripts/gates/g12_nbbo_live.py
+  EXPECT: GATE_G12_PASS
+  EVIDENCE: exit=0; shell=/bin/sh; cwd=/Users/xynkro/Trading/ZeroDTE-Wave; path=4c5959128d2e/53 entries; output=GATE_G12_PASS | nbbo_rows=56 days=2026-09-08..2026-09-22 (6) gated_below_floor=56 best_real_max=$8/ct opened_at_or_above_floor=2 (real_mid_ct [12.0, 10.0])
 
 - [x] G13: anchor-floor trades a collapsed band at the cushion boundary, is a no-op on wide bands, never enters the cushion; vol gate caller-optional (negative controls)
   CHECK: PYTHONPATH=. .venv/bin/python scripts/gates/g13_anchor_floor.py

@@ -50,6 +50,23 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-09-22 — CONFIG F FIRST-FORTNIGHT CHECKPOINT (NO config change; F sample stays 2/25).**
+  Sessions Sep-8→22 (10 trading days): 2 trades (Sep-11 10:00 put 7615/7605 5ct; 11:00 put
+  7595/7585 4ct), both TP, +$57 real (executable est. $12/$10 per ct, filled $11/$5), acct $9,871.
+  Why so few: (1) the MacBook slept on battery — Sep-14→17 produced zero decisions on BOTH
+  books (pmset maintenance-sleep cycling from Sep-15 22:32 SGT; MEIC's GEX log dark too),
+  Sep-18 woke for 2 slots, reboot Sep-21 14:16 SGT. Sessions lost to sleep do NOT count as
+  sessions. (2) When awake, 66/68 slot-sides gated on the $10 executable floor: NBBO best
+  credit at ≥0.6% OTM median $0–3.5/ct, max $8 (G12 PASS, ≥54 NBBO-priced sides). Live
+  surface Sep-22 10:28 ET: $10/ct only at ~0.2% OTM. Real-path touch rates after a 10:00
+  entry, last 20 sessions, per side: 0.2% 50–60%, 0.4% 15–20%, 0.6% 0–5%. TP40+breach
+  breakeven at $10–12 credit needs P(touch) < ~10–24% → no strike satisfies the 10%-of-width
+  floor AND positive EV in this regime. The backtest's 0.5 haircut overstated credit ~5–10× at
+  0.6% OTM; treat the journal's best_real_ct as the calibration from now on, not model×0.5.
+  Gates UNCHANGED. Decision for Caspar: stand armed for vol (F trades correctly when r5 ≈
+  median — Sep-11) or pre-register a NEW structure as a new entry here. An always-on host is
+  a prerequisite for any verdict.
+
 - **2026-09-06 (SGT) — CONFIG F: vol gate OFF + ANCHOR-FLOOR + cushion 0.6 + feed
   resilience. THIRD config change; Config E never accumulated a sample (0 trades in 10
   sessions, Aug-24→Sep-4), so nothing is lost by restarting the count.**

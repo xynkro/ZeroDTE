@@ -1,3 +1,43 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# 🛑 MEIC IS RETIRED — 2026-09-22. DO NOT RESTART IT TO TRADE.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Caspar's call, on the pre-registered gate. See DECISION.md "VERDICT — 2026-09-22".
+#   R1 tripped: 32 traded nights Jul-13→Sep-22, total −$67, mean −$2.09/night,
+#   HAC t −0.38, has_edge False. Final equity $10,009.04 (+$9 on $10,000).
+#
+# STATE OF THE BOX:
+#   • launchd job `com.caspar.zerodte-backend` is BOOTED OUT (:8765 is down).
+#   • .env (gitignored) has MEIC_ENABLED / IC_EXECUTION_ENABLED / TRADING_ENABLED
+#     = false, so even an accidental reload cannot place an order.
+#   • Account is flat: 0 positions, 0 open orders, verified before shutdown.
+#   • All data is intact and is the historical record — do not purge it.
+#
+# WHY IT WAS RETIRED — READ THIS BEFORE PROPOSING A RESTART:
+#   NOT bugs, execution, or discipline. Those were found and fixed, and they held:
+#   NBBO entry plane, real-fill stop anchor, per-side floors, 1.5x disaster stop,
+#   assignment guard, FOMC stand-aside, ~1%-off-mid ladder fills. The finding is
+#   narrower: at 16D / $25 wings, 0DTE SPY condors did not pay in the 2026 low-vol
+#   grind. At retirement SPY was 774 and a full condor collected 4.3% of wing
+#   against a 10% floor — the book had correctly refused to trade for weeks.
+#   t = −0.38 does NOT prove a negative edge; it proves no detectable edge in
+#   either direction after 32 nights.
+#
+# THE MACHINERY LIVES ON: ported to ZeroDTE-Wave 2026-09-22 (option 4) —
+#   feed self-heal + yfinance→Alpaca promotion, ghost sanitizer, connect-error
+#   order retries, annotate_log_row (broker-truth reporting). See that repo.
+#
+# IF IT IS EVER RESTARTED, these were open at retirement:
+#   • regime=pre_obs after a mid-session restart silently eats entry slots.
+#   • meic_slots decision ledger loses history across some restarts.
+#   • Opus shadow analyst dark since Jul-8 (CLI OAuth loop); zero reads scored.
+#   And it would need a NEW pre-registration — the old series is closed.
+#
+# To bring the dashboard back READ-ONLY (flags stay false, cannot trade):
+#   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.caspar.zerodte-backend.plist
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
 # ── NOTE FROM WAVEZERO (2026-09-06 SGT), shared-file protocol per OWNERS.md ──
 #   1. backend/data/historical/SPX_5m_3y.json (read by BOTH repos via Wave's symlink) was
 #      REFRESHED through 2026-09-04 from the same Alpaca iex SPY×10 source (seam on the

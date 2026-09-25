@@ -44,3 +44,4 @@ backend/data/gex_history.jsonl
 .unlazy/
 .unlazy-hook-state.json
 .claude/settings.local.json
+backend/data/nbbo_surface.jsonl

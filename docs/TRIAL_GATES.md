@@ -50,6 +50,30 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-10-06 — CONFIG F RETIRED at n=14 (−$243 real); MEASUREMENT-ONLY phase pre-registered.**
+  Verdict from the real-credit evaluation (docs/DECISION_2026-10-06_real_credit_evaluation.md):
+  the n=25 retire gate (mean ≤ $0) is already unreachable — the next 11 trades would have to
+  average > +$22.1 while F's mean winner is +$21.6 (best +$45); bootstrap from F's own fills
+  gives P(mean > 0 at n=25) = 0.2%. The 15% halt was not near (account $9,572). Disarmed via
+  `WAVE_BAND_STRATEGY_ENABLED=false` on 2026-10-06 (one gated slot, zero orders that session).
+  Also booked: the Oct-1 10:30 call spread that Alpaca's expiry liquidation closed at 15:45 ET
+  for −$164 (our 15:45 close raced it); time stop moved to 15:25 ET; the ledger merge no
+  longer lets an in-memory blank overwrite a real broker number.
+  NOTHING QUALIFIES FOR DEPLOYMENT on 7 sessions: no structure in the premium-targeted,
+  touch-stop, iron-fly, breakeven-condor or time-of-day families was both net positive and
+  positive in ≥5 of 6 evaluable sessions on executable credits with the T-15 forced close.
+  NEXT = MEASUREMENT ONLY: the surface sampler (per-leg bid/ask, through 16:01 ET; hosted on
+  GitHub Actions every 5 min → branch `surface-data`, plus the Mac copy) for 30 DENSE sessions
+  (~mid-Nov 2026). GATE, fixed now: a structure simulated on executable credits with the T-15
+  close qualifies only if total > 0, ≥70% of sessions positive, worst session at 1 ct ≤ $480
+  (5% of $9,572), session-bootstrap P(mean > 0) ≥ 0.90, EV/trade ≥ 3× measured quote-to-fill
+  slippage ($2.7/ct in F). Then a 25-trade PROBE: 1 ct, 1 open position, exits anchored to
+  broker_realized_credit (not model), same-SPY-strike guard, daily halt −$480.
+    Retire: mean/trade ≤ $0 at n=25, OR two sessions ≤ −$480, OR DD > 15%.
+    Investigate: mean > 0 but < 50% of simulated EV.
+    Scale: capture ≥ 60%, t ≥ 2 → 2 ct, max 5%/position.
+  If nothing passes the gate at 30 sessions: the SPY 0DTE book closes.
+
 - **2026-09-22 — CONFIG F FIRST-FORTNIGHT CHECKPOINT (NO config change; F sample stays 2/25).**
   Sessions Sep-8→22 (10 trading days): 2 trades (Sep-11 10:00 put 7615/7605 5ct; 11:00 put
   7595/7585 4ct), both TP, +$57 real (executable est. $12/$10 per ct, filled $11/$5), acct $9,871.

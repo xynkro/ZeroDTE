@@ -1,4 +1,31 @@
 # ══════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO — STATE AT 2026-10-06 (Tue 11:00 ET / 23:00 SGT). READ THIS FIRST.
+#    CONFIG F RETIRED at n=14, −$243 real (account $9,572; 7 wins avg +$22, 6 losses avg −$66
+#    incl. the Oct-1 Alpaca-liquidated −$164). Retire gate unreachable (next 11 must avg > +$22;
+#    P = 0.2%). Disarmed: WAVE_BAND_STRATEGY_ENABLED=false. Backend still runs (feed, scan,
+#    publisher) but places NO orders. MEIC retired 2026-09-22. Nothing trades.
+#    WHY NOTHING NEW: docs/DECISION_2026-10-06_real_credit_evaluation.md — on 7 sessions of REAL
+#    executable credits, no structure (premium-targeted/Phil, touch-stop, iron fly, breakeven
+#    condor, time-of-day) is net positive AND positive in ≥5/6 sessions. Geometry, not friction:
+#    strikes that avoid a touch pay <$10/ct; strikes that pay are touched 36–51% of days.
+#    NOW = MEASUREMENT: the surface sampler is the instrument of record (per-leg bid/ask, to
+#    16:01 ET). Hosted copy: GitHub Actions `nbbo-surface` (workflow on main, cron */5 13–21 UTC
+#    Mon–Fri, keys as repo secrets) appends to branch `surface-data`; the Mac copy still appends
+#    to backend/data/nbbo_surface.jsonl (dedupe by ts). Verdict at 30 DENSE sessions (~mid-Nov)
+#    against the pre-registered gate in docs/TRIAL_GATES.md (2026-10-06 entry).
+#    HOST: the Mac slept through 5 sessions in 3 weeks (Sep 14–17, Oct 2). VM move prepared
+#    (deploy/vm/, README there): gcloud installed + signed in (xynkro@gmail.com), project
+#    `wavezero-paper-1006` created and linked to billing 0165D7-E822CF-27604F — but ALL FIVE
+#    GCP billing accounts are CLOSED, so Compute refuses ("requires billing"). Blocked on Caspar
+#    reopening a billing account; then gce_create.sh → bootstrap.sh → push_state.sh →
+#    mac_standby.sh → cutover.sh (~10 min, scripted).
+#    HARDENING tonight: time stop 15:45→15:25 ET (WAVE_TIME_STOP_MIN=35) so we never race
+#    Alpaca's 15:45 expiry sweep; _persist_trial_ledger keeps real broker numbers over blanks.
+#    BEFORE ANY PROBE: exits anchored to broker_realized_credit (dsm:476 uses model credit),
+#    same-SPY-strike guard (Oct-1 duplicate add-ons −$24), quote-to-fill logging.
+# ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO — STATE AT 2026-09-22 (Tue 10:30 ET / 22:30 SGT). READ THIS FIRST.
 #    CONFIG F FIRST FORTNIGHT (Sep-8→22, 10 sessions): 2 trades, both Sep-11, both TP,
 #    +$57 real (F trial 2/25; account $9,871). Two causes, neither a bug:

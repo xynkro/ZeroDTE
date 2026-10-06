@@ -1,0 +1,53 @@
+name: nbbo-surface
+# WaveZero measurement instrument: sample the REAL executable 0DTE SPY credit surface every
+# 5 minutes during US RTH on a GitHub-hosted runner (no laptop, no VM, no billing). Zero trading:
+# read-only Alpaca market-data calls with the PAPER keys stored as encrypted repo secrets.
+# Rows are appended to the orphan branch `surface-data` (file nbbo_surface.jsonl).
+on:
+  schedule:
+    - cron: '*/5 13-21 * * 1-5'   # covers 09:30-16:00 ET in both EDT and EST; the script exits outside RTH
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: nbbo-surface
+  cancel-in-progress: false
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: wavezero
+      - uses: actions/checkout@v4
+        with:
+          ref: surface-data
+          path: surface-data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip -q install requests
+      - name: sample
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          umask 077
+          printf 'ALPACA_API_KEY=%s\nALPACA_SECRET_KEY=%s\nALPACA_OPTIONS_FEED=indicative\n' "$ALPACA_API_KEY" "$ALPACA_SECRET_KEY" > .env
+          mkdir -p backend/data
+          : > backend/data/nbbo_surface.jsonl
+          python scripts/nbbo_surface_sampler.py | sed -E 's/[A-Za-z0-9]{20,}/<redacted>/g'
+          rm -f .env
+      - name: append + push
+        run: |
+          if [ -s backend/data/nbbo_surface.jsonl ]; then
+            cat backend/data/nbbo_surface.jsonl >> surface-data/nbbo_surface.jsonl
+            cd surface-data
+            git config user.name "WaveZero Sampler" && git config user.email "sampler@wavezero.local"
+            git add nbbo_surface.jsonl
+            git commit -q -m "surface: $(tail -c 400 nbbo_surface.jsonl | grep -oE '"ts": "[^"]+"' | tail -1)" || exit 0
+            for i in 1 2 3; do git push -q origin HEAD:surface-data && break || { git pull -q --rebase origin surface-data; }; done
+          else
+            echo "outside RTH — no row"
+          fi

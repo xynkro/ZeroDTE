@@ -833,7 +833,18 @@ class Orchestrator:
                             continue
             for t in self.paper_trades:
                 if getattr(t, "strategy", None) == "directional_spread" and t.closed:
-                    rows[t.id] = t.model_dump()
+                    d = t.model_dump()
+                    prev = rows.get(t.id)
+                    # Never let an in-memory blank clobber a real broker number already in the
+                    # ledger (2026-10-01: Alpaca's expiry liquidation booked -$164 that our
+                    # close_error row carried as None; every restart re-blanked the correction).
+                    if prev and d.get("broker_realized_pnl") is None \
+                            and prev.get("broker_realized_pnl") is not None:
+                        for k in ("broker_realized_pnl", "broker_realized_credit", "broker_status",
+                                  "exit_reason", "broker_pnl_source"):
+                            if prev.get(k) is not None:
+                                d[k] = prev[k]
+                    rows[t.id] = d
             _os.makedirs(_os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 for r in rows.values():

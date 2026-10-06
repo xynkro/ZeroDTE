@@ -24,7 +24,7 @@ FEED = env.get("ALPACA_OPTIONS_FEED", "indicative")
 ET = ZoneInfo("America/New_York")
 now = dt.datetime.now(ET)
 force = "--force" in sys.argv
-if not force and (now.weekday() >= 5 or not (dt.time(9, 35) <= now.time() <= dt.time(16, 0))):
+if not force and (now.weekday() >= 5 or not (dt.time(9, 35) <= now.time() <= dt.time(16, 1))):
     sys.exit(0)
 
 spot = requests.get("https://data.alpaca.markets/v2/stocks/SPY/trades/latest", headers=H,
@@ -60,8 +60,8 @@ row = {"ts": now.isoformat(timespec="seconds"), "spot": spot, "exp": exp, "n_quo
 for otm in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0):
     kp, kc = round(spot * (1 - otm / 100)), round(spot * (1 + otm / 100))
     row["surface"][f"{otm:.1f}"] = {
-        "put": {"k": kp, "bid": (q("put", kp) or {}).get("bp"), "w1": ex("put", kp, kp - 1), "w2": ex("put", kp, kp - 2), "w5": ex("put", kp, kp - 5)},
-        "call": {"k": kc, "bid": (q("call", kc) or {}).get("bp"), "w1": ex("call", kc, kc + 1), "w2": ex("call", kc, kc + 2), "w5": ex("call", kc, kc + 5)}}
+        "put": {"k": kp, "bid": (q("put", kp) or {}).get("bp"), "ask": (q("put", kp) or {}).get("ap"), "w1": ex("put", kp, kp - 1), "w2": ex("put", kp, kp - 2), "w5": ex("put", kp, kp - 5)},
+        "call": {"k": kc, "bid": (q("call", kc) or {}).get("bp"), "ask": (q("call", kc) or {}).get("ap"), "w1": ex("call", kc, kc + 1), "w2": ex("call", kc, kc + 2), "w5": ex("call", kc, kc + 5)}}
 # premium-targeted candidates: farthest strike whose BID still pays the target; wing = first strike asking <= $0.05
 for tgt in (0.20, 0.30, 0.50, 1.00):
     for typ, sign in (("put", -1), ("call", +1)):
@@ -78,6 +78,19 @@ for tgt in (0.20, 0.30, 0.50, 1.00):
             "short": ks, "pct_otm": round(100 * abs(ks - spot) / spot, 3) if ks else None,
             "wing": nickel, "width": abs(nickel - ks) if (ks and nickel) else None,
             "net_credit": round((q(typ, ks)["bp"] - q(typ, nickel)["ap"]) * 100, 2) if (ks and nickel) else None}
+# Full per-leg chain (the decision of 2026-10-06: "log bid and ask per leg") — every quoted strike
+# within ±2.5% of spot, so any structure or stop rule can be valued after the fact.
+row["legs"] = {typ: {str(k): [s["bp"], s["ap"]] for (t_, k), s in sorted(snaps.items()) if t_ == typ}
+               for typ in ("put", "call")}
+row["quote_age_sec"] = None
+try:
+    _ts = [s["t"] for s in snaps.values() if s.get("t")]
+    if _ts:
+        _newest = max(dt.datetime.fromisoformat(t.replace("Z", "+00:00")[:26] + "+00:00") if "." in t
+                      else dt.datetime.fromisoformat(t.replace("Z", "+00:00")) for t in _ts)
+        row["quote_age_sec"] = round((dt.datetime.now(dt.timezone.utc) - _newest).total_seconds(), 1)
+except Exception:  # noqa: BLE001
+    pass
 with open(OUT, "a") as f:
     f.write(json.dumps(row) + "\n")
 print(f"{row['ts']} spot {spot} quotes {len(snaps)} atm_straddle {row['atm_straddle_mid']} "

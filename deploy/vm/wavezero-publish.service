@@ -1,0 +1,13 @@
+[Unit]
+Description=WaveZero monitor snapshot → GitHub wave-data branch (one shot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__HOME__/Trading/ZeroDTE-Wave
+Environment=HOME=__HOME__
+Environment=TZ=Asia/Singapore
+ExecStart=__HOME__/Trading/ZeroDTE-Wave/.venv/bin/python scripts/publish_wave_monitor.py
+StandardOutput=append:/var/log/wavezero/publish_stdout.log
+StandardError=append:/var/log/wavezero/publish_stderr.log

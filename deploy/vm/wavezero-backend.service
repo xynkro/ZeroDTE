@@ -1,0 +1,23 @@
+[Unit]
+Description=WaveZero 0DTE SPY paper-trading backend (uvicorn :8766, loopback only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__HOME__/Trading/ZeroDTE-Wave
+Environment=HOME=__HOME__
+Environment=PYTHONPATH=__HOME__/Trading/ZeroDTE-Wave
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=TZ=Asia/Singapore
+ExecStart=__HOME__/Trading/ZeroDTE-Wave/.venv/bin/python -m uvicorn backend.app.api:app --host 127.0.0.1 --port 8766
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/wavezero/backend_stdout.log
+StandardError=append:/var/log/wavezero/backend_stderr.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=WaveZero NBBO surface sampler (one shot, RTH only, zero trading)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__HOME__/Trading/ZeroDTE-Wave
+Environment=HOME=__HOME__
+Environment=TZ=Asia/Singapore
+ExecStart=__HOME__/Trading/ZeroDTE-Wave/.venv/bin/python scripts/nbbo_surface_sampler.py
+StandardOutput=append:/var/log/wavezero/surface_stdout.log
+StandardError=append:/var/log/wavezero/surface_stderr.log

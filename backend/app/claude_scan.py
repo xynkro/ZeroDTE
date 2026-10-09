@@ -50,8 +50,8 @@ Return STRICT JSON only, exactly this schema:
  "invalidation": 0.0,
  "regime_read": "calm|normal|trend_risk|event_risk",
  "event_risks": ["..."],
- "note": "<=200 chars: the one reason for the lean and the one thing that breaks it"}
-(level and invalidation are SPY prices; invalidation below spot for up, above for down.)"""
+ "note": "<=200 chars: the one reason for the lean and the one thing that breaks it — quote ALL levels in SPX points (SPY×10), never SPY"}
+(level and invalidation are SPY prices; invalidation below spot for up, above for down. In the note, write levels as SPX, e.g. 7760 not 776.)"""
 
 
 async def build_context_async(orch) -> dict:

@@ -4,6 +4,12 @@
 #    AND real dollars; "2 good weeks of data" → IBKR discussion (his deliberate act). Pre-registered
 #    in docs/TRIAL_GATES.md (2026-10-09 entry) — gates fixed before the first trade; "green every
 #    day" is explicitly NOT a gate (his 28-day streak died to one shock; the worst-day bound is it).
+#    ▶ CONFIG L v2 since Fri 2026-10-09 13:10 ET (Caspar: "you decide which will make us money"):
+#    instrument XSP (SPX/10, cash-settled; broker legs on pt.order_*; engine strikes = legs/ratio×10),
+#    floor $12/ct (6% of $2 width), invalidation ≥ 0.30% from spot, TP 60%, reads 09:45 (conf ≥ 0.70)
+#    / 13:00 / 14:00 ET on claude-fable-5-1. Chosen on the real-quote grid over the read windows
+#    (docs/TRIAL_GATES.md 2026-10-10). XSP 3rd-Friday (AM-settled) = stand aside. Two Sonnet reviews
+#    applied (16 defects). First possible XSP fill: Fri Oct-9 14:00 ET slot / Mon Oct-12 09:45.
 #    HOW: POST /api/call (X-ZeroDTE-Token) {lean, conf, invalidation (SPY), level, note, source}
 #    → backend/app/live_call.submit_call: short strike AT the invalidation, $2 wide, executable
 #    credit ≥ $0.20/share (live NBBO short.bid − long.ask) else REJECTED; ONE contract (hard),

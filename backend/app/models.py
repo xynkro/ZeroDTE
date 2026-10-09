@@ -150,6 +150,12 @@ class PaperTrade(BaseModel):
     # does NOT change sizing unless GEX_SIZING_ENABLED). See gex.py.
     gex_regime: str | None = None        # "positive" | "negative" | "neutral"
     gex_net_ratio: float | None = None   # net/gross gamma balance, [-1, +1]
+    # Config L (2026-10-10): the legs actually sent to the broker, when the traded instrument is
+    # not SPY (e.g. XSP = SPX/10, cash-settled). Engine math stays on SPY×10 bars with the
+    # strikes above; these override spy_strike_params at order time. None = legacy SPY mapping.
+    order_underlying: str | None = None
+    order_short_strike: float | None = None
+    order_long_strike: float | None = None
 
 
 class IronCondorBuilder(BaseModel):

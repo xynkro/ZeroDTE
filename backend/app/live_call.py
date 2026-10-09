@@ -96,8 +96,9 @@ def format_read(rec: dict) -> str:
     if d in ("submitted", "dry_run") and rec.get("short") is not None:
         kind = "put" if rec.get("side") == "sell_put_cs" else "call"
         inst = rec.get("instrument", "SPY")
+        os_, ol_ = rec.get("order_short", rec["short"]), rec.get("order_long", rec["long"])
         blocks.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
-                      + f"sell {inst} {rec['short']:.0f}/{rec['long']:.0f} {kind} spread ×1 (SPX {rec['short'] * 10:.0f}/{rec['long'] * 10:.0f})\n"
+                      + f"sell {inst} {os_:.0f}/{ol_:.0f} {kind} spread ×1 (SPX {rec['short'] * 10:.0f}/{rec['long'] * 10:.0f})\n"
                       f"exec credit ${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss ${_f(rec.get('max_loss_ct'), 0):.0f}/ct\n"
                       f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop at −100% credit (≈ SPX {rec['short'] * 10:.0f} touched) · {rec.get('time_stop_et', '15:25')} ET close")
     elif d == "no_trade":
@@ -106,8 +107,8 @@ def format_read(rec: dict) -> str:
         blocks.append("→ advisory only (auto-submit off)")
     elif d in ("rejected", "broker_rejected", "error"):
         reason = str(rec.get("reason") or "")
-        if rec.get("short") is not None and "at " in reason:
-            reason = reason.rsplit(" at ", 1)[0] + f" at SPX {rec['short'] * 10:.0f}/{rec['long'] * 10:.0f}"
+        if rec.get("short") is not None and " at " in reason:
+            reason = reason.rsplit(" at ", 1)[0] + f" at SPX {rec['short'] * 10:.0f}/{rec['long'] * 10:.0f}" + (f" ({rec.get('instrument')} {rec['order_short']:.0f}/{rec['order_long']:.0f})" if rec.get('order_short') is not None else "")
         blocks.append(f"→ NOT traded: {reason}")
     return "\n\n".join(blocks)
 
@@ -240,34 +241,55 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
             return _finish("rejected", f"{len(open_pos)} position(s) open or unmanaged (max {settings.CALL_MAX_OPEN})")
 
         # ── price on executable NBBO: short.bid − long.ask ──
+        inst = (settings.PROBE_UNDERLYING or "SPY").upper()
+        rec["instrument"] = inst
         try:
             from .nbbo_chain import fetch_chain_nbbo
-            nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy, now.strftime("%y%m%d"))
+            if inst == "XSP":
+                # XSP = SPX/10 (≈ SPY × 1.003 because of SPY's dividend drag). Fetch its own chain
+                # around a first guess, take the option-implied XSP spot from put-call parity, and
+                # map the SPY-scale read levels onto XSP strikes with the LIVE ratio.
+                nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy * 1.003, now.strftime("%y%m%d"),
+                                            underlying="XSP")
+            else:
+                nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy, now.strftime("%y%m%d"))
         except Exception as e:  # noqa: BLE001
-            return _finish("rejected", f"NBBO fetch failed: {e}")
-        rows = {r["strike"]: r for r in (nb.get("puts" if put else "calls") or [])}
-        s_, l_ = rows.get(float(short)), rows.get(float(long_))
+            return _finish("rejected", f"NBBO fetch failed ({inst}): {e}")
+        calls = {r["strike"]: r for r in (nb.get("calls") or [])}
+        puts = {r["strike"]: r for r in (nb.get("puts") or [])}
+        # option-implied spot of the traded instrument (put-call parity, strike nearest spot)
+        implied = None
+        guess = spot_spy * (1.003 if inst == "XSP" else 1.0)
+        for k in sorted(set(calls) & set(puts), key=lambda k: abs(k - guess))[:1]:
+            implied = k + calls[k]["mid"] - puts[k]["mid"]
+        if implied is None:
+            return _finish("rejected", f"{inst} chain has no two-sided ATM quotes")
+        rec["nbbo_implied_spot"] = round(implied, 2)
+        if inst == "XSP":
+            ratio = implied / spot_spy
+            if not (0.99 < ratio < 1.02):
+                return _finish("rejected", f"XSP/SPY ratio {ratio:.4f} implausible (feed out of sync)")
+            rec["xsp_spy_ratio"] = round(ratio, 5)
+            # map the SPY-scale short to the XSP grid, rounding AWAY from spot (never nearer)
+            ks = short * ratio
+            short_i = float(math.floor(ks)) if put else float(math.ceil(ks))
+            long_i = short_i - width if put else short_i + width
+        else:
+            if abs(implied / spot_spy - 1) > 0.0015:
+                return _finish("rejected", f"bar spot {spot_spy:.2f} vs option-implied {implied:.2f}: feed out of sync")
+            short_i, long_i = float(short), float(long_)
+        rec.update(order_short=short_i, order_long=long_i)
+        rows = puts if put else calls
+        s_, l_ = rows.get(float(short_i)), rows.get(float(long_i))
         if not s_ or not l_:
-            return _finish("rejected", f"unquotable: {short:.0f}/{long_:.0f} not both quoted")
-        # NBBO-implied spot sanity (put-call parity at the ATM strike) vs the bar spot
-        try:
-            calls = {r["strike"]: r for r in (nb.get("calls") or [])}
-            puts = {r["strike"]: r for r in (nb.get("puts") or [])}
-            atm = float(round(spot_spy))
-            if atm in calls and atm in puts:
-                implied = atm + calls[atm]["mid"] - puts[atm]["mid"]
-                rec["nbbo_implied_spy"] = round(implied, 2)
-                if abs(implied / spot_spy - 1) > 0.0015:
-                    return _finish("rejected", f"bar spot {spot_spy:.2f} vs option-implied {implied:.2f}: feed out of sync")
-        except Exception:  # noqa: BLE001
-            pass
+            return _finish("rejected", f"unquotable: {inst} {short_i:.0f}/{long_i:.0f} not both quoted")
         exec_credit = round(s_["bid"] - l_["ask"], 2)          # $/share
         floor = width * settings.CALL_FLOOR_PCT_OF_WIDTH / 100.0
         rec.update(short_bid=s_["bid"], short_ask=s_["ask"], long_bid=l_["bid"], long_ask=l_["ask"],
                    exec_credit_ct=round(exec_credit * 100, 2), floor_ct=round(floor * 100, 2),
                    max_loss_ct=round((width - exec_credit) * 100, 2))
         if exec_credit < floor:
-            return _finish("rejected", f"executable credit ${exec_credit * 100:.0f}/ct < floor ${floor * 100:.0f}/ct at {short:.0f}/{long_:.0f}")
+            return _finish("rejected", f"executable credit ${exec_credit * 100:.0f}/ct < floor ${floor * 100:.0f}/ct at {inst} {short_i:.0f}/{long_i:.0f}")
         if dry_run:
             return _finish("dry_run", push=False)
 
@@ -293,6 +315,11 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
         trade_no = orch._next_trade_no(now)
         pt, _sizing = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
         pt.contracts = 1                                  # pre-registered: ONE contract, always
+        if inst != "SPY":
+            pt.instrument = inst                          # ledger truth: what was actually traded
+            pt.order_underlying = inst
+            pt.order_short_strike = float(short_i)
+            pt.order_long_strike = float(long_i)
         pt.entry_mid_quote = round(exec_credit * 100, 2)
         pt.breakeven_dist_pct = round(100.0 * abs(S0 - short * 10.0) / S0, 3)
         pt.proj_high_at_signal = getattr(getattr(orch.state, "regime", None), "proj_high", None)

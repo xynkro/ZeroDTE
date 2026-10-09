@@ -3358,9 +3358,14 @@ class Orchestrator:
                 spx_short_strike=pt.short_strike,
                 spx_credit_dollars=pt.estimated_credit,
             )
+            _und = "SPY"
+            if pt.order_underlying and pt.order_short_strike is not None and pt.order_long_strike is not None:
+                _und = pt.order_underlying                      # Config L: explicit broker legs (XSP)
+                params["short_strike"] = float(pt.order_short_strike)
+                params["long_strike"] = float(pt.order_long_strike)
             today_str = datetime.now(ET).strftime("%Y-%m-%d")
             result = await self.alpaca_trader.place_credit_spread(
-                underlying="SPY",
+                underlying=_und,
                 expiry=today_str,
                 side=params["side_type"],
                 short_strike=params["short_strike"],
@@ -3670,11 +3675,16 @@ class Orchestrator:
                     spx_short_strike=pt.short_strike,
                     spx_credit_dollars=pt.estimated_credit,
                 )
+                _und = "SPY"
+                if pt.order_underlying and pt.order_short_strike is not None and pt.order_long_strike is not None:
+                    _und = pt.order_underlying                  # Config L: reverse the SAME broker legs
+                    params["short_strike"] = float(pt.order_short_strike)
+                    params["long_strike"] = float(pt.order_long_strike)
                 today_str = now_et.strftime("%Y-%m-%d")
 
                 async def _try_close():
                     return await self.alpaca_trader.close_credit_spread(
-                        underlying="SPY",
+                        underlying=_und,
                         expiry=today_str,
                         side=params["side_type"],
                         short_strike=params["short_strike"],

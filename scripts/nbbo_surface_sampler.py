@@ -91,6 +91,29 @@ try:
         row["quote_age_sec"] = round((dt.datetime.now(dt.timezone.utc) - _newest).total_seconds(), 1)
 except Exception:  # noqa: BLE001
     pass
+# XSP (SPX/10, cash-settled) — the probe's instrument from 2026-10-12: full per-leg chain + implied spot
+try:
+    xs = {}
+    for typ in ("put", "call"):
+        r = requests.get("https://data.alpaca.markets/v1beta1/options/snapshots/XSP", headers=H, timeout=15,
+                         params={"feed": FEED, "type": typ, "expiration_date": exp,
+                                 "strike_price_gte": round(spot * 1.003 * 0.975), "strike_price_lte": round(spot * 1.003 * 1.025), "limit": 1000})
+        if r.status_code != 200:
+            continue
+        for sym, s in (r.json().get("snapshots") or {}).items():
+            m = re.match(r"XSP(\d{6})([CP])(\d{8})", sym)
+            if not m: continue
+            q = s.get("latestQuote") or {}
+            if q.get("bp") is None or q.get("ap") is None: continue
+            xs[(typ, int(m.group(3)) / 1000.0)] = [q["bp"], q["ap"]]
+    row["legs_xsp"] = {typ: {str(k): v for (t_, k), v in sorted(xs.items()) if t_ == typ} for typ in ("put", "call")}
+    ks = sorted({k for (_, k) in xs}, key=lambda k: abs(k - spot * 1.003))
+    for k in ks[:1]:
+        if ("put", k) in xs and ("call", k) in xs:
+            c, p_ = xs[("call", k)], xs[("put", k)]
+            row["xsp_implied_spot"] = round(k + (c[0] + c[1]) / 2 - (p_[0] + p_[1]) / 2, 3)
+except Exception as _e:  # noqa: BLE001
+    row["legs_xsp_error"] = str(_e)[:120]
 with open(OUT, "a") as f:
     f.write(json.dumps(row) + "\n")
 print(f"{row['ts']} spot {spot} quotes {len(snaps)} atm_straddle {row['atm_straddle_mid']} "

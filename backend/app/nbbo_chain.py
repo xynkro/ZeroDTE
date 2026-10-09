@@ -38,7 +38,8 @@ def _fresh(ts: str | None, now_ts: float, max_stale_sec: float) -> bool:
 
 async def fetch_chain_nbbo(trader, spot_spy: float, expiry_yymmdd: str,
                            span_pct: float = 0.035,
-                           max_stale_sec: float = 300.0) -> dict:
+                           max_stale_sec: float = 300.0,
+                           underlying: str = "SPY") -> dict:
     """Pull a fresh two-sided NBBO chain around spot for today's SPY expiry.
 
     Returns {"calls": [{strike,bid,ask,mid}...], "puts": [...]} — only strikes
@@ -49,8 +50,8 @@ async def fetch_chain_nbbo(trader, spot_spy: float, expiry_yymmdd: str,
     strikes = list(range(lo, hi + 1))
     syms: dict[str, tuple[str, int]] = {}
     for k in strikes:
-        syms[trader._occ_symbol("SPY", expiry_yymmdd, "call", float(k))] = ("calls", k)
-        syms[trader._occ_symbol("SPY", expiry_yymmdd, "put", float(k))] = ("puts", k)
+        syms[trader._occ_symbol(underlying, expiry_yymmdd, "call", float(k))] = ("calls", k)
+        syms[trader._occ_symbol(underlying, expiry_yymmdd, "put", float(k))] = ("puts", k)
     quotes = await trader.get_option_quotes(list(syms))
     now_ts = datetime.now(timezone.utc).timestamp()
     out: dict = {"calls": [], "puts": []}

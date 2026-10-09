@@ -265,6 +265,7 @@ class Settings:
     CALL_SKIP_HIGH_IMPACT_EVENTS: bool = _b("CALL_SKIP_HIGH_IMPACT_EVENTS", True)  # scan-sourced only
     CALL_MAX_TRADES_PER_DAY: int = _i("CALL_MAX_TRADES_PER_DAY", 3)
     CALL_DAY_HALT_USD: float = _f("CALL_DAY_HALT_USD", 480.0)      # 5% of $9,572 — pre-registered day line
+    PROBE_UNDERLYING: str = os.getenv("PROBE_UNDERLYING", "SPY").upper()   # "SPY" | "XSP" (SPX/10, cash-settled, European)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

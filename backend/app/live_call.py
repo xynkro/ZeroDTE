@@ -174,8 +174,11 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
 
     if rec["lean"] == "neutral":
         return _finish("no_trade")
-    if rec["conf"] < settings.CALL_MIN_CONF:
-        return _finish("rejected", f"confidence {rec['conf']:.2f} < {settings.CALL_MIN_CONF:.2f}")
+    _min_conf = settings.CALL_MIN_CONF
+    if settings.CALL_AM_MIN_CONF > 0 and (now.hour * 60 + now.minute) < 12 * 60:
+        _min_conf = max(_min_conf, settings.CALL_AM_MIN_CONF)   # mornings must earn it (PM beat AM in every tested variant)
+    if rec["conf"] < _min_conf:
+        return _finish("rejected", f"confidence {rec['conf']:.2f} < {_min_conf:.2f}{' (AM bar)' if _min_conf != settings.CALL_MIN_CONF else ''}")
     if now.weekday() > 4:
         return _finish("rejected", "weekend")
     mins = now.hour * 60 + now.minute
@@ -227,6 +230,10 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
         return _finish("rejected", f"put short {short:.0f} not OTM vs SPY {spot_spy:.2f}")
     if (not put) and short <= spot_spy + 0.5:
         return _finish("rejected", f"call short {short:.0f} not OTM vs SPY {spot_spy:.2f}")
+    dist_pct = 100.0 * abs(spot_spy - short) / spot_spy
+    rec["dist_pct"] = round(dist_pct, 3)
+    if settings.CALL_MIN_DIST_PCT > 0 and dist_pct < settings.CALL_MIN_DIST_PCT - 1e-9:
+        return _finish("rejected", f"invalidation only {dist_pct:.2f}% from spot (< {settings.CALL_MIN_DIST_PCT:.2f}% minimum) — too tight to pay the touch risk")
     long_ = short - width if put else short + width
     rec.update(short=short, long=long_, width=width)
 

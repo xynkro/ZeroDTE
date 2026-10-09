@@ -266,6 +266,8 @@ class Settings:
     CALL_MAX_TRADES_PER_DAY: int = _i("CALL_MAX_TRADES_PER_DAY", 3)
     CALL_DAY_HALT_USD: float = _f("CALL_DAY_HALT_USD", 480.0)      # 5% of $9,572 — pre-registered day line
     PROBE_UNDERLYING: str = os.getenv("PROBE_UNDERLYING", "SPY").upper()   # "SPY" | "XSP" (SPX/10, cash-settled, European)
+    CALL_MIN_DIST_PCT: float = _f("CALL_MIN_DIST_PCT", 0.0)        # invalidation must be ≥ this % from spot (0 = off)
+    CALL_AM_MIN_CONF: float = _f("CALL_AM_MIN_CONF", 0.0)           # before 12:00 ET require this confidence instead (0 = same as CALL_MIN_CONF)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.

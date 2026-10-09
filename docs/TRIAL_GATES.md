@@ -50,6 +50,28 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-10-10 — CONFIG L v2 (instrument + geometry), decided by WaveZero at Caspar's instruction
+  "you decide which will make us money". Sample so far: 0 trades (every read refused by the $20 floor).**
+  Evidence: the real-quote grid on the probe's own read windows (4 sessions Oct 6–9, $2-wide, stop ≈
+  touch): the v1 geometry (floor $20, TP 40%, any distance, 09:45+13:00) is −$1.5 to −$7 per trade
+  before any read skill because strikes that pay $20 sit 0.1–0.2% from spot and get touched 29–41%
+  of the time (breakeven < 29%). Every cell with a $10–15 floor, ≥0.25–0.30% distance and TP 50–60%
+  on the 13:00/14:00 windows was positive (+$8 to +$11/trade, 0 touches in the sample); AM entries
+  were negative in every variant. Sample is 4 sessions: the numbers are direction, not proof.
+  CHANGES (effective Mon 2026-10-12, 09:30 ET):
+    • Instrument: XSP (SPX/10, cash-settled, European — no assignment, no Alpaca 15:45 sweep),
+      1 contract, $2 wide; broker legs carried on the trade and reversed exactly at exit; engine
+      marks on SPY×10 bars; read levels mapped to XSP strikes with the live option-implied ratio,
+      rounded AWAY from spot. All Telegram levels in SPX points.
+    • Executable-credit floor: $12/ct (6% of width; Caspar's 10% rule relaxed by this entry).
+    • Minimum distance: the invalidation must be ≥ 0.30% from spot (else refused as too tight).
+    • Take-profit 60% of credit (was 40%); stop −100% of credit, 15:25 ET close unchanged.
+    • Read slots 09:45, 13:00, 14:00 ET; the 09:45 read needs confidence ≥ 0.70, the PM reads ≥ 0.55.
+    • Unchanged: ONE open position, ≤ 3 trades/day, day halt −$480, drawdown halt 15%.
+  GATES unchanged from the Config L entry (n = 25 traded reads or 14 sessions, whichever is later).
+  The v1 reads (Oct 9, all refused) stay in the journal as advisory rows; the scored sample starts
+  with the first XSP fill.
+
 - **2026-10-09 — CONFIG L: the LIVE-READ PROBE (Caspar's option 2). PRE-REGISTERED before the
   first trade.** Purpose: test whether discretionary intraday reads — Caspar's, Claude's in-session,
   or the engine's scheduled Claude read (claude-sonnet-5, slots 09:45 and 13:00 ET) — make money

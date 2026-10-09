@@ -1,0 +1,10 @@
+[Unit]
+Description=Config L scoreboard daily after the US close (05:25 SGT = 17:25 EDT / 16:25 EST)
+
+[Timer]
+OnCalendar=Tue..Sat 05:25
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

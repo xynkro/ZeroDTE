@@ -79,7 +79,7 @@ def build_snapshot() -> dict:
         v = scan_rows[-1]["verdict"]
         scan = {"date": scan_rows[-1].get("date"),
                 "regime_read": v.get("regime_read"),
-                "direction_lean": v.get("direction_lean"),
+                "lean": v.get("lean"),
                 "confidence": v.get("confidence"),
                 "would_trade_band": v.get("would_trade_band")}
     return {

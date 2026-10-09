@@ -367,6 +367,25 @@ async def paper_trades():
     return [t.model_dump() for t in orch.paper_trades]
 
 
+@app.post("/api/call", dependencies=[Depends(require_write_token)])
+async def api_call(body: dict = Body(...)):
+    """Config L live-read probe: a read → ONE defined-risk paper spread, managed by the engine.
+    Body: {lean: up|down|neutral, conf: 0-1, invalidation?: SPY px, level?: SPY px, short?: SPY strike,
+           side?: sell_put_cs|sell_call_cs, note?, source?, dry_run?: bool} — always ONE contract"""
+    from .live_call import submit_call
+    keys = ("lean", "conf", "side", "short", "level", "invalidation", "note", "source", "dry_run")
+    kw = {k: body.get(k) for k in keys if body.get(k) is not None}
+    if "lean" not in kw or "conf" not in kw:
+        raise HTTPException(status_code=400, detail="lean and conf are required")
+    return await submit_call(orch, **kw)
+
+
+@app.get("/api/calls")
+async def api_calls(limit: int = 50):
+    from .live_call import load_calls
+    return load_calls()[-max(1, min(limit, 500)):]
+
+
 @app.post("/api/telegram/eod_test", dependencies=[Depends(require_write_token)])
 async def telegram_eod_test(date: str | None = None):
     """Manually fire an EOD summary for a given date (defaults to yesterday's

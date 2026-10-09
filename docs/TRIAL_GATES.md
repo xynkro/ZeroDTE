@@ -50,6 +50,34 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-10-09 — CONFIG L: the LIVE-READ PROBE (Caspar's option 2). PRE-REGISTERED before the
+  first trade.** Purpose: test whether discretionary intraday reads — Caspar's, Claude's in-session,
+  or the engine's scheduled Claude read (claude-sonnet-5, slots 09:45 and 13:00 ET) — make money
+  on PAPER with real fills, after the mechanical configs (E/F, MEIC) did not. Caspar's own
+  benchmark: a 28-session winning streak ended by one unscheduled geopolitical shock; the design
+  goal is therefore that one bad day cannot take the month.
+  Mechanics (backend/app/live_call.py, POST /api/call): a read = lean (up/down/neutral) +
+  confidence + invalidation level (SPY). Non-neutral reads with confidence ≥ 0.55 become ONE SPY
+  0DTE credit spread, short strike AT the invalidation level, $2 wide, executable credit
+  (short.bid − long.ask, live NBBO) ≥ 10% of width ($0.20/share), else no trade. ONE contract,
+  ONE open position, no entry after 15:00 ET. Managed by the existing engine: NBBO entry ladder,
+  real-fill capture, TP 40% of credit, breach stop at the short strike, forced close 15:25 ET
+  (ahead of Alpaca's 15:45 expiry sweep). Scan-sourced reads stand aside on high-impact event days;
+  manual reads may override (journaled as such). Every read is journaled in live_calls.jsonl and
+  scored twice: direction vs the session close, and broker dollars (scripts/score_calls.py, posted
+  to Telegram after each close). Max loss per trade ≈ $180; worst plausible day ≈ −$180 (1.9%).
+  Account at start: $9,482.
+  GATES (n = 25 scored reads that traded, or 14 sessions, whichever is later):
+    RETIRE: mean real $/trade ≤ 0, OR direction hit rate < 50%, OR any day ≤ −$480 (5%),
+            OR drawdown > 15% at any time (HALT immediately).
+    INVESTIGATE: mean > 0 but < 50% of credit captured on average.
+    PASS (→ IBKR discussion, Caspar's deliberate act): mean real $/trade > 0 with session-bootstrap
+          P(mean > 0) ≥ 0.90, ≥ 70% of traded sessions green, worst session ≥ −$480, and
+          direction hit rate ≥ 55%. "Green every day" is NOT a gate: a probe that must win 14/14 is
+          selected for by luck, not edge; the gate that protects the 28-day streak is the worst-day
+          bound, not the streak itself.
+  Changes to any of the above require a new entry here BEFORE they take effect.
+
 - **2026-10-06 — CONFIG F RETIRED at n=14 (−$243 real); MEASUREMENT-ONLY phase pre-registered.**
   Verdict from the real-credit evaluation (docs/DECISION_2026-10-06_real_credit_evaluation.md):
   the n=25 retire gate (mean ≤ $0) is already unreachable — the next 11 trades would have to

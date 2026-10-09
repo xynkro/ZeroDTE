@@ -29,23 +29,87 @@ log = logging.getLogger(__name__)
 API_URL = "https://api.anthropic.com/v1/messages"
 SCAN_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "claude_scan.jsonl")
 
-SYSTEM = """You are the pre-market risk assessor for a deterministic 0DTE SPX \
-premium-selling system (WaveZero). At ~10:00 ET it may sell ONE defined-risk SPY \
-credit spread at the Bollinger-band extreme, but only on days where morning realized \
-vol is above its running median (vol released) and the market pays >=10% of width. \
-Your job is NOT to pick trades. It is to flag the risk context that realized-vol \
-statistics cannot see: scheduled macro events later today (FOMC/CPI/NFP/auctions), \
-overnight or geopolitical developments, index-level regime fragility, and \
-coil-before-event conditions. Be calibrated and terse. You are being SCORED against \
-realized outcomes; overconfidence and vagueness both count against you.
+SYSTEM = """You are the intraday read for WaveZero, a 0DTE SPX/SPY premium-selling desk. \
+You are given live context: today's bars (open, high, low, last, VWAP, last-hour change), the \
+prior close, the market-implied move to the close from the ATM straddle, executable 0DTE spread \
+credits at 0.2/0.3/0.5% OTM on both sides, dealer gamma walls when available, and today's \
+scheduled macro events. Produce ONE calibrated read of where SPY is more likely to close \
+relative to now, and the price at which that read is WRONG. If the read is non-neutral with \
+confidence >= the desk threshold, the desk sells ONE defined-risk credit spread with its short \
+strike AT your invalidation level (a put spread below for lean=up, a call spread above for \
+lean=down), managed by rules (take-profit, breach stop, 15:25 ET close). So: the invalidation \
+must be a level you would bet is NOT touched before the close, typically 0.2-0.6% away; nearer \
+pays more and gets touched more. Say neutral when the straddle-implied move is not favourable to \
+one side or an event lands inside the session. You are SCORED on direction vs the close and on \
+dollars; overconfidence and vagueness both count against you. Never trade the news; price it.
 
 Return STRICT JSON only, exactly this schema:
-{"regime_read": "calm|normal|trend_risk|event_risk",
- "direction_lean": "up|down|neutral",
+{"lean": "up|down|neutral",
  "confidence": 0.0,
+ "level": 0.0,
+ "invalidation": 0.0,
+ "regime_read": "calm|normal|trend_risk|event_risk",
  "event_risks": ["..."],
- "would_trade_band": true,
- "note": "<=200 chars"}"""
+ "note": "<=200 chars: the one reason for the lean and the one thing that breaks it"}
+(level and invalidation are SPY prices; invalidation below spot for up, above for down.)"""
+
+
+async def build_context_async(orch) -> dict:
+    """build_context + live option surface (ATM straddle, OTM credits) and today's bar
+    structure. Every addition is best-effort; a failure leaves the base context intact."""
+    ctx = build_context(orch)
+    try:
+        from datetime import datetime
+        from .orchestrator import ET  # type: ignore
+        buf = list(orch.predictor._buffer)
+        now = datetime.now(ET)
+        date = now.strftime("%Y-%m-%d")
+        def _t(b):
+            return b.time.astimezone(ET) if b.time.tzinfo else b.time.replace(tzinfo=ET)
+        rth = [b for b in buf if (9, 30) <= (_t(b).hour, _t(b).minute) < (16, 0)]
+        today = [b for b in rth if _t(b).strftime("%Y-%m-%d") == date]
+        prev = [b for b in rth if _t(b).strftime("%Y-%m-%d") < date]
+        if today:
+            o = today[0].open; last = today[-1].close
+            vol = [getattr(b, "volume", 0) or 0 for b in today]
+            vw = (sum(((b.high + b.low + b.close) / 3.0) * v for b, v in zip(today, vol)) / sum(vol)) if sum(vol) > 0 \
+                 else sum((b.high + b.low + b.close) / 3.0 for b in today) / len(today)
+            lh = today[-12:]
+            ctx["today"] = {"open": round(o, 1), "high": round(max(b.high for b in today), 1),
+                            "low": round(min(b.low for b in today), 1), "last": round(last, 1),
+                            "vwap": round(vw, 1), "bars": len(today),
+                            "from_open_pct": round(100 * (last / o - 1), 3),
+                            "last_hour_pct": round(100 * (last / lh[0].open - 1), 3) if lh else None,
+                            "minutes_to_close": max(0, 16 * 60 - (now.hour * 60 + now.minute))}
+            if prev:
+                ctx["prev_close"] = round(prev[-1].close, 1)
+                ctx["gap_pct"] = round(100 * (o / prev[-1].close - 1), 3)
+        if getattr(orch, "alpaca_trader", None) is not None and today:
+            from .nbbo_chain import fetch_chain_nbbo
+            spot_spy = today[-1].close / 10.0
+            nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy, now.strftime("%y%m%d"))
+            puts = {r["strike"]: r for r in nb.get("puts") or []}
+            calls = {r["strike"]: r for r in nb.get("calls") or []}
+            atm = float(round(spot_spy))
+            strad = None
+            if atm in puts and atm in calls:
+                strad = round(puts[atm]["mid"] + calls[atm]["mid"], 2)
+            surf = {}
+            for pct in (0.2, 0.3, 0.5):
+                kp = float(round(spot_spy * (1 - pct / 100))); kc = float(round(spot_spy * (1 + pct / 100)))
+                from .config import settings as _settings
+                w = float(_settings.SPY_WING_DOLLARS)
+                sp, lp = puts.get(kp), puts.get(kp - w); sc, lc = calls.get(kc), calls.get(kc + w)
+                surf[f"{pct}%"] = {"put": {"short": kp, "bid": sp["bid"] if sp else None,
+                                           "spread_credit": round(sp["bid"] - lp["ask"], 2) if (sp and lp) else None},
+                                   "call": {"short": kc, "bid": sc["bid"] if sc else None,
+                                            "spread_credit": round(sc["bid"] - lc["ask"], 2) if (sc and lc) else None}}
+            ctx["options_0dte"] = {"spot_spy": round(spot_spy, 2), "atm_straddle_mid": strad,
+                                   "implied_move_pct_to_close": round(100 * strad / spot_spy, 3) if strad else None,
+                                   "spread_width": w, "surface": surf}
+    except Exception as e:  # noqa: BLE001
+        ctx["context_note"] = f"live surface unavailable: {e}"
+    return ctx
 
 
 def build_context(orch) -> dict:
@@ -81,10 +145,19 @@ def build_context(orch) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:
-        evs = [e for e in (orch.macro._calendar or [])
-               if (e.get("impact") or "").lower() in ("high", "medium")][:8]
+        from datetime import datetime as _dt
+        from .orchestrator import ET as _ET  # type: ignore
+        _today = _dt.now(_ET).date()
+        evs = []
+        for e in (orch.macro._calendar or []):
+            if (e.get("impact") or "").lower() not in ("high", "medium"):
+                continue
+            t = orch.macro._parse_event_time(e.get("time") or "")
+            if t is not None and t.date() == _today:
+                evs.append({**e, "time_et": t.strftime("%H:%M")})
+        evs = evs[:8]
         ctx["macro_events_today"] = [
-            {"event": e.get("event"), "time_utc": e.get("time"), "impact": e.get("impact")}
+            {"event": e.get("event"), "time_et": e.get("time_et"), "impact": e.get("impact")}
             for e in evs]
     except Exception:  # noqa: BLE001
         ctx["macro_events_today"] = "unavailable (calendar feed degraded)"
@@ -97,7 +170,7 @@ async def run_scan(context: dict, api_key: str, model: str,
     import httpx
     body = {
         "model": model,
-        "max_tokens": 400,
+        "max_tokens": 1200,
         "temperature": 0,
         "system": SYSTEM,
         "messages": [{

@@ -255,6 +255,17 @@ class Settings:
     # getUpdates POLLER conflicts (409) — so it's the poller that gets the flag.
     TELEGRAM_POLLER_ENABLED: bool = _b("TELEGRAM_POLLER_ENABLED", True)
 
+    # ── Config L: live-read probe (pre-registered 2026-10-09) ──
+    CALL_AUTO_SUBMIT: bool = _b("CALL_AUTO_SUBMIT", False)        # scan reads → one-lot paper trade
+    CALL_MIN_CONF: float = _f("CALL_MIN_CONF", 0.55)
+    CALL_SLOTS: str = os.getenv("CALL_SLOTS", "09:45")              # read slots ET (10-min windows)
+    CALL_MAX_OPEN: int = _i("CALL_MAX_OPEN", 1)
+    CALL_FLOOR_PCT_OF_WIDTH: float = _f("CALL_FLOOR_PCT_OF_WIDTH", 10.0)   # Caspar's 10%-of-width rule
+    CALL_LAST_ENTRY_ET: str = os.getenv("CALL_LAST_ENTRY_ET", "15:00")
+    CALL_SKIP_HIGH_IMPACT_EVENTS: bool = _b("CALL_SKIP_HIGH_IMPACT_EVENTS", True)  # scan-sourced only
+    CALL_MAX_TRADES_PER_DAY: int = _i("CALL_MAX_TRADES_PER_DAY", 3)
+    CALL_DAY_HALT_USD: float = _f("CALL_DAY_HALT_USD", 480.0)      # 5% of $9,572 — pre-registered day line
+
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──
     # The original pivot used a power-law underlying-move proxy for spread P&L.
     # That proxy booked a "win" on a 0.008% favorable tick (median 1 bar) and so

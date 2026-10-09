@@ -1,0 +1,14 @@
+[Unit]
+Description=WaveZero Config L scoreboard → Telegram (one shot, after the close)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__HOME__/Trading/ZeroDTE-Wave
+Environment=HOME=__HOME__
+Environment=PYTHONPATH=__HOME__/Trading/ZeroDTE-Wave
+Environment=TZ=Asia/Singapore
+ExecStart=__HOME__/Trading/ZeroDTE-Wave/.venv/bin/python scripts/score_calls.py --telegram
+StandardOutput=append:/var/log/wavezero/callscore.log
+StandardError=append:/var/log/wavezero/callscore.log

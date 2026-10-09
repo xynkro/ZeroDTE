@@ -1,0 +1,306 @@
+"""Config L — the LIVE-READ PROBE (pre-registered 2026-10-09, docs/TRIAL_GATES.md).
+
+A read (lean / level / invalidation / confidence) — from Caspar, from Claude in-session, or
+from the scheduled scan — becomes ONE defined-risk SPY 0DTE credit spread on the PAPER account,
+executed and managed by the SAME machinery as every prior trade: marketable-limit entry at the
+executable credit, real-fill capture, TP / breach exits, the 15:25 ET time stop, the durable
+ledger. Every read is journaled (data/live_calls.jsonl) and scored twice: direction vs the
+close, dollars vs broker fills.
+
+Rules enforced here (the pre-registration): paper endpoint only; trading enabled and not
+halted; live Alpaca bars no older than 7 minutes; ONE contract, ONE open position, at most
+CALL_MAX_TRADES_PER_DAY entries, no entry after CALL_LAST_ENTRY_ET, day halt at CALL_DAY_HALT_USD;
+$2-wide spread (settings.SPY_WING_DOLLARS must equal the pre-registered width); executable
+credit (short.bid − long.ask, live NBBO) ≥ CALL_FLOOR_PCT_OF_WIDTH of the width; the short
+strike sits AT the read's invalidation level. Neutral reads trade nothing.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import math
+import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from .config import settings
+from . import telegram as tg
+
+log = logging.getLogger(__name__)
+ET = ZoneInfo("America/New_York")
+SG = ZoneInfo("Asia/Singapore")
+CALLS_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "live_calls.jsonl")
+PREREG_WIDTH_SPY = 2.0          # docs/TRIAL_GATES.md 2026-10-09 — change there first
+MAX_BAR_AGE_SEC = 420
+_LOCK = asyncio.Lock()          # one submit at a time: the open-position check must not race
+
+
+def append_call(rec: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CALLS_PATH), exist_ok=True)
+        with open(CALLS_PATH, "a") as f:
+            f.write(json.dumps(rec, default=str) + "\n")
+    except Exception as e:  # noqa: BLE001
+        log.warning("live_calls append failed: %s", e)
+
+
+def load_calls() -> list[dict]:
+    try:
+        with open(CALLS_PATH) as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+    except Exception as e:  # noqa: BLE001
+        log.warning("live_calls load failed: %s", e)
+        return []
+
+
+def _hm(s: str) -> int:
+    h, m = s.strip().split(":")
+    return int(h) * 60 + int(m)
+
+
+def _f(x, default=None):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def format_read(rec: dict) -> str:
+    """Plain-text Telegram message for one read (and what was done about it). None-safe."""
+    lean = str(rec.get("lean", "neutral")).upper()
+    conf = _f(rec.get("conf"))
+    spx = rec.get("spot_spx"); spy = rec.get("spot_spy")
+    head = (f"📣 WaveZero READ · {rec.get('date')} {rec.get('time_et', '?')} ET / {rec.get('time_sgt', '?')} SGT · {rec.get('source', '?')}\n"
+            f"SPX {spx if spx is not None else '?'} (SPY {spy if spy is not None else '?'}) · lean {lean}"
+            + (f" · conf {conf:.2f}" if conf is not None else ""))
+    lines = [head]
+    inv = _f(rec.get("invalidation")); lvl = _f(rec.get("level"))
+    if lean in ("UP", "DOWN") and (lvl is not None or inv is not None):
+        lines.append((f"level {lvl:g} · " if lvl is not None else "")
+                     + (f"wrong if SPY {'<' if lean == 'UP' else '>'} {inv:g}" if inv is not None else ""))
+    if rec.get("note"):
+        lines.append(str(rec["note"])[:300])
+    d = rec.get("decision")
+    if d in ("submitted", "dry_run") and rec.get("short") is not None:
+        kind = "put" if rec.get("side") == "sell_put_cs" else "call"
+        lines.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
+                     + f"sell SPY {rec['short']:.0f}/{rec['long']:.0f} {kind} spread ×1 · exec credit "
+                     f"${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss "
+                     f"${_f(rec.get('max_loss_ct'), 0):.0f}/ct · TP {settings.DIRECTIONAL_TP_TARGET:.0f}% / stop at −100% credit "
+                     f"(≈ short {rec['short']:.0f} touched) / {rec.get('time_stop_et', '15:25')} ET close")
+    elif d == "no_trade":
+        lines.append("→ no trade (neutral read)")
+    elif d == "advisory_only":
+        lines.append("→ advisory only (auto-submit off)")
+    elif d in ("rejected", "broker_rejected", "error"):
+        lines.append(f"→ NOT traded: {rec.get('reason')}")
+    return "\n".join(lines)
+
+
+def _push(orch, text: str) -> None:
+    """Telegram, off the event loop, routed like every other ZeroDTE ping."""
+    try:
+        cid, tid = tg._route_zero_dte()
+        orch._tg(tg.send, text, chat_id=cid, message_thread_id=tid)
+    except Exception as e:  # noqa: BLE001
+        log.warning("live_call telegram failed: %s", e)
+
+
+def _today_broker_pnl(orch, date: str) -> float:
+    tot = 0.0
+    for t in orch.paper_trades:
+        if str(t.fired_at)[:10] == date and t.closed and t.broker_realized_pnl is not None:
+            tot += float(t.broker_realized_pnl)
+    return tot
+
+
+async def submit_call(orch, *, lean: str, conf, side: str | None = None,
+                      short=None, level=None, invalidation=None, note: str = "",
+                      source: str = "manual", dry_run: bool = False, **_ignored) -> dict:
+    now = datetime.now(ET)
+    date = now.strftime("%Y-%m-%d")
+    ts_et = f"{(16 * 60 - settings.WAVE_TIME_STOP_MIN_BEFORE_CLOSE) // 60}:{(16 * 60 - settings.WAVE_TIME_STOP_MIN_BEFORE_CLOSE) % 60:02d}"
+    rec: dict = {
+        "ts": datetime.now(timezone.utc).isoformat(), "date": date,
+        "time_et": now.strftime("%H:%M"), "time_sgt": now.astimezone(SG).strftime("%H:%M"),
+        "source": source, "lean": str(lean or "neutral").strip().lower(), "conf": _f(conf, 0.0),
+        "level": _f(level), "invalidation": _f(invalidation), "note": str(note or "")[:400],
+        "time_stop_et": ts_et, "dry_run": bool(dry_run),
+    }
+
+    def _finish(decision: str, reason: str | None = None, push: bool = True) -> dict:
+        rec["decision"] = decision
+        if reason:
+            rec["reason"] = reason
+        append_call(rec)
+        if push and not dry_run:
+            try:
+                _push(orch, format_read(rec))
+            except Exception as e:  # noqa: BLE001
+                log.warning("format/push failed: %s", e)
+        log.info("live_call %s: %s", decision, json.dumps(rec, default=str)[:300])
+        return rec
+
+    if rec["lean"] not in ("up", "down", "neutral"):
+        return _finish("rejected", f"bad lean {lean!r} (up|down|neutral)")
+
+    # ── spot from the engine's own bars (SPX scale = SPY × 10), must be LIVE ──
+    buf = list(orch.predictor._buffer)
+    if not buf:
+        return _finish("rejected", "no bars in the engine yet")
+    last = buf[-1]
+    lt = last.time.astimezone(ET) if last.time.tzinfo else last.time.replace(tzinfo=ET)
+    S0 = float(last.close)
+    spot_spy = S0 / 10.0
+    rec["spot_spx"] = round(S0, 1)
+    rec["spot_spy"] = round(spot_spy, 2)
+    rec["bar_age_sec"] = round((now - lt).total_seconds())
+
+    if rec["lean"] == "neutral":
+        return _finish("no_trade")
+    if rec["conf"] < settings.CALL_MIN_CONF:
+        return _finish("rejected", f"confidence {rec['conf']:.2f} < {settings.CALL_MIN_CONF:.2f}")
+    if now.weekday() > 4:
+        return _finish("rejected", "weekend")
+    mins = now.hour * 60 + now.minute
+    if mins < _hm("09:35") or mins > _hm(settings.CALL_LAST_ENTRY_ET):
+        return _finish("rejected", f"outside entry window 09:35–{settings.CALL_LAST_ENTRY_ET} ET")
+    if rec["bar_age_sec"] > MAX_BAR_AGE_SEC:
+        return _finish("rejected", f"last bar is {rec['bar_age_sec']}s old (feed stale)")
+    if getattr(orch.state, "feed_type", None) != "alpaca":
+        return _finish("rejected", f"feed is {getattr(orch.state, 'feed_type', None)}, not alpaca")
+    if "paper-api" not in (settings.ALPACA_BASE_URL or ""):
+        return _finish("rejected", "ALPACA_BASE_URL is not the paper endpoint — refusing")
+    if settings.PAPER_BROKER != "alpaca" or getattr(orch, "alpaca_trader", None) is None:
+        return _finish("rejected", "paper broker not armed (PAPER_BROKER != alpaca)")
+    if not settings.TRADING_ENABLED or getattr(settings, "TRADING_HALTED", False):
+        return _finish("rejected", "trading disabled or halted")
+    if abs(float(settings.SPY_WING_DOLLARS) - PREREG_WIDTH_SPY) > 1e-9:
+        return _finish("rejected", f"SPY_WING_DOLLARS={settings.SPY_WING_DOLLARS} ≠ pre-registered {PREREG_WIDTH_SPY}")
+    today_pnl = _today_broker_pnl(orch, date)
+    if today_pnl <= -abs(settings.CALL_DAY_HALT_USD):
+        return _finish("rejected", f"day halt: today's real P&L ${today_pnl:+.0f} ≤ −${abs(settings.CALL_DAY_HALT_USD):.0f}")
+    n_today = sum(1 for c in load_calls() if c.get("date") == date and c.get("decision") == "submitted")
+    if n_today >= settings.CALL_MAX_TRADES_PER_DAY:
+        return _finish("rejected", f"{n_today} trades already today (max {settings.CALL_MAX_TRADES_PER_DAY})")
+
+    side = side or ("sell_put_cs" if rec["lean"] == "up" else "sell_call_cs")
+    if side not in ("sell_put_cs", "sell_call_cs"):
+        return _finish("rejected", f"bad side {side}")
+    if (side == "sell_put_cs") != (rec["lean"] == "up"):
+        return _finish("rejected", f"side {side} contradicts lean {rec['lean']}")
+    rec["side"] = side
+    put = side == "sell_put_cs"
+    width = float(settings.SPY_WING_DOLLARS)
+
+    # SPX-scale levels from a caller (or the model) are normalised to SPY
+    inv = rec["invalidation"]
+    if inv is not None and inv > 2000:
+        inv = inv / 10.0; rec["invalidation"] = inv; rec["scale_note"] = "invalidation given at SPX scale"
+    if rec["level"] is not None and rec["level"] > 2000:
+        rec["level"] = rec["level"] / 10.0
+    if short is None:
+        if inv is not None:
+            short = math.floor(inv) if put else math.ceil(inv)
+        else:
+            short = math.floor(spot_spy * (1 - 0.003)) if put else math.ceil(spot_spy * (1 + 0.003))
+    short = float(round(_f(short, 0)))
+    if short > 2000:
+        short = float(round(short / 10.0))
+    if put and short >= spot_spy - 0.5:
+        return _finish("rejected", f"put short {short:.0f} not OTM vs SPY {spot_spy:.2f}")
+    if (not put) and short <= spot_spy + 0.5:
+        return _finish("rejected", f"call short {short:.0f} not OTM vs SPY {spot_spy:.2f}")
+    long_ = short - width if put else short + width
+    rec.update(short=short, long=long_, width=width)
+
+    async with _LOCK:
+        open_pos = [t for t in orch.paper_trades
+                    if (not t.closed) or t.broker_status == "close_error"]
+        if len(open_pos) >= settings.CALL_MAX_OPEN:
+            stale = [t for t in open_pos if str(t.fired_at)[:10] < date]
+            if stale:
+                log.warning("live_call: %d stale open trade(s) from prior sessions block entries: %s",
+                            len(stale), [t.id for t in stale])
+            return _finish("rejected", f"{len(open_pos)} position(s) open or unmanaged (max {settings.CALL_MAX_OPEN})")
+
+        # ── price on executable NBBO: short.bid − long.ask ──
+        try:
+            from .nbbo_chain import fetch_chain_nbbo
+            nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy, now.strftime("%y%m%d"))
+        except Exception as e:  # noqa: BLE001
+            return _finish("rejected", f"NBBO fetch failed: {e}")
+        rows = {r["strike"]: r for r in (nb.get("puts" if put else "calls") or [])}
+        s_, l_ = rows.get(float(short)), rows.get(float(long_))
+        if not s_ or not l_:
+            return _finish("rejected", f"unquotable: {short:.0f}/{long_:.0f} not both quoted")
+        # NBBO-implied spot sanity (put-call parity at the ATM strike) vs the bar spot
+        try:
+            calls = {r["strike"]: r for r in (nb.get("calls") or [])}
+            puts = {r["strike"]: r for r in (nb.get("puts") or [])}
+            atm = float(round(spot_spy))
+            if atm in calls and atm in puts:
+                implied = atm + calls[atm]["mid"] - puts[atm]["mid"]
+                rec["nbbo_implied_spy"] = round(implied, 2)
+                if abs(implied / spot_spy - 1) > 0.0015:
+                    return _finish("rejected", f"bar spot {spot_spy:.2f} vs option-implied {implied:.2f}: feed out of sync")
+        except Exception:  # noqa: BLE001
+            pass
+        exec_credit = round(s_["bid"] - l_["ask"], 2)          # $/share
+        floor = width * settings.CALL_FLOOR_PCT_OF_WIDTH / 100.0
+        rec.update(short_bid=s_["bid"], short_ask=s_["ask"], long_bid=l_["bid"], long_ask=l_["ask"],
+                   exec_credit_ct=round(exec_credit * 100, 2), floor_ct=round(floor * 100, 2),
+                   max_loss_ct=round((width - exec_credit) * 100, 2))
+        if exec_credit < floor:
+            return _finish("rejected", f"executable credit ${exec_credit * 100:.0f}/ct < floor ${floor * 100:.0f}/ct at {short:.0f}/{long_:.0f}")
+        if dry_run:
+            return _finish("dry_run", push=False)
+
+        # ── build the trade through the validated path ──
+        from .models import SignalEvent, StrikeSuggestion
+        from .directional_spread_manager import open_directional_trade
+        from . import bs_pricing as bs
+        today_closes = [b.close for b in buf
+                        if (lambda t: t.strftime("%Y-%m-%d") == date and (9, 30) <= (t.hour, t.minute) < (16, 0))
+                        (b.time.astimezone(ET) if b.time.tzinfo else b.time.replace(tzinfo=ET))]
+        r5 = bs.realized_5m_std(today_closes) if len(today_closes) >= 5 else None
+        if not r5 or r5 <= 0:
+            return _finish("rejected", "insufficient intraday history for the exit model (need 5 RTH bars)")
+        ev = SignalEvent(side=side, triggered_at=last.time.isoformat(), underlying_price=S0,
+                         confluence={"live_read": True}, confluence_score=4)
+        spx_credit = exec_credit * 100 * 10.0            # SPY contract $ → SPX-scale $ (×10)
+        sp = StrikeSuggestion(instrument="SPX", side=side, mode="directional_spread",
+                              short_strike=short * 10.0, long_strike=long_ * 10.0,
+                              wing_width=width * 10.0, multiplier=100,
+                              estimated_credit_dollars=spx_credit,
+                              max_loss_dollars=width * 10.0 * 100 - spx_credit,
+                              notional_per_contract=S0 * 100)
+        trade_no = orch._next_trade_no(now)
+        pt, _sizing = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
+        pt.contracts = 1                                  # pre-registered: ONE contract, always
+        pt.entry_mid_quote = round(exec_credit * 100, 2)
+        pt.breakeven_dist_pct = round(100.0 * abs(S0 - short * 10.0) / S0, 3)
+        pt.proj_high_at_signal = getattr(getattr(orch.state, "regime", None), "proj_high", None)
+        pt.proj_low_at_signal = getattr(getattr(orch.state, "regime", None), "proj_low", None)
+        orch.paper_trades.append(pt)
+        pt.broker_status = "pending"
+        task = asyncio.create_task(orch._submit_alpaca_entry(pt, ev, f"live-read {source} conf {rec['conf']:.2f}", True))
+        orch._broker_entry_tasks[pt.id] = task
+        orch._persist_state()
+        rec.update(trade_id=pt.id, trade_no=trade_no, contracts=1)
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=25)
+        except asyncio.TimeoutError:
+            log.warning("live_call: broker entry still pending after 25s (trade #%d)", trade_no)
+        except Exception as e:  # noqa: BLE001
+            log.warning("live_call: broker entry task error: %s", e)
+        rec["broker_status"] = pt.broker_status
+        rec["alpaca_order_id"] = pt.alpaca_order_id
+        if pt not in orch.paper_trades:
+            return _finish("broker_rejected", f"broker did not execute (status {pt.broker_status})")
+        if pt.broker_status in ("shadow", "error", "skipped_afterhours"):
+            return _finish("broker_rejected", f"broker status {pt.broker_status}")
+        return _finish("submitted")

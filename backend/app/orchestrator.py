@@ -117,6 +117,7 @@ class Orchestrator:
         self._band_last: dict | None = None   # last band decision (dashboard visibility)
         self._claude_scan_date: str | None = None   # one advisor scan per session
         self._claude_scan_last: dict | None = None
+        self._claude_scan_slots_done: set[str] = set()   # "YYYY-MM-DD:HH:MM" per read slot
         if settings.WAVE_BAND_STRATEGY_ENABLED:
             try:
                 from .wave_band_live import seed_running_medians
@@ -174,6 +175,7 @@ class Orchestrator:
             self._band_last = data.get("band_last")
             self._claude_scan_date = data.get("claude_scan_date")
             self._claude_scan_last = data.get("claude_scan_last")
+            self._claude_scan_slots_done = set(data.get("claude_scan_slots_done") or [])
             # GHOST SANITIZER (ported from MEIC 2026-09-22). A 0DTE position
             # cannot outlive its own session, yet a restart can restore one still
             # flagged open. That is not cosmetic here: MAX_CONCURRENT_POSITIONS
@@ -239,6 +241,7 @@ class Orchestrator:
                 "band_last": self._band_last,
                 "claude_scan_date": self._claude_scan_date,
                 "claude_scan_last": self._claude_scan_last,
+                "claude_scan_slots_done": sorted(self._claude_scan_slots_done),
             }
             state_store.save_async(snapshot)
             self._persist_trial_ledger()   # durable trial memory (survives day rollover)
@@ -753,12 +756,12 @@ class Orchestrator:
         await self._broadcast()
 
     def _maybe_claude_scan(self, bar: Bar):
-        """Claude morning scan — SCORED ADVISOR (see claude_scan.py). Fires once per
-        session in the 09:45–09:59 ET window (before the 10:00 band decision), off
-        the bar loop. Logs + stamps state; gates NOTHING. No-ops without a key."""
+        """Claude READ — scored advisor turned Config L probe (2026-10-09). Fires once per
+        slot in settings.CALL_SLOTS (10-min windows, ET), off the bar loop. Every read goes to
+        Telegram; a non-neutral read above CALL_MIN_CONF becomes ONE paper spread via
+        live_call.submit_call when CALL_AUTO_SUBMIT is on. Fail-soft everywhere."""
         if not settings.WAVE_CLAUDE_SCAN_ENABLED:
             return
-        # Transport: API key if present, else the authed Claude Code CLI (MEIC pattern)
         import os as _os
         if not settings.ANTHROPIC_API_KEY and not _os.path.exists(settings.CLAUDE_SCAN_BIN):
             return
@@ -768,19 +771,29 @@ class Orchestrator:
         if et.weekday() > 4:
             return
         bar_min = et.hour * 60 + et.minute
-        if bar_min < (9 * 60 + 45) or bar_min >= (10 * 60):
-            return
         date = et.strftime("%Y-%m-%d")
-        if self._claude_scan_date == date:
+        slot = None
+        for sv in [x.strip() for x in settings.CALL_SLOTS.split(",") if x.strip()]:
+            try:
+                hh, mm = sv.split(":"); m0 = int(hh) * 60 + int(mm)
+            except ValueError:
+                continue
+            if m0 <= bar_min < m0 + 10 and f"{date}:{sv}" not in self._claude_scan_slots_done:
+                slot = sv
+                break
+        if slot is None:
             return
-        self._claude_scan_date = date   # mark first — one attempt per session
+        self._claude_scan_slots_done.add(f"{date}:{slot}")   # mark first — one attempt per slot
+        self._claude_scan_date = date
+        self._persist_state()                                 # survive a restart mid-call
 
         async def _run():
             try:
                 import json
                 from datetime import timezone as _tz
-                from .claude_scan import build_context, run_scan, run_scan_cli, append_scan
-                ctx = build_context(self)
+                from .claude_scan import build_context_async, run_scan, run_scan_cli, append_scan
+                ctx = await build_context_async(self)
+                ctx["slot"] = slot
                 if settings.ANTHROPIC_API_KEY:
                     transport = "api"
                     verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
@@ -789,20 +802,81 @@ class Orchestrator:
                     transport = "cli"
                     verdict = await run_scan_cli(ctx, settings.CLAUDE_SCAN_MODEL,
                                                  settings.CLAUDE_SCAN_BIN)
-                rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date,
+                rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date, "slot": slot,
                        "context": ctx, "verdict": verdict, "transport": transport,
                        "ok": verdict is not None}
                 append_scan(rec)
-                self._claude_scan_last = ({"date": date, **{k: v for k, v in verdict.items()
-                                          if not k.startswith("_")}} if verdict else
-                                          {"date": date, "error": "scan failed"})
-                log.info("Claude scan %s: %s", date,
-                         json.dumps(self._claude_scan_last)[:220])
+                self._claude_scan_last = ({"date": date, "slot": slot,
+                                           **{k: v for k, v in verdict.items() if not k.startswith("_")}}
+                                          if verdict else {"date": date, "slot": slot, "error": "scan failed"})
+                log.info("Claude read %s %s: %s", date, slot, json.dumps(self._claude_scan_last)[:220])
                 self._persist_state()
+                from .live_call import submit_call, format_read, append_call, _push
+                if not verdict:
+                    r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                         "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                         "source": f"scan@{slot}", "lean": "neutral", "conf": 0.0,
+                         "decision": "error", "reason": "read failed (no verdict from the model)"}
+                    append_call(r); _push(self, format_read(r))
+                    return
+                # ── Config L: the read → Telegram, and (if armed) ONE paper spread ──
+                lean = str(verdict.get("lean") or verdict.get("direction_lean") or "neutral").strip().lower()
+                try:
+                    conf = float(verdict.get("confidence") or 0.0)
+                except (TypeError, ValueError):
+                    conf = 0.0
+                note = str(verdict.get("note") or "")
+                if settings.CALL_SKIP_HIGH_IMPACT_EVENTS and lean != "neutral":
+                    # TODAY's high-impact events only, still ahead (or within the last 15 min);
+                    # an unavailable calendar fails CLOSED for scan-sourced trades.
+                    try:
+                        status = self.macro.calendar_status()
+                        if not status.get("available", False):
+                            note = "[macro calendar unavailable — scan trades stand aside] " + note
+                            lean = "neutral"
+                        else:
+                            now_et = datetime.now(ET)
+                            hi = []
+                            for e in (self.macro._calendar or []):
+                                if (e.get("impact") or "").lower() != "high":
+                                    continue
+                                t = self.macro._parse_event_time(e.get("time") or "")
+                                if t is not None and t.date() == now_et.date() \
+                                        and (now_et - t).total_seconds() < 15 * 60:
+                                    hi.append((t, e.get("event")))
+                            if hi:
+                                hi.sort()
+                                note = f"[high-impact event today {hi[0][0].strftime('%H:%M')} ET: {hi[0][1]} — scan trades stand aside] " + note
+                                lean = "neutral"
+                    except Exception as _e:  # noqa: BLE001
+                        note = f"[calendar check failed: {_e} — scan trades stand aside] " + note
+                        lean = "neutral"
+                if settings.CALL_AUTO_SUBMIT:
+                    try:
+                        await submit_call(self, lean=lean, conf=conf,
+                                          level=verdict.get("level"), invalidation=verdict.get("invalidation"),
+                                          note=note, source=f"scan@{slot}")
+                    except Exception as _e:  # noqa: BLE001
+                        r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                             "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                             "source": f"scan@{slot}", "lean": lean, "conf": conf, "note": note,
+                             "decision": "error", "reason": f"submit failed: {_e}"}
+                        append_call(r); _push(self, format_read(r))
+                else:
+                    r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                         "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                         "source": f"scan@{slot}", "lean": lean, "conf": conf, "level": verdict.get("level"),
+                         "invalidation": verdict.get("invalidation"), "note": note,
+                         "spot_spx": ctx.get("spot"), "spot_spy": (ctx.get("options_0dte") or {}).get("spot_spy"),
+                         "decision": "no_trade" if lean == "neutral" else "advisory_only"}
+                    append_call(r); _push(self, format_read(r))
             except Exception as e:  # noqa: BLE001 — advisor must never break the loop
-                log.warning("claude scan task failed: %s", e)
+                log.warning("claude read task failed: %s", e)
 
-        asyncio.create_task(_run())
+        _t = asyncio.create_task(_run())
+        self._bg_tasks = getattr(self, "_bg_tasks", set())
+        self._bg_tasks.add(_t)
+        _t.add_done_callback(self._bg_tasks.discard)   # keep a reference until done (no GC mid-run)
 
     def _persist_trial_ledger(self) -> None:
         """Upsert closed directional trades into a DURABLE append-only ledger.

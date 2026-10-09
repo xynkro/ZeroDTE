@@ -19,6 +19,17 @@
 #    GCP billing accounts are CLOSED, so Compute refuses ("requires billing"). Blocked on Caspar
 #    reopening a billing account; then gce_create.sh → bootstrap.sh → push_state.sh →
 #    mac_standby.sh → cutover.sh (~10 min, scripted).
+#    ⚠️ 2026-10-09 ZOMBIE #2: disarming the band (WAVE_BAND_STRATEGY_ENABLED=false) did NOT stop
+#    the LEGACY DIRECTIONAL path (DIRECTIONAL_SPREAD_ENABLED=true) — it traded Oct-7 (−$124) and
+#    Oct-8 (+$36), tagged `config=legacy_directional_zombie` in the ledger, NOT Config F. Account
+#    $9,482. Now DIRECTIONAL_SPREAD_ENABLED=false AND PAPER_BROKER=none: the only off switch that
+#    covers every order path is PAPER_BROKER=none. Re-enable ONLY via a new TRIAL_GATES entry.
+#    🖥️ 2026-10-09 HOST = GCP VM `wavezero` (project wavezero-paper-1006, us-east1-b, e2-micro,
+#    Ubuntu 24.04, systemd units wavezero-backend / wavezero-publish.timer / wavezero-surface.timer,
+#    logs /var/log/wavezero/, ssh alias wavezero.us-east1-b.wavezero-paper-1006, repo
+#    ~/Trading/ZeroDTE-Wave on the VM). The three Mac launchd jobs are UNLOADED (rollback =
+#    launchctl load). GitHub Actions `nbbo-surface` (two windowed jobs/session → branch
+#    surface-data) stays as the backup sampler; GitHub's */5 cron was unreliable.
 #    HARDENING tonight: time stop 15:45→15:25 ET (WAVE_TIME_STOP_MIN=35) so we never race
 #    Alpaca's 15:45 expiry sweep; _persist_trial_ledger keeps real broker numbers over blanks.
 #    BEFORE ANY PROBE: exits anchored to broker_realized_credit (dsm:476 uses model credit),

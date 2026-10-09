@@ -73,6 +73,10 @@ says execution is the binding constraint.
     Investigate: mean > 0 but < 50% of simulated EV.
     Scale: capture ≥ 60%, t ≥ 2 → 2 ct, max 5%/position.
   If nothing passes the gate at 30 sessions: the SPY 0DTE book closes.
+  NOTE 2026-10-09: the legacy DIRECTIONAL_SPREAD path kept trading after the band disarm (Oct-7
+  −$124, Oct-8 +$36; ledger rows tagged legacy_directional_zombie — excluded from every sample).
+  Both order paths are now off and PAPER_BROKER=none. Config F's final sample stays 14 / −$243.
+  Host moved to a GCP VM the same day (deploy/vm/README.md).
 
 - **2026-09-22 — CONFIG F FIRST-FORTNIGHT CHECKPOINT (NO config change; F sample stays 2/25).**
   Sessions Sep-8→22 (10 trading days): 2 trades (Sep-11 10:00 put 7615/7605 5ct; 11:00 put

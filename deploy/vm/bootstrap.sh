@@ -24,7 +24,7 @@ cd "$DIR"
 git checkout "$BRANCH" && git pull --ff-only
 
 uv python install 3.13
-[ -x .venv/bin/python ] || uv venv --python 3.13 .venv
+[ -x .venv/bin/python ] || { rm -rf .venv; uv venv --python 3.13 .venv; }   # a stray/broken .venv (e.g. a dangling Mac symlink) must not block
 uv pip install --python .venv/bin/python -r requirements.lock.txt
 mkdir -p backend/data/historical backend/data/paper_trades backend/data/backtest_results
 

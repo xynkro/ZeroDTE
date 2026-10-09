@@ -68,36 +68,41 @@ def _f(x, default=None):
         return default
 
 
+def _sentences(text: str) -> list[str]:
+    """One sentence per line for Telegram readability (Caspar, 2026-10-10)."""
+    import re as _re
+    parts = [p.strip() for p in _re.split(r"(?<=[.;!?])\s+", str(text).strip()) if p.strip()]
+    return parts or [str(text).strip()]
+
+
 def format_read(rec: dict) -> str:
-    """Plain-text Telegram message for one read (and what was done about it). None-safe."""
+    """Telegram message for one read, sections separated by blank lines, one sentence per line."""
     lean = str(rec.get("lean", "neutral")).upper()
     conf = _f(rec.get("conf"))
     spx = rec.get("spot_spx"); spy = rec.get("spot_spy")
-    head = (f"📣 WaveZero READ · {rec.get('date')} {rec.get('time_et', '?')} ET / {rec.get('time_sgt', '?')} SGT · {rec.get('source', '?')}\n"
-            f"SPX {spx if spx is not None else '?'} (SPY {spy if spy is not None else '?'}) · lean {lean}"
-            + (f" · conf {conf:.2f}" if conf is not None else ""))
-    lines = [head]
+    blocks = [f"📣 WaveZero READ · {rec.get('date')} {rec.get('time_et', '?')} ET / {rec.get('time_sgt', '?')} SGT · {rec.get('source', '?')}",
+              f"SPX {spx if spx is not None else '?'} (SPY {spy if spy is not None else '?'}) · lean {lean}"
+              + (f" · conf {conf:.2f}" if conf is not None else "")]
     inv = _f(rec.get("invalidation")); lvl = _f(rec.get("level"))
     if lean in ("UP", "DOWN") and (lvl is not None or inv is not None):
-        lines.append((f"level {lvl:g} · " if lvl is not None else "")
-                     + (f"wrong if SPY {'<' if lean == 'UP' else '>'} {inv:g}" if inv is not None else ""))
+        blocks.append((f"level {lvl:g} · " if lvl is not None else "")
+                      + (f"wrong if SPY {'<' if lean == 'UP' else '>'} {inv:g}" if inv is not None else ""))
     if rec.get("note"):
-        lines.append(str(rec["note"])[:300])
+        blocks.append("\n".join(_sentences(str(rec["note"])[:600])))
     d = rec.get("decision")
     if d in ("submitted", "dry_run") and rec.get("short") is not None:
         kind = "put" if rec.get("side") == "sell_put_cs" else "call"
-        lines.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
-                     + f"sell SPY {rec['short']:.0f}/{rec['long']:.0f} {kind} spread ×1 · exec credit "
-                     f"${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss "
-                     f"${_f(rec.get('max_loss_ct'), 0):.0f}/ct · TP {settings.DIRECTIONAL_TP_TARGET:.0f}% / stop at −100% credit "
-                     f"(≈ short {rec['short']:.0f} touched) / {rec.get('time_stop_et', '15:25')} ET close")
+        blocks.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
+                      + f"sell SPY {rec['short']:.0f}/{rec['long']:.0f} {kind} spread ×1\n"
+                      f"exec credit ${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss ${_f(rec.get('max_loss_ct'), 0):.0f}/ct\n"
+                      f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop at −100% credit (≈ {rec['short']:.0f} touched) · {rec.get('time_stop_et', '15:25')} ET close")
     elif d == "no_trade":
-        lines.append("→ no trade (neutral read)")
+        blocks.append("→ no trade (neutral read)")
     elif d == "advisory_only":
-        lines.append("→ advisory only (auto-submit off)")
+        blocks.append("→ advisory only (auto-submit off)")
     elif d in ("rejected", "broker_rejected", "error"):
-        lines.append(f"→ NOT traded: {rec.get('reason')}")
-    return "\n".join(lines)
+        blocks.append(f"→ NOT traded: {rec.get('reason')}")
+    return "\n\n".join(blocks)
 
 
 def _push(orch, text: str) -> None:

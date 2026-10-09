@@ -1,4 +1,28 @@
 # ══════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO — CONFIG L LIVE since Fri 2026-10-09 11:45 ET (23:45 SGT). READ THIS FIRST.
+#    Caspar's "option 2": discretionary READS → ONE-lot SPY 0DTE paper spreads, scored on direction
+#    AND real dollars; "2 good weeks of data" → IBKR discussion (his deliberate act). Pre-registered
+#    in docs/TRIAL_GATES.md (2026-10-09 entry) — gates fixed before the first trade; "green every
+#    day" is explicitly NOT a gate (his 28-day streak died to one shock; the worst-day bound is it).
+#    HOW: POST /api/call (X-ZeroDTE-Token) {lean, conf, invalidation (SPY), level, note, source}
+#    → backend/app/live_call.submit_call: short strike AT the invalidation, $2 wide, executable
+#    credit ≥ $0.20/share (live NBBO short.bid − long.ask) else REJECTED; ONE contract (hard),
+#    ONE open position (lock), ≤3/day, day halt −$480, 09:35–15:00 ET, live Alpaca bars ≤7 min,
+#    option-implied spot sanity, paper/TRADING_ENABLED/width guards; then the validated path
+#    (open_directional_trade → _submit_alpaca_entry marketable-limit → dsm exits TP 40% /
+#    −100%-credit stop / 15:25 ET time stop → ledger). Every read → data/live_calls.jsonl +
+#    Telegram (ZeroDTE routing). Scheduled Claude READ (claude-sonnet-5) at 09:45 + 13:00 ET
+#    auto-submits (CALL_AUTO_SUBMIT=true); stands aside on TODAY's high-impact events (fails
+#    closed without a calendar). scripts/score_calls.py --telegram daily 05:25 SGT (VM timer).
+#    FIRST SESSION 2026-10-09: dry-run 11:43 ET priced 774/772P at $0 → rejected; first real
+#    read 11:46 ET (lean up, wrong < 775) priced 775/773P at $13 < $20 floor → rejected, pushed.
+#    In this tape the probe will often stand aside — that is the floor working, not a bug.
+#    HOST: GCP VM `wavezero` (deploy/vm/README.md). The ONLY live order path is /api/call +
+#    the scan (band + legacy directional OFF). trial_trades.jsonl is git-tracked → on the VM it is
+#    `--assume-unchanged`; union-merge by id if a pull conflicts.
+# ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO — STATE AT 2026-10-06 (Tue 11:00 ET / 23:00 SGT). READ THIS FIRST.
 #    CONFIG F RETIRED at n=14, −$243 real (account $9,572; 7 wins avg +$22, 6 losses avg −$66
 #    incl. the Oct-1 Alpaca-liquidated −$164). Retire gate unreachable (next 11 must avg > +$22;

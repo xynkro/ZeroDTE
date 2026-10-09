@@ -1,21 +1,27 @@
 name: nbbo-surface
-# WaveZero measurement instrument: sample the REAL executable 0DTE SPY credit surface every
-# 5 minutes during US RTH on a GitHub-hosted runner (no laptop, no VM, no billing). Zero trading:
+# WaveZero measurement instrument on a hosted runner (no laptop, no VM, no billing). Zero trading:
 # read-only Alpaca market-data calls with the PAPER keys stored as encrypted repo secrets.
-# Rows are appended to the orphan branch `surface-data` (file nbbo_surface.jsonl).
+# GitHub's */5 cron proved unreliable (7 runs in 3 sessions), so each session is covered by TWO
+# long-running windowed jobs (AM 09:35-12:59 ET, PM 13:00-16:01 ET; each < 6 h) that sample every
+# 5 minutes in-process and push rows to the orphan branch `surface-data` every 6 samples.
 on:
   schedule:
-    - cron: '*/5 13-21 * * 1-5'   # covers 09:30-16:00 ET in both EDT and EST; the script exits outside RTH
+    - cron: '20 13 * * 1-5'   # AM job: 09:20 EDT / 08:20 EST — waits for 09:35 ET
+    - cron: '55 16 * * 1-5'   # PM job: 12:55 EDT / 11:55 EST — waits for 13:00 ET
   workflow_dispatch:
+    inputs:
+      window:
+        description: 'AM, PM or NOW (sample until 16:01 ET from now)'
+        default: 'NOW'
 permissions:
   contents: write
 concurrency:
-  group: nbbo-surface
+  group: nbbo-surface-${{ github.event.inputs.window || github.event.schedule }}
   cancel-in-progress: false
 jobs:
   sample:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,26 +34,40 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip -q install requests
-      - name: sample
+      - name: sample loop
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          WINDOW: ${{ github.event.inputs.window || '' }}
+          SCHEDULE: ${{ github.event.schedule || '' }}
         run: |
           umask 077
           printf 'ALPACA_API_KEY=%s\nALPACA_SECRET_KEY=%s\nALPACA_OPTIONS_FEED=indicative\n' "$ALPACA_API_KEY" "$ALPACA_SECRET_KEY" > .env
           mkdir -p backend/data
-          : > backend/data/nbbo_surface.jsonl
-          python scripts/nbbo_surface_sampler.py | sed -E 's/[A-Za-z0-9]{20,}/<redacted>/g'
+          cd surface-data && git config user.name "WaveZero Sampler" && git config user.email "sampler@wavezero.local" && cd ..
+          python - <<'PY'
+          import os, re, subprocess, time, datetime as dt
+          from zoneinfo import ZoneInfo
+          ET = ZoneInfo("America/New_York")
+          w = os.environ.get("WINDOW") or ("AM" if os.environ.get("SCHEDULE","").startswith("20 13") else "PM")
+          start, end = {"AM": (dt.time(9,35), dt.time(12,59)), "PM": (dt.time(13,0), dt.time(16,1))}.get(w, (dt.time(0,0), dt.time(16,1)))
+          print("window", w, start, end, "now", dt.datetime.now(ET).strftime("%H:%M ET"))
+          def push():
+              r = subprocess.run("cat backend/data/nbbo_surface.jsonl >> surface-data/nbbo_surface.jsonl 2>/dev/null; : > backend/data/nbbo_surface.jsonl; cd surface-data && git add nbbo_surface.jsonl && (git commit -q -m 'surface: batch' || true) && for i in 1 2 3; do git push -q origin HEAD:surface-data && break || git pull -q --rebase origin surface-data; done", shell=True, capture_output=True, text=True)
+              print("push:", r.returncode, (r.stderr or "")[-200:].replace("\n"," "))
+          n = 0
+          while True:
+              now = dt.datetime.now(ET)
+              if now.weekday() >= 5 or now.time() > end: break
+              if now.time() < start:
+                  time.sleep(min(60, (dt.datetime.combine(now.date(), start, ET) - now).total_seconds() + 1)); continue
+              r = subprocess.run(["python", "scripts/nbbo_surface_sampler.py", "--force"], capture_output=True, text=True)
+              line = (r.stdout.strip().splitlines() or [r.stderr.strip()[-200:]])[-1]
+              print(re.sub(r"[A-Za-z0-9]{20,}", "<redacted>", line)[:200])
+              n += 1
+              if n % 6 == 0: push()
+              nxt = (now + dt.timedelta(minutes=5)).replace(second=5, microsecond=0); nxt -= dt.timedelta(minutes=nxt.minute % 5)
+              time.sleep(max(5, (nxt - dt.datetime.now(ET)).total_seconds()))
+          push(); print("samples:", n)
+          PY
           rm -f .env
-      - name: append + push
-        run: |
-          if [ -s backend/data/nbbo_surface.jsonl ]; then
-            cat backend/data/nbbo_surface.jsonl >> surface-data/nbbo_surface.jsonl
-            cd surface-data
-            git config user.name "WaveZero Sampler" && git config user.email "sampler@wavezero.local"
-            git add nbbo_surface.jsonl
-            git commit -q -m "surface: $(tail -c 400 nbbo_surface.jsonl | grep -oE '"ts": "[^"]+"' | tail -1)" || exit 0
-            for i in 1 2 3; do git push -q origin HEAD:surface-data && break || { git pull -q --rebase origin surface-data; }; done
-          else
-            echo "outside RTH — no row"
-          fi

@@ -840,7 +840,7 @@ class Orchestrator:
                 # TODAY's high-impact events only, still ahead (or within the last 15 min);
                 # an unavailable calendar fails CLOSED for scan-sourced trades.
                 try:
-                    status = self.macro.calendar_status()
+                    _cs = getattr(self.macro, "calendar_status", None); status = (_cs() if callable(_cs) else _cs) or {}
                     if not status.get("available", False):
                         note = "[macro calendar unavailable — scan trades stand aside] " + note
                         lean = "neutral"

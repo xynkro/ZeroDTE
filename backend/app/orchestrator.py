@@ -787,96 +787,102 @@ class Orchestrator:
         self._claude_scan_date = date
         self._persist_state()                                 # survive a restart mid-call
 
-        async def _run():
-            try:
-                import json
-                from datetime import timezone as _tz
-                from .claude_scan import build_context_async, run_scan, run_scan_cli, append_scan
-                ctx = await build_context_async(self)
-                ctx["slot"] = slot
-                if settings.ANTHROPIC_API_KEY:
-                    transport = "api"
-                    verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
-                                             settings.CLAUDE_SCAN_MODEL)
-                else:
-                    transport = "cli"
-                    verdict = await run_scan_cli(ctx, settings.CLAUDE_SCAN_MODEL,
-                                                 settings.CLAUDE_SCAN_BIN)
-                rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date, "slot": slot,
-                       "context": ctx, "verdict": verdict, "transport": transport,
-                       "ok": verdict is not None}
-                append_scan(rec)
-                self._claude_scan_last = ({"date": date, "slot": slot,
-                                           **{k: v for k, v in verdict.items() if not k.startswith("_")}}
-                                          if verdict else {"date": date, "slot": slot, "error": "scan failed"})
-                log.info("Claude read %s %s: %s", date, slot, json.dumps(self._claude_scan_last)[:220])
-                self._persist_state()
-                from .live_call import submit_call, format_read, append_call, _push
-                if not verdict:
-                    r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
-                         "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
-                         "source": f"scan@{slot}", "lean": "neutral", "conf": 0.0,
-                         "decision": "error", "reason": "read failed (no verdict from the model)"}
-                    append_call(r); _push(self, format_read(r))
-                    return
-                # ── Config L: the read → Telegram, and (if armed) ONE paper spread ──
-                lean = str(verdict.get("lean") or verdict.get("direction_lean") or "neutral").strip().lower()
-                try:
-                    conf = float(verdict.get("confidence") or 0.0)
-                except (TypeError, ValueError):
-                    conf = 0.0
-                note = str(verdict.get("note") or "")
-                if settings.CALL_SKIP_HIGH_IMPACT_EVENTS and lean != "neutral":
-                    # TODAY's high-impact events only, still ahead (or within the last 15 min);
-                    # an unavailable calendar fails CLOSED for scan-sourced trades.
-                    try:
-                        status = self.macro.calendar_status()
-                        if not status.get("available", False):
-                            note = "[macro calendar unavailable — scan trades stand aside] " + note
-                            lean = "neutral"
-                        else:
-                            now_et = datetime.now(ET)
-                            hi = []
-                            for e in (self.macro._calendar or []):
-                                if (e.get("impact") or "").lower() != "high":
-                                    continue
-                                t = self.macro._parse_event_time(e.get("time") or "")
-                                if t is not None and t.date() == now_et.date() \
-                                        and (now_et - t).total_seconds() < 15 * 60:
-                                    hi.append((t, e.get("event")))
-                            if hi:
-                                hi.sort()
-                                note = f"[high-impact event today {hi[0][0].strftime('%H:%M')} ET: {hi[0][1]} — scan trades stand aside] " + note
-                                lean = "neutral"
-                    except Exception as _e:  # noqa: BLE001
-                        note = f"[calendar check failed: {_e} — scan trades stand aside] " + note
-                        lean = "neutral"
-                if settings.CALL_AUTO_SUBMIT:
-                    try:
-                        await submit_call(self, lean=lean, conf=conf,
-                                          level=verdict.get("level"), invalidation=verdict.get("invalidation"),
-                                          note=note, source=f"scan@{slot}")
-                    except Exception as _e:  # noqa: BLE001
-                        r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
-                             "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
-                             "source": f"scan@{slot}", "lean": lean, "conf": conf, "note": note,
-                             "decision": "error", "reason": f"submit failed: {_e}"}
-                        append_call(r); _push(self, format_read(r))
-                else:
-                    r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
-                         "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
-                         "source": f"scan@{slot}", "lean": lean, "conf": conf, "level": verdict.get("level"),
-                         "invalidation": verdict.get("invalidation"), "note": note,
-                         "spot_spx": ctx.get("spot"), "spot_spy": (ctx.get("options_0dte") or {}).get("spot_spy"),
-                         "decision": "no_trade" if lean == "neutral" else "advisory_only"}
-                    append_call(r); _push(self, format_read(r))
-            except Exception as e:  # noqa: BLE001 — advisor must never break the loop
-                log.warning("claude read task failed: %s", e)
-
-        _t = asyncio.create_task(_run())
+        _t = asyncio.create_task(self.run_claude_read(slot, date))
         self._bg_tasks = getattr(self, "_bg_tasks", set())
         self._bg_tasks.add(_t)
         _t.add_done_callback(self._bg_tasks.discard)   # keep a reference until done (no GC mid-run)
+
+    async def run_claude_read(self, slot: str, date: str | None = None) -> dict | None:
+        """One Claude READ now (Config L): build live context → model verdict → journal →
+        Telegram → optional one-lot submit. Used by the slot trigger and by POST /api/read.
+        Never raises."""
+        date = date or datetime.now(ET).strftime("%Y-%m-%d")
+        self._last_read = None
+        try:
+            import json
+            from datetime import timezone as _tz
+            from .claude_scan import build_context_async, run_scan, run_scan_cli, append_scan
+            ctx = await build_context_async(self)
+            ctx["slot"] = slot
+            if settings.ANTHROPIC_API_KEY:
+                transport = "api"
+                verdict = await run_scan(ctx, settings.ANTHROPIC_API_KEY,
+                                         settings.CLAUDE_SCAN_MODEL)
+            else:
+                transport = "cli"
+                verdict = await run_scan_cli(ctx, settings.CLAUDE_SCAN_MODEL,
+                                             settings.CLAUDE_SCAN_BIN)
+            rec = {"ts": datetime.now(_tz.utc).isoformat(), "date": date, "slot": slot,
+                   "context": ctx, "verdict": verdict, "transport": transport,
+                   "ok": verdict is not None}
+            append_scan(rec)
+            self._claude_scan_last = ({"date": date, "slot": slot,
+                                       **{k: v for k, v in verdict.items() if not k.startswith("_")}}
+                                      if verdict else {"date": date, "slot": slot, "error": "scan failed"})
+            log.info("Claude read %s %s: %s", date, slot, json.dumps(self._claude_scan_last)[:220])
+            self._persist_state()
+            from .live_call import submit_call, format_read, append_call, _push
+            if not verdict:
+                r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                     "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                     "source": f"scan@{slot}", "lean": "neutral", "conf": 0.0,
+                     "decision": "error", "reason": "read failed (no verdict from the model)"}
+                append_call(r); _push(self, format_read(r))
+                return
+            # ── Config L: the read → Telegram, and (if armed) ONE paper spread ──
+            lean = str(verdict.get("lean") or verdict.get("direction_lean") or "neutral").strip().lower()
+            try:
+                conf = float(verdict.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            note = str(verdict.get("note") or "")
+            if settings.CALL_SKIP_HIGH_IMPACT_EVENTS and lean != "neutral":
+                # TODAY's high-impact events only, still ahead (or within the last 15 min);
+                # an unavailable calendar fails CLOSED for scan-sourced trades.
+                try:
+                    status = self.macro.calendar_status()
+                    if not status.get("available", False):
+                        note = "[macro calendar unavailable — scan trades stand aside] " + note
+                        lean = "neutral"
+                    else:
+                        now_et = datetime.now(ET)
+                        hi = []
+                        for e in (self.macro._calendar or []):
+                            if (e.get("impact") or "").lower() != "high":
+                                continue
+                            t = self.macro._parse_event_time(e.get("time") or "")
+                            if t is not None and t.date() == now_et.date() \
+                                    and (now_et - t).total_seconds() < 15 * 60:
+                                hi.append((t, e.get("event")))
+                        if hi:
+                            hi.sort()
+                            note = f"[high-impact event today {hi[0][0].strftime('%H:%M')} ET: {hi[0][1]} — scan trades stand aside] " + note
+                            lean = "neutral"
+                except Exception as _e:  # noqa: BLE001
+                    note = f"[calendar check failed: {_e} — scan trades stand aside] " + note
+                    lean = "neutral"
+            if settings.CALL_AUTO_SUBMIT:
+                try:
+                    self._last_read = await submit_call(self, lean=lean, conf=conf,
+                                      level=verdict.get("level"), invalidation=verdict.get("invalidation"),
+                                      note=note, source=f"scan@{slot}")
+                except Exception as _e:  # noqa: BLE001
+                    r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                         "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                         "source": f"scan@{slot}", "lean": lean, "conf": conf, "note": note,
+                         "decision": "error", "reason": f"submit failed: {_e}"}
+                    append_call(r); _push(self, format_read(r))
+            else:
+                r = {"date": date, "time_et": datetime.now(ET).strftime("%H:%M"),
+                     "time_sgt": datetime.now(ET).astimezone(ZoneInfo("Asia/Singapore")).strftime("%H:%M"),
+                     "source": f"scan@{slot}", "lean": lean, "conf": conf, "level": verdict.get("level"),
+                     "invalidation": verdict.get("invalidation"), "note": note,
+                     "spot_spx": ctx.get("spot"), "spot_spy": (ctx.get("options_0dte") or {}).get("spot_spy"),
+                     "decision": "no_trade" if lean == "neutral" else "advisory_only"}
+                append_call(r); _push(self, format_read(r))
+        except Exception as e:  # noqa: BLE001 — advisor must never break the loop
+            log.warning("claude read task failed: %s", e)
+        return self._last_read
 
     def _persist_trial_ledger(self) -> None:
         """Upsert closed directional trades into a DURABLE append-only ledger.

@@ -380,6 +380,19 @@ async def api_call(body: dict = Body(...)):
     return await submit_call(orch, **kw)
 
 
+@app.post("/api/read", dependencies=[Depends(require_write_token)])
+async def api_read(label: str | None = None):
+    """Run one Claude READ now (same pipeline as the scheduled slots: context → verdict →
+    journal → Telegram → one-lot submit if armed). Returns the resulting call record."""
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    slot = label or ("ondemand@" + _dt.now(_ZI("America/New_York")).strftime("%H:%M"))
+    try:
+        return {"ok": True, "slot": slot, "result": await orch.run_claude_read(slot)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "slot": slot, "error": str(e)}
+
+
 @app.get("/api/calls")
 async def api_calls(limit: int = 50):
     from .live_call import load_calls

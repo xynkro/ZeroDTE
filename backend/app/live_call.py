@@ -130,6 +130,22 @@ def _today_broker_pnl(orch, date: str) -> float:
     return tot
 
 
+async def _spy_live_trade(orch) -> float | None:
+    """Latest SPY trade from Alpaca's data API (IEX), for the XSP/SPY basis at call time.
+    Best-effort; None on any failure."""
+    try:
+        import httpx
+        url = f"{settings.ALPACA_DATA_URL}/v2/stocks/SPY/trades/latest"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(6.0, connect=3.0)) as c:
+            r = await c.get(url, headers=orch.alpaca_trader._headers(), params={"feed": "iex"})
+            r.raise_for_status()
+            p = (r.json().get("trade") or {}).get("p")
+            return float(p) if p else None
+    except Exception as e:  # noqa: BLE001
+        log.debug("live SPY trade unavailable: %s", e)
+        return None
+
+
 async def submit_call(orch, *, lean: str, conf, side: str | None = None,
                       short=None, level=None, invalidation=None, note: str = "",
                       source: str = "manual", dry_run: bool = False, **_ignored) -> dict:
@@ -277,9 +293,12 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
             return _finish("rejected", f"{inst} chain has no two-sided ATM quotes")
         rec["nbbo_implied_spot"] = round(implied, 2)
         if inst == "XSP":
-            if rec["bar_age_sec"] > 150:
-                return _finish("rejected", f"XSP mapping needs a fresh bar (last bar {rec['bar_age_sec']}s old)")
-            ratio = implied / spot_spy
+            live = await _spy_live_trade(orch)              # basis from a LIVE print, not a 5-min bar
+            if live is None and rec["bar_age_sec"] > 330:
+                return _finish("rejected", f"no live SPY print and the last bar is {rec['bar_age_sec']}s old")
+            basis_spot = live or spot_spy
+            rec["spy_live"] = live
+            ratio = implied / basis_spot
             if not (1.0005 < ratio < 1.0070):           # observed basis ≈ 1.003 (SPY dividend drag)
                 return _finish("rejected", f"XSP/SPY ratio {ratio:.4f} outside 1.0005–1.0070 (feed out of sync)")
             rec["xsp_spy_ratio"] = round(ratio, 5)

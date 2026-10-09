@@ -99,19 +99,20 @@ try:
                          params={"feed": FEED, "type": typ, "expiration_date": exp,
                                  "strike_price_gte": round(spot * 1.003 * 0.975), "strike_price_lte": round(spot * 1.003 * 1.025), "limit": 1000})
         if r.status_code != 200:
+            row[f"xsp_{typ}_http"] = r.status_code
             continue
-        for sym, s in (r.json().get("snapshots") or {}).items():
+        for sym, s_ in (r.json().get("snapshots") or {}).items():
             m = re.match(r"XSP(\d{6})([CP])(\d{8})", sym)
             if not m: continue
-            q = s.get("latestQuote") or {}
-            if q.get("bp") is None or q.get("ap") is None: continue
-            xs[(typ, int(m.group(3)) / 1000.0)] = [q["bp"], q["ap"]]
-    row["legs_xsp"] = {typ: {str(k): v for (t_, k), v in sorted(xs.items()) if t_ == typ} for typ in ("put", "call")}
-    ks = sorted({k for (_, k) in xs}, key=lambda k: abs(k - spot * 1.003))
-    for k in ks[:1]:
-        if ("put", k) in xs and ("call", k) in xs:
-            c, p_ = xs[("call", k)], xs[("put", k)]
-            row["xsp_implied_spot"] = round(k + (c[0] + c[1]) / 2 - (p_[0] + p_[1]) / 2, 3)
+            qq = s_.get("latestQuote") or {}
+            if qq.get("bp") is None or qq.get("ap") is None: continue
+            xs[(typ, int(m.group(3)) / 1000.0)] = [qq["bp"], qq["ap"], qq.get("t")]
+    row["legs_xsp"] = {typ: {str(k): v[:2] for (t_, k), v in sorted(xs.items()) if t_ == typ} for typ in ("put", "call")}
+    both = sorted({k for (t_, k) in xs if t_ == "put"} & {k for (t_, k) in xs if t_ == "call"}, key=lambda k: abs(k - spot * 1.003))
+    if both:
+        k = both[0]; c, p_ = xs[("call", k)], xs[("put", k)]
+        row["xsp_implied_spot"] = round(k + (c[0] + c[1]) / 2 - (p_[0] + p_[1]) / 2, 3)
+        row["xsp_quote_ts"] = c[2]
 except Exception as _e:  # noqa: BLE001
     row["legs_xsp_error"] = str(_e)[:120]
 with open(OUT, "a") as f:

@@ -3333,66 +3333,67 @@ class Orchestrator:
             # short strike $1 (SPY) further OTM until it's distinct from any open
             # same-side Wave position. We nudge pt.short_strike itself so the close
             # path (which re-derives strikes from it) stays consistent.
-            def _spy_short(s):
-                return float(round(s / 10.0))
-            open_shorts = {
-                _spy_short(t.short_strike) for t in self.paper_trades
-                if t is not pt and getattr(t, "strategy", None) == "directional_spread"
-                and not t.closed and t.broker_status == "submitted"
-                and t.side == pt.side and t.short_strike is not None
-            }
-            if open_shorts and pt.short_strike is not None:
-                is_call = pt.side == "sell_call_cs"
-                orig = pt.short_strike
-                for _ in range(6):
-                    if _spy_short(pt.short_strike) not in open_shorts:
-                        break
-                    pt.short_strike += 10.0 if is_call else -10.0   # $1 SPY, further OTM
-                if pt.short_strike != orig:
-                    log.info("Wave strike-collision nudge trade #%d: SPX short %.0f → %.0f "
-                             "(avoid netting with an open %s position)",
-                             pt.trade_no, orig, pt.short_strike, pt.side)
-            # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale).
-            params = spy_strike_params(
-                side=pt.side,
-                spx_short_strike=pt.short_strike,
-                spx_credit_dollars=pt.estimated_credit,
-            )
-            _und = "SPY"
-            if pt.order_underlying and pt.order_short_strike is not None and pt.order_long_strike is not None:
-                _und = pt.order_underlying                      # Config L: explicit broker legs (XSP)
-                params["short_strike"] = float(pt.order_short_strike)
-                params["long_strike"] = float(pt.order_long_strike)
-            today_str = datetime.now(ET).strftime("%Y-%m-%d")
-            result = await self.alpaca_trader.place_credit_spread(
-                underlying=_und,
-                expiry=today_str,
-                side=params["side_type"],
-                short_strike=params["short_strike"],
-                long_strike=params["long_strike"],
-                qty=pt.contracts,
-                # SPY per-share net credit ≈ SPX$credit / 10(scale) / 100(mult).
-                # Only used when ALPACA_MARKETABLE_LIMIT is on (scaffold; model-derived).
-                limit_credit=(pt.estimated_credit or 0) / 1000.0,
-                tag=f"wave-{pt.trade_no}",
-            )
-            if result and not result.get("shadow"):
-                pt.alpaca_order_id = result.get("id")
-                pt.broker_status = "submitted"
-                log.info("Alpaca paper entry: trade #%d → order %s (SPY %s %.1f/%.1f)",
-                         pt.trade_no, pt.alpaca_order_id,
-                         params["side_type"], params["short_strike"], params["long_strike"])
-                _ping(executed=True, exec_note="submitted to Alpaca")
-                asyncio.create_task(self._capture_fill(pt, pt.alpaca_order_id, "entry"))
-            elif result and result.get("shadow"):
-                pt.broker_status = "shadow"
-                _ping(executed=True, exec_note="shadow (broker disabled)")
-            else:
-                pt.broker_status = "error"
-                _drop_trade()
-                log.error("Alpaca paper entry REJECTED for trade #%d", pt.trade_no)
-                _ping(executed=False, exec_note="Alpaca rejected the order")
-            self._persist_state()
+            if getattr(pt, "order_underlying", None) is None:   # Config L/XSP legs are explicit — never nudged
+                def _spy_short(s):
+                    return float(round(s / 10.0))
+                open_shorts = {
+                    _spy_short(t.short_strike) for t in self.paper_trades
+                    if t is not pt and getattr(t, "strategy", None) == "directional_spread"
+                    and not t.closed and t.broker_status == "submitted"
+                    and t.side == pt.side and t.short_strike is not None
+                }
+                if open_shorts and pt.short_strike is not None:
+                    is_call = pt.side == "sell_call_cs"
+                    orig = pt.short_strike
+                    for _ in range(6):
+                        if _spy_short(pt.short_strike) not in open_shorts:
+                            break
+                        pt.short_strike += 10.0 if is_call else -10.0   # $1 SPY, further OTM
+                    if pt.short_strike != orig:
+                        log.info("Wave strike-collision nudge trade #%d: SPX short %.0f → %.0f "
+                                 "(avoid netting with an open %s position)",
+                                 pt.trade_no, orig, pt.short_strike, pt.side)
+                # Mirror the ACTUAL SPX strikes the strategy placed (1/10 scale).
+                params = spy_strike_params(
+                    side=pt.side,
+                    spx_short_strike=pt.short_strike,
+                    spx_credit_dollars=pt.estimated_credit,
+                )
+                _und = "SPY"
+                if pt.order_underlying and pt.order_short_strike is not None and pt.order_long_strike is not None:
+                    _und = pt.order_underlying                      # Config L: explicit broker legs (XSP)
+                    params["short_strike"] = float(pt.order_short_strike)
+                    params["long_strike"] = float(pt.order_long_strike)
+                today_str = datetime.now(ET).strftime("%Y-%m-%d")
+                result = await self.alpaca_trader.place_credit_spread(
+                    underlying=_und,
+                    expiry=today_str,
+                    side=params["side_type"],
+                    short_strike=params["short_strike"],
+                    long_strike=params["long_strike"],
+                    qty=pt.contracts,
+                    # SPY per-share net credit ≈ SPX$credit / 10(scale) / 100(mult).
+                    # Only used when ALPACA_MARKETABLE_LIMIT is on (scaffold; model-derived).
+                    limit_credit=(pt.estimated_credit or 0) / 1000.0,
+                    tag=f"wave-{pt.trade_no}",
+                )
+                if result and not result.get("shadow"):
+                    pt.alpaca_order_id = result.get("id")
+                    pt.broker_status = "submitted"
+                    log.info("Alpaca paper entry: trade #%d → order %s (SPY %s %.1f/%.1f)",
+                             pt.trade_no, pt.alpaca_order_id,
+                             params["side_type"], params["short_strike"], params["long_strike"])
+                    _ping(executed=True, exec_note="submitted to Alpaca")
+                    asyncio.create_task(self._capture_fill(pt, pt.alpaca_order_id, "entry"))
+                elif result and result.get("shadow"):
+                    pt.broker_status = "shadow"
+                    _ping(executed=True, exec_note="shadow (broker disabled)")
+                else:
+                    pt.broker_status = "error"
+                    _drop_trade()
+                    log.error("Alpaca paper entry REJECTED for trade #%d", pt.trade_no)
+                    _ping(executed=False, exec_note="Alpaca rejected the order")
+                self._persist_state()
         except Exception as e:
             pt.broker_status = "error"
             _drop_trade()
@@ -3749,7 +3750,10 @@ class Orchestrator:
                 from .directional_spread_manager import spy_strike_params
                 params = spy_strike_params(side=pt.side, spx_short_strike=pt.short_strike,
                                            spx_credit_dollars=pt.estimated_credit)
-                chain = await fetch_chain("SPY")
+                if getattr(pt, "order_underlying", None):
+                    chain = None   # Config L/XSP: NBBO credit recorded at entry; the SPY CBOE mid is the wrong instrument
+                else:
+                    chain = await fetch_chain("SPY")
                 if chain:
                     exp = datetime.now(ET).strftime("%y%m%d")
                     mids = chain_mids_for_expiry(chain, exp)

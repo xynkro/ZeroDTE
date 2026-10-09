@@ -171,7 +171,7 @@ async def run_scan(context: dict, api_key: str, model: str,
     body = {
         "model": model,
         "max_tokens": 1200,
-        "temperature": 0,
+        # no `temperature`: the Claude 5 models reject it (HTTP 400 "deprecated for this model", 2026-10-10)
         "system": SYSTEM,
         "messages": [{
             "role": "user",
@@ -184,6 +184,8 @@ async def run_scan(context: dict, api_key: str, model: str,
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as c:
             r = await c.post(API_URL, json=body, headers=headers)
+            if r.status_code >= 400:
+                log.warning("claude_scan HTTP %s: %s", r.status_code, r.text[:300])
             r.raise_for_status()
             data = r.json()
             text = "".join(b.get("text", "") for b in data.get("content", [])

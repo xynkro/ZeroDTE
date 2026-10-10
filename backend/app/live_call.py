@@ -247,9 +247,21 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
     if (not put) and short <= spot_spy + 0.5:
         return _finish("rejected", f"call short {short:.0f} not OTM vs SPY {spot_spy:.2f}")
     dist_pct = 100.0 * abs(spot_spy - short) / spot_spy
-    rec["dist_pct"] = round(dist_pct, 3)
     if settings.CALL_MIN_DIST_PCT > 0 and dist_pct < settings.CALL_MIN_DIST_PCT - 1e-9:
-        return _finish("rejected", f"invalidation only {dist_pct:.2f}% from spot (< {settings.CALL_MIN_DIST_PCT:.2f}% minimum) — too tight to pay the touch risk")
+        # step the short strike OUT (never in) until it clears the minimum — what a human does with a
+        # 0.29% read; the strike stays beyond the invalidation so the read is still honoured
+        k0 = short
+        for _ in range(3):
+            short = short - 1.0 if put else short + 1.0
+            dist_pct = 100.0 * abs(spot_spy - short) / spot_spy
+            if dist_pct >= settings.CALL_MIN_DIST_PCT - 1e-9:
+                break
+        if dist_pct < settings.CALL_MIN_DIST_PCT - 1e-9:
+            return _finish("rejected", f"invalidation {100.0 * abs(spot_spy - k0) / spot_spy:.2f}% from spot; even 3 strikes further is under the {settings.CALL_MIN_DIST_PCT:.2f}% minimum")
+        rec["strike_stepped_from"] = k0
+        rec["note"] = (f"[strike stepped {k0:.0f}→{short:.0f} to clear the {settings.CALL_MIN_DIST_PCT:.2f}% minimum] " + rec["note"])[:400]
+        long_ = short - width if put else short + width
+    rec["dist_pct"] = round(dist_pct, 3)
     long_ = short - width if put else short + width
     rec.update(short=short, long=long_, width=width)
 
@@ -304,11 +316,21 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
             rec["xsp_spy_ratio"] = round(ratio, 5)
             short_i = float(round(short * ratio))          # NEAREST XSP strike (no directional rounding bias)
             long_i = short_i - width if put else short_i + width
-            dist_x = 100.0 * abs(implied - short_i) / implied
             if (put and short_i >= implied - 0.5) or ((not put) and short_i <= implied + 0.5):
                 return _finish("rejected", f"XSP short {short_i:.0f} not OTM vs implied {implied:.2f}")
+            dist_x = 100.0 * abs(implied - short_i) / implied
             if settings.CALL_MIN_DIST_PCT > 0 and dist_x < settings.CALL_MIN_DIST_PCT - 1e-9:
-                return _finish("rejected", f"XSP strike {short_i:.0f} only {dist_x:.2f}% from spot (< {settings.CALL_MIN_DIST_PCT:.2f}% minimum)")
+                k0 = short_i
+                for _ in range(3):                                # step OUT on the XSP grid, never in
+                    short_i = short_i - 1.0 if put else short_i + 1.0
+                    dist_x = 100.0 * abs(implied - short_i) / implied
+                    if dist_x >= settings.CALL_MIN_DIST_PCT - 1e-9:
+                        break
+                if dist_x < settings.CALL_MIN_DIST_PCT - 1e-9:
+                    return _finish("rejected", f"XSP strike {k0:.0f} only {100.0 * abs(implied - k0) / implied:.2f}% from spot; even 3 strikes further is under the {settings.CALL_MIN_DIST_PCT:.2f}% minimum")
+                long_i = short_i - width if put else short_i + width
+                rec["strike_stepped_from"] = k0
+                rec["note"] = (f"[strike stepped XSP {k0:.0f}→{short_i:.0f} to clear the {settings.CALL_MIN_DIST_PCT:.2f}% minimum] " + rec["note"])[:400]
             rec["dist_pct"] = round(dist_x, 3)
         else:
             if abs(implied / spot_spy - 1) > 0.0015:

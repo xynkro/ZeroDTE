@@ -34,7 +34,8 @@ def main():
     calls = load(os.path.join(REPO, "backend", "data", "live_calls.jsonl"))
     ledger = {r.get("id"): r for r in load(os.path.join(REPO, "backend", "data", "trial_trades.jsonl"))}
     today = dt.datetime.now(ET).strftime("%Y-%m-%d")
-    reads = [c for c in calls if c.get("lean") in ("up", "down") and c.get("decision") in ("submitted", "advisory_only", "rejected")]
+    reads = [c for c in calls if c.get("lean") in ("up", "down") and c.get("decision") in ("submitted", "advisory_only", "rejected")
+             and not str(c.get("source", "")).startswith("dryrun")]
     closes = spy_closes(sorted({c["date"] for c in reads if c["date"] < today or dt.datetime.now(ET).hour >= 16}), env)
     dir_hits = []; dollars = []; lines = []
     for c in reads:
@@ -66,6 +67,7 @@ def main():
     text = head + ("\n" + "\n".join(lines[-12:]) if lines else "\n(no reads yet)")
     print(text)
     if "--telegram" in sys.argv:
+        from backend.app import config as _cfg  # noqa: F401 — loads .env (TELEGRAM_*) for the standalone script
         from backend.app import telegram as tg
         cid, tid = tg._route_zero_dte()
         r = tg.send(text, chat_id=cid, message_thread_id=tid)

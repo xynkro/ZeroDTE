@@ -43,7 +43,7 @@ pays more and gets touched more. Say neutral when the straddle-implied move is n
 one side or an event lands inside the session. You are SCORED on direction vs the close and on \
 dollars; overconfidence and vagueness both count against you. Never trade the news; price it.
 
-Return STRICT JSON only, exactly this schema:
+Return STRICT JSON only — start your reply with "{" and write nothing before or after the object. Exactly this schema:
 {"lean": "up|down|neutral",
  "confidence": 0.0,
  "level": 0.0,
@@ -164,13 +164,41 @@ def build_context(orch) -> dict:
     return ctx
 
 
+def _extract_json(text: str) -> dict | None:
+    """First JSON object in the text; tolerates a reply cut off mid-object by closing the
+    open string/braces (the 2026-10-09 14:00 read died on exactly that)."""
+    if not text:
+        return None
+    i = text.find("{")
+    if i < 0:
+        return None
+    frag = text[i:]
+    j = frag.rfind("}")
+    if j > 0:
+        try:
+            return json.loads(frag[:j + 1])
+        except ValueError:
+            pass
+    # repair: cut at the last complete key/value, close quotes and braces
+    cut = max(frag.rfind(","), frag.rfind("]"), frag.rfind("}"))
+    if cut > 0:
+        cand = frag[:cut].rstrip().rstrip(",")
+        opens = cand.count("[") - cand.count("]")
+        cand += "]" * max(0, opens) + "}"
+        try:
+            return json.loads(cand)
+        except ValueError:
+            return None
+    return None
+
+
 async def run_scan(context: dict, api_key: str, model: str,
                    timeout: float = 45.0) -> dict | None:
     """One Messages-API call → parsed verdict dict, or None on any failure."""
     import httpx
     body = {
         "model": model,
-        "max_tokens": 1200,
+        "max_tokens": 4000,
         # no `temperature`: the Claude 5 models reject it (HTTP 400 "deprecated for this model", 2026-10-10)
         "system": SYSTEM,
         "messages": [{
@@ -190,11 +218,13 @@ async def run_scan(context: dict, api_key: str, model: str,
             data = r.json()
             text = "".join(b.get("text", "") for b in data.get("content", [])
                            if b.get("type") == "text")
-            m = re.search(r"\{.*\}", text, re.S)
-            if not m:
-                log.warning("claude_scan: no JSON in response (%.120s)", text)
+            if data.get("stop_reason") not in (None, "end_turn", "stop_sequence"):
+                log.warning("claude_scan: stop_reason=%s (out=%s)", data.get("stop_reason"),
+                            (data.get("usage") or {}).get("output_tokens"))
+            verdict = _extract_json(text)
+            if verdict is None:
+                log.warning("claude_scan: no JSON in response (%.200s)", text)
                 return None
-            verdict = json.loads(m.group(0))
             usage = data.get("usage", {})
             verdict["_model"] = data.get("model", model)
             verdict["_tokens"] = {"in": usage.get("input_tokens"),

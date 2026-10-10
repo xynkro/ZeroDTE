@@ -98,9 +98,9 @@ def format_read(rec: dict) -> str:
         inst = rec.get("instrument", "SPY")
         os_, ol_ = rec.get("order_short", rec["short"]), rec.get("order_long", rec["long"])
         blocks.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
-                      + f"sell {inst} {os_:.0f}/{ol_:.0f} {kind} spread ×1 (SPX {os_ * 10:.0f}/{ol_ * 10:.0f})\n"
-                      f"exec credit ${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss ${_f(rec.get('max_loss_ct'), 0):.0f}/ct\n"
-                      f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop at −100% credit (≈ SPX {os_ * 10:.0f} touched) · {rec.get('time_stop_et', '15:25')} ET close")
+                      + (f"sell SPX {os_:.0f}/{ol_:.0f} {kind} spread ×1\n" if inst == "SPX" else f"sell {inst} {os_:.0f}/{ol_:.0f} {kind} spread ×1 (SPX {os_ * 10:.0f}/{ol_ * 10:.0f})\n")
+                      + f"exec credit ${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss ${_f(rec.get('max_loss_ct'), 0):.0f}/ct\n"
+                      + f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop at −100% credit (≈ SPX {os_ * (1 if inst == 'SPX' else 10):.0f} touched) · {rec.get('time_stop_et', '15:25')} ET close")
     elif d == "no_trade":
         blocks.append("→ no trade (neutral read)")
     elif d == "advisory_only":
@@ -108,7 +108,8 @@ def format_read(rec: dict) -> str:
     elif d in ("rejected", "broker_rejected", "error"):
         reason = str(rec.get("reason") or "")
         if rec.get("order_short") is not None and reason.startswith("executable credit"):
-            reason = reason.rsplit(" at ", 1)[0] + f" at SPX {rec['order_short'] * 10:.0f}/{rec['order_long'] * 10:.0f}"
+            _m = 1 if rec.get("instrument") == "SPX" else 10
+            reason = reason.rsplit(" at ", 1)[0] + f" at SPX {rec['order_short'] * _m:.0f}/{rec['order_long'] * _m:.0f}"
         blocks.append(f"→ NOT traded: {reason}")
     return "\n\n".join(blocks)
 
@@ -210,7 +211,7 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
         return _finish("rejected", "paper broker not armed (PAPER_BROKER != alpaca)")
     if not settings.TRADING_ENABLED or getattr(settings, "TRADING_HALTED", False):
         return _finish("rejected", "trading disabled or halted")
-    if abs(float(settings.SPY_WING_DOLLARS) - PREREG_WIDTH_SPY) > 1e-9:
+    if (settings.PROBE_UNDERLYING or "SPY").upper() != "SPX" and abs(float(settings.SPY_WING_DOLLARS) - PREREG_WIDTH_SPY) > 1e-9:
         return _finish("rejected", f"SPY_WING_DOLLARS={settings.SPY_WING_DOLLARS} ≠ pre-registered {PREREG_WIDTH_SPY}")
     today_pnl = _today_broker_pnl(orch, date)
     if today_pnl <= -abs(settings.CALL_DAY_HALT_USD):
@@ -277,11 +278,13 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
 
         # ── price on executable NBBO: short.bid − long.ask ──
         inst = (settings.PROBE_UNDERLYING or "SPY").upper()
-        if inst not in ("SPY", "XSP"):
-            return _finish("rejected", f"PROBE_UNDERLYING={inst!r} unsupported (SPY|XSP)")
+        if inst not in ("SPY", "XSP", "SPX"):
+            return _finish("rejected", f"PROBE_UNDERLYING={inst!r} unsupported (SPY|XSP|SPX)")
         rec["instrument"] = inst
-        if inst == "XSP" and now.weekday() == 4 and 15 <= now.day <= 21:
-            return _finish("rejected", "XSP 3rd-Friday series is AM-settled — probe stands aside today")
+        if inst in ("XSP", "SPX") and now.weekday() == 4 and 15 <= now.day <= 21:
+            return _finish("rejected", f"{inst} 3rd-Friday series is AM-settled — probe stands aside today")
+        if inst == "SPX":
+            width = float(settings.CALL_SPX_WIDTH)        # index points ($100/pt): $5 wide = $500 max loss
         try:
             from .nbbo_chain import fetch_chain_nbbo
             if inst == "XSP":
@@ -290,6 +293,10 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
                 # map the SPY-scale read levels onto XSP strikes with the LIVE ratio.
                 nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy * 1.003, now.strftime("%y%m%d"),
                                             underlying="XSP")
+            elif inst == "SPX":
+                # SPXW dailies: $5 grid, ±1.5% span (about 47 strikes a side), root SPXW
+                nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy * 10.03, now.strftime("%y%m%d"),
+                                            span_pct=0.015, underlying="SPXW", step=5)
             else:
                 nb = await fetch_chain_nbbo(orch.alpaca_trader, spot_spy, now.strftime("%y%m%d"))
         except Exception as e:  # noqa: BLE001
@@ -298,13 +305,42 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
         puts = {r["strike"]: r for r in (nb.get("puts") or [])}
         # option-implied spot of the traded instrument (put-call parity, strike nearest spot)
         implied = None
-        guess = spot_spy * (1.003 if inst == "XSP" else 1.0)
+        guess = spot_spy * (1.003 if inst == "XSP" else (10.03 if inst == "SPX" else 1.0))
         for k in sorted(set(calls) & set(puts), key=lambda k: abs(k - guess))[:1]:
             implied = k + calls[k]["mid"] - puts[k]["mid"]
         if implied is None:
             return _finish("rejected", f"{inst} chain has no two-sided ATM quotes")
         rec["nbbo_implied_spot"] = round(implied, 2)
-        if inst == "XSP":
+        if inst == "SPX":
+            live = await _spy_live_trade(orch)
+            if live is None and rec["bar_age_sec"] > 330:
+                return _finish("rejected", f"no live SPY print and the last bar is {rec['bar_age_sec']}s old")
+            basis_spot = live or spot_spy
+            rec["spy_live"] = live
+            ratio = implied / (basis_spot * 10.0)            # SPX / (SPY×10) ≈ 1.003
+            if not (1.0005 < ratio < 1.0070):
+                return _finish("rejected", f"SPX/(SPY×10) ratio {ratio:.4f} outside 1.0005–1.0070 (feed out of sync)")
+            rec["xsp_spy_ratio"] = round(ratio, 5)
+            g = float(settings.CALL_SPX_WIDTH)
+            short_i = float(round(short * 10.0 * ratio / g) * g)   # nearest $5 strike
+            long_i = short_i - width if put else short_i + width
+            if (put and short_i >= implied - 2.5) or ((not put) and short_i <= implied + 2.5):
+                return _finish("rejected", f"SPX short {short_i:.0f} not OTM vs implied {implied:.1f}")
+            dist_x = 100.0 * abs(implied - short_i) / implied
+            if settings.CALL_MIN_DIST_PCT > 0 and dist_x < settings.CALL_MIN_DIST_PCT - 1e-9:
+                k0 = short_i
+                for _ in range(3):
+                    short_i = short_i - g if put else short_i + g
+                    dist_x = 100.0 * abs(implied - short_i) / implied
+                    if dist_x >= settings.CALL_MIN_DIST_PCT - 1e-9:
+                        break
+                if dist_x < settings.CALL_MIN_DIST_PCT - 1e-9:
+                    return _finish("rejected", f"SPX strike {k0:.0f} only {100.0 * abs(implied - k0) / implied:.2f}% from spot; even 3 strikes further is under the minimum")
+                long_i = short_i - width if put else short_i + width
+                rec["strike_stepped_from"] = k0
+                rec["note"] = (f"[strike stepped SPX {k0:.0f}→{short_i:.0f} to clear the {settings.CALL_MIN_DIST_PCT:.2f}% minimum] " + rec["note"])[:400]
+            rec["dist_pct"] = round(dist_x, 3)
+        elif inst == "XSP":
             live = await _spy_live_trade(orch)              # basis from a LIVE print, not a 5-min bar
             if live is None and rec["bar_age_sec"] > 330:
                 return _finish("rejected", f"no live SPY print and the last bar is {rec['bar_age_sec']}s old")
@@ -364,20 +400,21 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
             return _finish("rejected", "insufficient intraday history for the exit model (need 5 RTH bars)")
         ev = SignalEvent(side=side, triggered_at=last.time.isoformat(), underlying_price=S0,
                          confluence={"live_read": True}, confluence_score=4)
-        spx_credit = exec_credit * 100 * 10.0            # SPY contract $ → SPX-scale $ (×10)
-        eng_short = round(short_i / ratio * 10.0, 2)      # the REAL legs expressed in engine scale (SPY×10)
-        eng_long = round(long_i / ratio * 10.0, 2)
+        spx_credit = exec_credit * 100 * (1.0 if inst == "SPX" else 10.0)   # contract $ in engine (SPX) scale
+        _mult = 1.0 if inst == "SPX" else 10.0
+        eng_short = round(short_i / ratio * _mult, 2)      # the REAL legs expressed in engine scale (SPY×10)
+        eng_long = round(long_i / ratio * _mult, 2)
         sp = StrikeSuggestion(instrument="SPX", side=side, mode="directional_spread",
                               short_strike=eng_short, long_strike=eng_long,
                               wing_width=abs(eng_long - eng_short), multiplier=100,
                               estimated_credit_dollars=spx_credit,
-                              max_loss_dollars=width * 10.0 * 100 - spx_credit,
+                              max_loss_dollars=abs(eng_long - eng_short) * 100 - spx_credit,
                               notional_per_contract=S0 * 100)
         trade_no = orch._next_trade_no(now)
         pt, _sizing = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
         pt.contracts = 1                                  # pre-registered: ONE contract, always
         if inst != "SPY":
-            pt.order_underlying = inst                    # broker truth; pt.instrument stays "SPX" (engine scale)
+            pt.order_underlying = "SPXW" if inst == "SPX" else inst   # OCC root the broker trades (SPXW dailies)
             pt.order_short_strike = float(short_i)
             pt.order_long_strike = float(long_i)
         pt.entry_mid_quote = round(exec_credit * 100, 2)

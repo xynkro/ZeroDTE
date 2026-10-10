@@ -39,7 +39,8 @@ def _fresh(ts: str | None, now_ts: float, max_stale_sec: float) -> bool:
 async def fetch_chain_nbbo(trader, spot_spy: float, expiry_yymmdd: str,
                            span_pct: float = 0.035,
                            max_stale_sec: float = 300.0,
-                           underlying: str = "SPY") -> dict:
+                           underlying: str = "SPY",
+                           step: int = 1) -> dict:
     """Pull a fresh two-sided NBBO chain around spot for today's SPY expiry.
 
     Returns {"calls": [{strike,bid,ask,mid}...], "puts": [...]} — only strikes
@@ -47,7 +48,9 @@ async def fetch_chain_nbbo(trader, spot_spy: float, expiry_yymmdd: str,
     """
     lo = int(spot_spy * (1.0 - span_pct))
     hi = int(round(spot_spy * (1.0 + span_pct))) + 1
-    strikes = list(range(lo, hi + 1))
+    if step > 1:                       # SPX: $5 grid near the money (SPXW dailies)
+        lo -= lo % step
+    strikes = list(range(lo, hi + 1, step))
     syms: dict[str, tuple[str, int]] = {}
     for k in strikes:
         syms[trader._occ_symbol(underlying, expiry_yymmdd, "call", float(k))] = ("calls", k)

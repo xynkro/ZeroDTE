@@ -51,6 +51,22 @@ def main():
             if pnl is not None: dollars.append(float(pnl))
         lines.append(f"{c['date']} {c.get('time_et')} {c.get('source','?')[:9]:9s} {c['lean']:4s} {c.get('conf',0):.2f} "
                      f"{'✓' if hit else ('✗' if hit is False else '·')} {('$%+.0f' % pnl) if pnl is not None else ('open' if t else c.get('decision','?')[:8])}")
+    # per-source scoreboard (mech = control arm, caspar = human arm, scan = model commentary)
+    src_lines = []
+    for src_key, label in (("mech", "MECH 13:00"), ("caspar", "CASPAR"), ("scan", "model read")):
+        rs = [c for c in reads if str(c.get("source", "")).startswith(src_key)]
+        if not rs:
+            continue
+        tr = [ledger.get(c.get("trade_id")) for c in rs if c.get("trade_id")]
+        tr = [t for t in tr if t and t.get("closed") and t.get("broker_realized_pnl") is not None]
+        pnl = [float(t["broker_realized_pnl"]) for t in tr]
+        hits = []
+        for c in rs:
+            cl = closes.get(c["date"]); sp = c.get("spot_spy")
+            if cl and sp:
+                hits.append((cl > sp) if c["lean"] == "up" else (cl < sp))
+        src_lines.append(f"{label}: reads {len(rs)} · dir {sum(hits)}/{len(hits)} · trades {len(pnl)} · real ${sum(pnl):+.0f}"
+                         + (f" · mean ${sum(pnl)/len(pnl):+.0f} · worst ${min(pnl):+.0f}" if pnl else ""))
     n_dir = len(dir_hits); n_hit = sum(1 for h in dir_hits if h)
     n_tr = len(dollars); tot = sum(dollars)
     green_days = {}
@@ -59,8 +75,21 @@ def main():
         if t and t.get("closed") and t.get("broker_realized_pnl") is not None:
             green_days[c["date"]] = green_days.get(c["date"], 0) + float(t["broker_realized_pnl"])
     gd = sum(1 for v in green_days.values() if v > 0)
-    head = (f"📊 CONFIG L SCOREBOARD · {today}\n"
-            f"reads scored {n_dir} · direction hit {n_hit}/{n_dir}" + (f" = {100*n_hit/max(1,n_dir):.0f}%" if n_dir else "") + "\n"
+    # broker truth: orders this week — the number that was silently 0 for 3 weeks
+    broker_line = ""
+    try:
+        import requests
+        h = {"APCA-API-KEY-ID": env.get("ALPACA_API_KEY", ""), "APCA-API-SECRET-KEY": env.get("ALPACA_SECRET_KEY", "")}
+        base = env.get("ALPACA_BASE_URL", "")
+        since = (dt.datetime.now(ET) - dt.timedelta(days=7)).strftime("%Y-%m-%dT00:00:00Z")
+        od = requests.get(base + "/v2/orders", headers=h, params={"status": "all", "after": since, "limit": 200}, timeout=15).json()
+        acct = requests.get(base + "/v2/account", headers=h, timeout=10).json()
+        n_ord = len(od) if isinstance(od, list) else -1
+        broker_line = f"BROKER: {n_ord} orders in 7 days · equity ${float(acct.get('equity', 0)):,.0f}" + ("  ⚠️ NO ORDERS" if n_ord == 0 else "")
+    except Exception as e:  # noqa: BLE001
+        broker_line = f"BROKER: unavailable ({e})"
+    head = (f"📊 CONFIG L SCOREBOARD · {today}\n{broker_line}\n" + ("\n".join(src_lines) + "\n" if src_lines else "")
+            + f"reads scored {n_dir} · direction hit {n_hit}/{n_dir}" + (f" = {100*n_hit/max(1,n_dir):.0f}%" if n_dir else "") + "\n"
             f"trades closed {n_tr} · real ${tot:+.0f}" + (f" · mean ${tot/n_tr:+.0f}/trade · worst ${min(dollars):+.0f}" if n_tr else "") + "\n"
             f"sessions traded {len(green_days)} · green {gd}" + (f" ({100*gd/len(green_days):.0f}%)" if green_days else "") + "\n"
             f"gate at 25 calls: mean > 0, ≥70% green sessions, worst ≤ -$480")

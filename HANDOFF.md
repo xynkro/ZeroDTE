@@ -1,4 +1,24 @@
 # ══════════════════════════════════════════════════════════════════
+# 🌊 WAVEZERO — CONFIG L v3 since Fri 2026-10-30 (13:00 ET / 01:00 SGT). READ THIS FIRST.
+#    POST-MORTEM Oct 12–30 (15 sessions, ZERO broker orders): the Black-Scholes exit model marked
+#    both XSP trades at 2–3× real credit ON THE ENTRY BAR → stop → entry dropped (both would have
+#    won). 30/41 reads floored (XSP pays ~nothing ≥0.30% after 13:00). 09:45 slot gated behind
+#    conf ≥0.70 the model never emits. Scheduled model reads: 44% on direction → RETIRED as a trade
+#    source (gate met). A 2nd Wave engine ran on the Mac after a login reload (plists now in
+#    ~/Library/LaunchAgents.disabled — NEVER re-enable; the VM is the only engine).
+#    REAL-QUOTE REPLAY (1,076 rows, 15 sessions, no model): mornings lose; 12:30–13:30 at 0.2–0.4% is
+#    a plateau of small positives (+$2–6/trade, ~$3/session); calls carried it in a down-drift.
+#    v3 = (1) exits on REAL NBBO of the broker legs (backend/app/live_exit.py): stop buy-back ≥ 2×
+#    credit, TP 60%, 15:25 close, never on the entry bar; the model never marks these trades.
+#    (2) CONTROL ARM: mechanical both-sides at 13:00 ET, 0.30% from spot, XSP $2 wide, 1 lot/side,
+#    floor $12, CALL_MAX_OPEN=2. (3) TREATMENT ARM: Caspar's reads via Telegram /read up|down <SPX
+#    level where wrong> [conf] [note] (source=caspar); /flat closes everything. (4) one 13:00 model
+#    read/day logged as commentary (CALL_AUTO_SUBMIT=false). Scoreboard 05:25 SGT per source +
+#    broker order count. Gates per source in docs/TRIAL_GATES.md (2026-10-30); close-the-book rule.
+#    MEIC (retired, Mac :8765) handed the Telegram bot poller to the VM (TELEGRAM_POLLER_ENABLED).
+# ══════════════════════════════════════════════════════════════════
+
+# ══════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO — CONFIG L LIVE since Fri 2026-10-09 11:45 ET (23:45 SGT). READ THIS FIRST.
 #    Caspar's "option 2": discretionary READS → ONE-lot SPY 0DTE paper spreads, scored on direction
 #    AND real dollars; "2 good weeks of data" → IBKR discussion (his deliberate act). Pre-registered

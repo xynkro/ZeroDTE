@@ -355,7 +355,8 @@ class TelegramBotPoller:
         if not opens:
             return "nothing open"
         for pt in opens:
-            pt.closed = True; pt.closed_at = _dt.now().isoformat(); pt.outcome = "time_close"; pt.exit_reason = "manual /flat"
+            from zoneinfo import ZoneInfo as _ZI
+            pt.closed = True; pt.closed_at = _dt.now(_ZI("America/New_York")).isoformat(); pt.outcome = "time_close"; pt.exit_reason = "manual /flat (Caspar)"
             _a.create_task(self.orch._submit_alpaca_exit(pt))
         self.orch._persist_state()
         return f"closing {len(opens)} position(s): " + ", ".join(f"#{t.trade_no}" for t in opens)

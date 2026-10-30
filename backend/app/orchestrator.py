@@ -186,7 +186,7 @@ class Orchestrator:
             for _t in self.paper_trades:
                 if _t.closed:
                     continue
-                _d = str(getattr(_t, "entry_time", "") or "")[:10]
+                _d = str(getattr(_t, "fired_at", "") or getattr(_t, "entry_time", "") or "")[:10]
                 if _d and _d < _today:
                     _t.closed = True
                     _t.closed_at = _t.closed_at or f"{_d}T16:00:00-04:00"
@@ -267,6 +267,7 @@ class Orchestrator:
         self._eod_safety_task = asyncio.create_task(self._eod_safety_loop())
         # Feed-staleness alarm (detects a frozen feed during RTH)
         self._staleness_task = asyncio.create_task(self._feed_staleness_watchdog())
+        self._live_exit_task = asyncio.create_task(self._live_exit_watchdog())
         # Feed re-promotion: never stay on a fallback feed once Alpaca is back
         self._repromote_task = asyncio.create_task(self._feed_repromote_loop())
         # Dealer-gamma (GEX) regime refresh — context for sizing/analysis
@@ -597,6 +598,26 @@ class Orchestrator:
             except Exception as e:  # noqa: BLE001
                 log.debug("feed re-promote probe failed: %s", e)
 
+    async def _live_exit_watchdog(self):
+        """Config L: evaluate explicit-leg exits on the WALL clock every 45 s with the latest bar,
+        so a stalled feed can never leave a live position unmanaged until the broker's sweep."""
+        from .live_exit import check_exits, is_live_read_trade
+        while True:
+            try:
+                await asyncio.sleep(45)
+                if not any((not t.closed) and is_live_read_trade(t) for t in self.paper_trades):
+                    continue
+                buf = list(self.predictor._buffer)
+                if not buf:
+                    continue
+                last = buf[-1]
+                synthetic = last.model_copy(update={"time": datetime.now(ET)}) if hasattr(last, "model_copy") else last
+                await check_exits(self, synthetic)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001
+                log.warning("live-exit watchdog error: %s", e)
+
     async def _feed_staleness_watchdog(self):
         """Alarm if the feed stops delivering bars during RTH.
 
@@ -766,8 +787,9 @@ class Orchestrator:
     async def _maybe_mech_entry(self, bar: Bar):
         """Config L v3 (2026-10-30): the mechanical control arm. Once per session at CALL_MECH_SLOT
         (10-min window), sell BOTH sides at CALL_MECH_DIST_PCT from spot through live_call.submit_call
-        (floor, width, one lot, max-open, day halt all enforced there). On 15 sessions of real XSP
-        quotes this was the only cell with positive expectancy (+$3/trade, small). Persisted marker."""
+        (floor, width, one lot, max-open, day halt all enforced there). Both sides or none: the pair
+        is skipped when capacity (CALL_MAX_OPEN / CALL_MAX_TRADES_PER_DAY) cannot take two. Early-close
+        sessions are skipped. Runs as a background task so the bar loop is never blocked."""
         if not settings.CALL_MECH_ENABLED or not getattr(self, "_is_live_bar", False):
             return
         et = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
@@ -784,19 +806,40 @@ class Orchestrator:
             return
         self._claude_scan_slots_done.add(key)
         self._persist_state()
-        try:
-            from .live_call import submit_call
-            buf = list(self.predictor._buffer)
-            spot_spy = float(buf[-1].close) / 10.0 if buf else None
-            if not spot_spy:
-                return
-            d = settings.CALL_MECH_DIST_PCT / 100.0
-            for lean, inv in (("down", spot_spy * (1 + d)), ("up", spot_spy * (1 - d))):
-                await submit_call(self, lean=lean, conf=1.0, invalidation=round(inv, 2),
-                                  note=f"mechanical {settings.CALL_MECH_SLOT} ET both-sides control, {settings.CALL_MECH_DIST_PCT:.2f}% from spot",
-                                  source=f"mech@{settings.CALL_MECH_SLOT}")
-        except Exception as e:  # noqa: BLE001
-            log.warning("mech entry failed: %s", e)
+        if date in ("2026-11-27", "2026-12-24", "2027-11-26", "2027-12-24"):   # NYSE 13:00 ET closes
+            log.info("mech: early-close session %s — standing aside", date)
+            return
+
+        async def _run():
+            try:
+                from .live_call import submit_call, load_calls
+                open_n = sum(1 for t in self.paper_trades if (not t.closed) or t.broker_status == "close_error")
+                n_today = sum(1 for c in load_calls() if c.get("date") == date and c.get("decision") == "submitted")
+                if settings.CALL_MAX_OPEN - open_n < 2 or settings.CALL_MAX_TRADES_PER_DAY - n_today < 2:
+                    msg = (f"mech {settings.CALL_MECH_SLOT}: no room for a PAIR (open {open_n}/{settings.CALL_MAX_OPEN}, "
+                           f"today {n_today}/{settings.CALL_MAX_TRADES_PER_DAY}) — standing aside")
+                    log.info(msg)
+                    try:
+                        from .live_call import _push
+                        _push(self, "⚪ " + msg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return
+                buf = list(self.predictor._buffer)
+                spot_spy = float(buf[-1].close) / 10.0 if buf else None
+                if not spot_spy:
+                    return
+                d = settings.CALL_MECH_DIST_PCT / 100.0
+                for lean, inv in (("down", spot_spy * (1 + d)), ("up", spot_spy * (1 - d))):
+                    await submit_call(self, lean=lean, conf=1.0, invalidation=round(inv, 2),
+                                      note=f"mechanical {settings.CALL_MECH_SLOT} ET both-sides control, {settings.CALL_MECH_DIST_PCT:.2f}% from spot",
+                                      source=f"mech@{settings.CALL_MECH_SLOT}")
+            except Exception as e:  # noqa: BLE001
+                log.warning("mech entry failed: %s", e)
+
+        _t = asyncio.create_task(_run())
+        self._bg_tasks = getattr(self, "_bg_tasks", set())
+        self._bg_tasks.add(_t); _t.add_done_callback(self._bg_tasks.discard)
 
     def _maybe_claude_scan(self, bar: Bar):
         """Claude READ — scored advisor turned Config L probe (2026-10-09). Fires once per
@@ -3672,6 +3715,13 @@ class Orchestrator:
         resolves, if no live order was placed (shadow/error) there's nothing to close.
         """
         from .directional_spread_manager import spy_strike_params
+        _started = getattr(self, "_exit_started", None)
+        if _started is None:
+            _started = self._exit_started = set()
+        if pt.id in _started:
+            log.info("exit for trade #%s already in flight — ignoring duplicate", pt.trade_no)
+            return                                              # one broker close per trade, ever
+        _started.add(pt.id)
         entry_task = self._broker_entry_tasks.pop(pt.id, None)
         if entry_task is not None:
             try:
@@ -3774,13 +3824,33 @@ class Orchestrator:
             await asyncio.sleep(4.0)   # let the fill settle before reading
             order = await self.alpaca_trader.get_order(order_id)
             cf = order_net_cashflow(order)
+            _tries = 0
+            while cf is None and _tries < 6:          # resting marketable-limit / slow fill: keep reading
+                _tries += 1
+                await asyncio.sleep(10.0)
+                order = await self.alpaca_trader.get_order(order_id)
+                cf = order_net_cashflow(order)
+                if order and str(order.get("status") or "").lower() in ("canceled", "cancelled", "rejected", "expired"):
+                    break
             if cf is None:
-                log.info("fill-read %s: order %s not filled yet (trade #%s)", kind, order_id, pt.trade_no)
+                log.info("fill-read %s: order %s not filled (trade #%s, status %s)", kind, order_id, pt.trade_no,
+                         (order or {}).get("status"))
                 return
             if kind == "entry":
                 pt.broker_realized_credit = cf
             else:
-                base = pt.broker_realized_credit if pt.broker_realized_credit is not None else 0.0
+                base = pt.broker_realized_credit
+                if base is None and pt.alpaca_order_id:          # the entry read was missed — re-read it now
+                    try:
+                        eo = await self.alpaca_trader.get_order(pt.alpaca_order_id)
+                        base = order_net_cashflow(eo)
+                        if base is not None:
+                            pt.broker_realized_credit = base
+                    except Exception as _e:  # noqa: BLE001
+                        log.warning("fill-read: entry re-read failed for #%s: %s", pt.trade_no, _e)
+                if base is None:
+                    log.error("fill-read exit: trade #%s has NO entry credit — pnl left None (never 0-based)", pt.trade_no)
+                    return
                 pt.broker_realized_pnl = round(base + cf, 2)
             log.info("fill-read %s: trade #%s real cashflow $%.2f | model credit $%.0f model pnl %s",
                      kind, pt.trade_no, cf, pt.estimated_credit or 0, pt.pnl)

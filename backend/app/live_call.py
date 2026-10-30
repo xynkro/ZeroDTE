@@ -413,6 +413,7 @@ async def submit_call(orch, *, lean: str, conf, side: str | None = None,
         trade_no = orch._next_trade_no(now)
         pt, _sizing = open_directional_trade(ev, sp, trade_no=trade_no, realized_std=r5)
         pt.contracts = 1                                  # pre-registered: ONE contract, always
+        pt.opened_wall_clock = now.isoformat()
         if inst != "SPY":
             pt.order_underlying = "SPXW" if inst == "SPX" else inst   # OCC root the broker trades (SPXW dailies)
             pt.order_short_strike = float(short_i)

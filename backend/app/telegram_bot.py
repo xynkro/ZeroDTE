@@ -61,6 +61,8 @@ COMMANDS_FOR_BOTFATHER = [
     {"command": "news",      "description": "Latest 5 hot macro headlines"},
     {"command": "calendar",  "description": "Next 3 high-impact economic events"},
     {"command": "signals",   "description": "Last 5 signals fired"},
+    {"command": "read",      "description": "Your read → one-lot paper spread: /read up 7760 [note]  (lean, SPX level where you are wrong)"},
+    {"command": "flat",      "description": "Close every open probe position now"},
     {"command": "help",      "description": "List commands"},
 ]
 
@@ -286,6 +288,9 @@ class TelegramBotPoller:
             "signals":    self._cmd_signals,
             "help":       self._cmd_help,
             "start":      self._cmd_help,
+            "read":       self._cmd_read,
+            "call":       self._cmd_read,
+            "flat":       self._cmd_flat,
         }
         h = handlers.get(cmd)
         if h is None:
@@ -296,6 +301,64 @@ class TelegramBotPoller:
         tg.send(reply, chat_id=chat_id, message_thread_id=thread_id, override_mute=True)
 
     # ── Handlers ────────────────────────────────────────────────────────────
+
+    # ── Config L: Caspar's own reads (admin-only; the dispatcher already gated on user id) ──
+
+    async def _cmd_read(self, args: str) -> str:
+        """/read up 7760 [conf] [note…] — lean (up|down|neutral), SPX level where the read is WRONG,
+        optional confidence (0–1, default 0.65), optional note. Executes through live_call.submit_call:
+        one lot, floor, distance, max-open and day-halt all enforced there; the result is also pushed."""
+        from .live_call import submit_call
+        from .config import settings as _st
+        parts = args.split()
+        if not parts:
+            return ("usage: /read up|down|neutral <SPX level where wrong> [conf 0-1] [note]\n"
+                    "e.g. /read down 7790 0.7 rejected at VWAP twice")
+        lean = parts[0].lower()
+        if lean not in ("up", "down", "neutral"):
+            return f"lean must be up|down|neutral (got {lean!r})"
+        inv = None; conf = 0.65; note_start = 1
+        if lean != "neutral":
+            if len(parts) < 2:
+                return "need the SPX level where the read is wrong, e.g. /read up 7760"
+            try:
+                inv = float(parts[1].replace(",", ""))
+            except ValueError:
+                return f"bad level {parts[1]!r}"
+            note_start = 2
+            if len(parts) > 2:
+                try:
+                    c = float(parts[2])
+                    if 0.0 <= c <= 1.0:
+                        conf = c; note_start = 3
+                except ValueError:
+                    pass
+        note = " ".join(parts[note_start:])[:300]
+        rec = await submit_call(self.orch, lean=lean, conf=conf, invalidation=inv,
+                                note=note or "caspar read", source="caspar")
+        d = rec.get("decision"); r = rec.get("reason")
+        if d == "submitted":
+            kind = "put" if rec.get("side") == "sell_put_cs" else "call"
+            return (f"✅ #{rec.get('trade_no')} sell {rec.get('instrument')} {rec.get('order_short'):.0f}/{rec.get('order_long'):.0f} "
+                    f"{kind} ×1 · credit ${rec.get('exec_credit_ct', 0):.0f}/ct · stop {1 + _st.CALL_STOP_MULT:.0f}× credit · "
+                    f"TP {_st.DIRECTIONAL_TP_TARGET:.0f}% · 15:25 ET close")
+        if d == "no_trade":
+            return "📝 neutral read logged, no trade"
+        return f"⛔ not traded: {r}"
+
+    async def _cmd_flat(self, args: str) -> str:
+        """/flat — close every open probe position at market now (paper)."""
+        import asyncio as _a
+        from datetime import datetime as _dt
+        from .live_exit import is_live_read_trade
+        opens = [t for t in self.orch.paper_trades if not t.closed and is_live_read_trade(t)]
+        if not opens:
+            return "nothing open"
+        for pt in opens:
+            pt.closed = True; pt.closed_at = _dt.now().isoformat(); pt.outcome = "time_close"; pt.exit_reason = "manual /flat"
+            _a.create_task(self.orch._submit_alpaca_exit(pt))
+        self.orch._persist_state()
+        return f"closing {len(opens)} position(s): " + ", ".join(f"#{t.trade_no}" for t in opens)
 
     async def _cmd_help(self, args: str) -> str:
         lines = ["🤖 ZeroDTE bot — commands:"]

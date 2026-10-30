@@ -100,7 +100,7 @@ def format_read(rec: dict) -> str:
         blocks.append((f"→ PAPER #{rec.get('trade_no')}: " if d == "submitted" else "→ DRY RUN: would ")
                       + (f"sell SPX {os_:.0f}/{ol_:.0f} {kind} spread ×1\n" if inst == "SPX" else f"sell {inst} {os_:.0f}/{ol_:.0f} {kind} spread ×1 (SPX {os_ * 10:.0f}/{ol_ * 10:.0f})\n")
                       + f"exec credit ${_f(rec.get('exec_credit_ct'), 0):.0f}/ct (floor ${_f(rec.get('floor_ct'), 0):.0f}) · max loss ${_f(rec.get('max_loss_ct'), 0):.0f}/ct\n"
-                      + f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop at −100% credit (≈ SPX {os_ * (1 if inst == 'SPX' else 10):.0f} touched) · {rec.get('time_stop_et', '15:25')} ET close")
+                      + f"TP {settings.DIRECTIONAL_TP_TARGET:.0f}% · stop when buy-back ≥ {1 + settings.CALL_STOP_MULT:.0f}× credit on live quotes · {rec.get('time_stop_et', '15:25')} ET close")
     elif d == "no_trade":
         blocks.append("→ no trade (neutral read)")
     elif d == "advisory_only":

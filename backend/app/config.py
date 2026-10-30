@@ -268,6 +268,10 @@ class Settings:
     PROBE_UNDERLYING: str = os.getenv("PROBE_UNDERLYING", "SPY").upper()   # "SPY" | "XSP" (SPX/10, cash-settled, European)
     CALL_MIN_DIST_PCT: float = _f("CALL_MIN_DIST_PCT", 0.0)        # invalidation must be ≥ this % from spot (0 = off)
     CALL_SPX_WIDTH: float = _f("CALL_SPX_WIDTH", 5.0)               # SPX (SPXW) spread width in index points when PROBE_UNDERLYING=SPX
+    CALL_STOP_MULT: float = _f("CALL_STOP_MULT", 1.0)             # stop when buy-back ≥ (1+mult)·credit on live NBBO (1.0 = −100% credit)
+    CALL_MECH_ENABLED: bool = _b("CALL_MECH_ENABLED", False)       # Config L v3: mechanical both-sides entry at CALL_MECH_SLOT
+    CALL_MECH_SLOT: str = os.getenv("CALL_MECH_SLOT", "13:00")
+    CALL_MECH_DIST_PCT: float = _f("CALL_MECH_DIST_PCT", 0.30)
     CALL_AM_MIN_CONF: float = _f("CALL_AM_MIN_CONF", 0.0)           # before 12:00 ET require this confidence instead (0 = same as CALL_MIN_CONF)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──

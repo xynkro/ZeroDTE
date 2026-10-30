@@ -744,6 +744,14 @@ class Orchestrator:
         self._maybe_claude_scan(bar)
         # WaveZero VALIDATED band-anchored entry — time-triggered, once/day at ~10:00 ET
         await self._maybe_open_band_trade(bar)
+        # Config L: real-quote exits for explicit-leg trades (never the BS model), then the
+        # mechanical slot entry (v3). Both fail-soft.
+        try:
+            from .live_exit import check_exits as _lx
+            await _lx(self, bar)
+        except Exception as _e:  # noqa: BLE001
+            log.warning("live_exit hook failed: %s", _e)
+        await self._maybe_mech_entry(bar)
         await self._refresh_state(bar, new_signals=signals)
         # Check open wave trades for TP / STOP / TIME / EOD exits → fire EXIT alerts
         self._dispatch_exit_check(bar)
@@ -754,6 +762,41 @@ class Orchestrator:
         await self._check_ic_stop_loss(bar)
         await self._maybe_fire_eod_summary(bar)
         await self._broadcast()
+
+    async def _maybe_mech_entry(self, bar: Bar):
+        """Config L v3 (2026-10-30): the mechanical control arm. Once per session at CALL_MECH_SLOT
+        (10-min window), sell BOTH sides at CALL_MECH_DIST_PCT from spot through live_call.submit_call
+        (floor, width, one lot, max-open, day halt all enforced there). On 15 sessions of real XSP
+        quotes this was the only cell with positive expectancy (+$3/trade, small). Persisted marker."""
+        if not settings.CALL_MECH_ENABLED or not getattr(self, "_is_live_bar", False):
+            return
+        et = bar.time.astimezone(ET) if bar.time.tzinfo else bar.time
+        if et.weekday() > 4:
+            return
+        try:
+            hh, mm = settings.CALL_MECH_SLOT.split(":"); m0 = int(hh) * 60 + int(mm)
+        except ValueError:
+            return
+        bar_min = et.hour * 60 + et.minute
+        date = et.strftime("%Y-%m-%d")
+        key = f"{date}:mech"
+        if not (m0 <= bar_min < m0 + 10) or key in self._claude_scan_slots_done:
+            return
+        self._claude_scan_slots_done.add(key)
+        self._persist_state()
+        try:
+            from .live_call import submit_call
+            buf = list(self.predictor._buffer)
+            spot_spy = float(buf[-1].close) / 10.0 if buf else None
+            if not spot_spy:
+                return
+            d = settings.CALL_MECH_DIST_PCT / 100.0
+            for lean, inv in (("down", spot_spy * (1 + d)), ("up", spot_spy * (1 - d))):
+                await submit_call(self, lean=lean, conf=1.0, invalidation=round(inv, 2),
+                                  note=f"mechanical {settings.CALL_MECH_SLOT} ET both-sides control, {settings.CALL_MECH_DIST_PCT:.2f}% from spot",
+                                  source=f"mech@{settings.CALL_MECH_SLOT}")
+        except Exception as e:  # noqa: BLE001
+            log.warning("mech entry failed: %s", e)
 
     def _maybe_claude_scan(self, bar: Bar):
         """Claude READ — scored advisor turned Config L probe (2026-10-09). Fires once per

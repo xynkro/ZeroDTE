@@ -50,6 +50,44 @@ orders remain on Alpaca paper (hard rule). Do not build this before the trial
 says execution is the binding constraint.
 
 ## Calibration log (transparent, data-based — not goalpost moves)
+- **2026-10-30 — CONFIG L v3: exits on REAL quotes; the mechanical 13:00 control arm; model reads demoted;
+  Caspar's reads via Telegram. Pre-registered before the first order.**
+  WHAT WENT WRONG (Oct 12–30, 15 sessions, 0 broker orders): the probe's 2 submitted trades (Oct 22, 23,
+  XSP call spreads at $13/$12 credit) were marked by the Black-Scholes exit model at 2.1–2.6× their real
+  credit ON THE ENTRY BAR, booked as −163%/−110% stops, and the broker entry was dropped before any
+  order — both would have been winners on the real path. 30/41 reads were refused by the $12 floor
+  because XSP pays nothing at ≥0.30% after 13:00 (median $9/$6 at 13–14h, $3/$2 at 14–15h); the
+  09:45 slot, the only one where XSP pays ($28/ct at 0.30%), was gated behind confidence ≥ 0.70 which
+  the model never emits (max 0.58 in 47 reads). The scheduled model read scored 14/32 = 44% on
+  direction: the pre-registered "direction hit rate < 50% → RETIRE" condition is MET for scan-sourced
+  reads. A second Wave engine was found running on the Mac (reloaded on login) in shadow, duplicating
+  Telegram reads — plists removed from LaunchAgents.
+  REAL-QUOTE REPLAY (1,076 five-minute rows, every XSP leg's bid/ask, no model; one entry per side per
+  day; stop = buy-back ≥ 2× credit; TP 60%; 15:25 close): every morning cell loses (09:45 −$4/trade,
+  10:30 −$4); 12:30–13:30 at 0.20–0.40% with floor $6–20 is a plateau of small positives (+$2 to +$6/trade,
+  total +$51 over 15 sessions at 13:00 / 0.30% / $12 — ~$3.40 per session); 13:30+ negative; calls
+  carried it (+$11/trade, 6/7 green) while puts lost (−$3) in a three-week down-drift. The 13:00 model
+  reads' side beat both-sides on the 6 rows where the floor passed (6/6), n too small to mean anything.
+  HONEST READING: there is no demonstrated edge at this size in this tape; the 13:00 cell is the only
+  candidate with real-quote support and its expectancy is a few dollars that may be regime.
+  CHANGES (effective Fri 2026-10-30 13:00 ET if deployed in time, else Mon 2026-11-02):
+    • Exits for explicit-leg trades are computed in backend/app/live_exit.py on live NBBO of the broker
+      legs: stop when buy-back ≥ 2× real credit (CALL_STOP_MULT=1.0), TP 60%, time stop 15:25 ET, never
+      on the entry bar or before the broker fill. The Black-Scholes model never marks these trades.
+    • Control arm (mechanical): once per session at 13:00 ET sell BOTH sides at 0.30% from spot (step-out
+      rule applies), XSP, $2 wide, one lot per side, floor $12/ct. CALL_MAX_OPEN=2, ≤2 trades/day.
+      Expected: +$3/trade ± noise; worst plausible day −$380 (two stops).
+    • Treatment arm (human): Caspar's reads via Telegram `/read up|down <SPX level where wrong> [conf] [note]`,
+      same rules; executes only when the market pays the floor. Scored separately by source.
+    • Scheduled model reads: retired as a trade source (gate met). One 13:00 read a day continues as a
+      logged, scored commentary (advisory only, not pushed per read).
+  GATES (unchanged in spirit; per SOURCE now — mech and caspar scored separately): at 25 traded entries
+  for a source, RETIRE it if mean real $/trade ≤ 0 or any day ≤ −$480 or DD > 15%; PASS to the IBKR
+  discussion if mean > 0 with session-bootstrap P ≥ 0.90, ≥ 70% green sessions, worst ≥ −$480.
+  If the mech arm shows ≤ 0 at 25 and the human arm has < 10 reads, the SPY/XSP 0DTE book closes and
+  the sampler stays on as the regime detector (re-engage when the ATM straddle implies > 0.35% to
+  the close at 13:00, i.e. when premium returns).
+
 - **2026-10-10 — CONFIG L v2 (instrument + geometry), decided by WaveZero at Caspar's instruction
   "you decide which will make us money". Sample so far: 0 trades (every read refused by the $20 floor).**
   Evidence: the real-quote grid on the probe's own read windows (4 sessions Oct 6–9, $2-wide, stop ≈

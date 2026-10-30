@@ -352,6 +352,8 @@ def check_exit(trade: PaperTrade, bar: Bar) -> Optional[dict]:
         return None
     if trade.strategy != "directional_spread":
         return None  # only manage directional spreads here
+    if getattr(trade, "order_underlying", None):
+        return None  # Config L: exits on REAL quotes in live_exit.check_exits — the model never marks these
     # Black-Scholes path (honest engine) — repriced spread, not underlying-move proxy
     if trade.bs_realized_std is not None:
         return _check_exit_bs(trade, bar)

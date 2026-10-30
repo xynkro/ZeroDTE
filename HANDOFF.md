@@ -16,6 +16,12 @@
 #    read/day logged as commentary (CALL_AUTO_SUBMIT=false). Scoreboard 05:25 SGT per source +
 #    broker order count. Gates per source in docs/TRIAL_GATES.md (2026-10-30); close-the-book rule.
 #    MEIC (retired, Mac :8765) handed the Telegram bot poller to the VM (TELEGRAM_POLLER_ENABLED).
+#    FIRST SLOT Fri Oct-30 13:01 ET: call side floored ($9); put side accepted ($18) but NOT PLACED —
+#    the D7 nudge-guard re-indent swallowed place_credit_spread (fixed 588d8fe1, AST-asserted).
+#    Re-issue at 13:06 floored ($11). XSP broker path then PROVEN by a 1-lot smoke test (filled +
+#    closed; ~$2 fees per round-trip lot on XSP paper). First scored order Mon Nov-2 13:00 ET.
+#    GTAA-5 verification PASSED its pre-registered gate (docs/GTAA5_REPLAY_2026-10-30.md, 5.23%
+#    CAGR, −14.7% DD, thin margins); better-odds research in docs/RESEARCH_2026-10-30_better_odds.md.
 #    DEPLOYED Fri 2026-10-30 11:17 ET (commit 76aed4f6 + hardening): live dry-run through the new code
 #    priced XSP 765/767C $13 and 758/756P $19 (floor $12) — the path works end to end. Telegram
 #    poller OFF on the VM: the shared bot is also polled by the Claude desktop app's Telegram MCP

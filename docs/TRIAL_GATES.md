@@ -87,6 +87,14 @@ says execution is the binding constraint.
   If the mech arm shows ≤ 0 at 25 and the human arm has < 10 reads, the SPY/XSP 0DTE book closes and
   the sampler stays on as the regime detector (re-engage when the ATM straddle implies > 0.35% to
   the close at 13:00, i.e. when premium returns).
+  FIRST SESSION 2026-10-30 (ET): call side refused by the floor ($9 < $12 at XSP 762/764 — correct);
+  put side accepted at $18/ct (XSP 755/753, stepped out from 756) but the order never reached Alpaca:
+  the morning's review fix had indented the whole placement block under the nudge guard (fixed
+  588d8fe1 within 5 minutes; AST check now asserts placement is reachable). Re-issued at 13:06 →
+  $11 < $12, refused. The pending trade was booked not_filled. A deliberate 1-lot far-OTM XSP SMOKE
+  TEST through the real trader code then filled and closed cleanly (749/747P, +$1 entry, −$4 close,
+  equity −$5.10 → ~$2 of index-option fees per round-trip lot, which the floor arithmetic must carry:
+  $2 on a $12 credit is 17%). Excluded from scoring. First scored order: Mon 2026-11-02 13:00 ET.
 
 - **2026-10-10 — CONFIG L v2 (instrument + geometry), decided by WaveZero at Caspar's instruction
   "you decide which will make us money". Sample so far: 0 trades (every read refused by the $20 floor).**

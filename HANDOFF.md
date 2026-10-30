@@ -16,6 +16,12 @@
 #    read/day logged as commentary (CALL_AUTO_SUBMIT=false). Scoreboard 05:25 SGT per source +
 #    broker order count. Gates per source in docs/TRIAL_GATES.md (2026-10-30); close-the-book rule.
 #    MEIC (retired, Mac :8765) handed the Telegram bot poller to the VM (TELEGRAM_POLLER_ENABLED).
+#    DEPLOYED Fri 2026-10-30 11:17 ET (commit 76aed4f6 + hardening): live dry-run through the new code
+#    priced XSP 765/767C $13 and 758/756P $19 (floor $12) — the path works end to end. Telegram
+#    poller OFF on the VM: the shared bot is also polled by the Claude desktop app's Telegram MCP
+#    (~/Documents/Claude/telegram-mcp) → 409 war. Caspar's /read needs a DEDICATED bot:
+#    @BotFather → /newbot → run deploy/vm/set_wave_bot.sh on the Mac (hidden prompt, SSH install,
+#    DM routing) → press Start on the bot → /read up 7760. Until then reads can be sent to me in chat.
 # ══════════════════════════════════════════════════════════════════
 
 # ══════════════════════════════════════════════════════════════════

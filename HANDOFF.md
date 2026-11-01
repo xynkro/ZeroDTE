@@ -1,5 +1,9 @@
 # ══════════════════════════════════════════════════════════════════
 # 🌊 WAVEZERO — CONFIG L v3 since Fri 2026-10-30 (13:00 ET / 01:00 SGT). READ THIS FIRST.
+#    v3.1 (Sun 2026-11-01): mech arm SKIPS LOUD MORNINGS — 09:30→13:00 SPY range > 1.0% → stand aside
+#    (CALL_MECH_MAX_AM_RANGE_PCT; measured: direction is a coin flip, size carries over at +0.50 —
+#    docs/RESEARCH_2026-11-01_direction_vs_size.md). Own Telegram bot @wavezerobot LIVE on the VM
+#    (poller on, DM routing, /read + /flat work). The shared bot is now send-only history.
 #    POST-MORTEM Oct 12–30 (15 sessions, ZERO broker orders): the Black-Scholes exit model marked
 #    both XSP trades at 2–3× real credit ON THE ENTRY BAR → stop → entry dropped (both would have
 #    won). 30/41 reads floored (XSP pays ~nothing ≥0.30% after 13:00). 09:45 slot gated behind

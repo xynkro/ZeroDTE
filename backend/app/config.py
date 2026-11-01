@@ -272,6 +272,7 @@ class Settings:
     CALL_MECH_ENABLED: bool = _b("CALL_MECH_ENABLED", False)       # Config L v3: mechanical both-sides entry at CALL_MECH_SLOT
     CALL_MECH_SLOT: str = os.getenv("CALL_MECH_SLOT", "13:00")
     CALL_MECH_DIST_PCT: float = _f("CALL_MECH_DIST_PCT", 0.30)
+    CALL_MECH_MAX_AM_RANGE_PCT: float = _f("CALL_MECH_MAX_AM_RANGE_PCT", 1.0)   # v3.1 2026-11-01: skip the pair when the 09:30→slot SPY range exceeds this % (0 = off); docs/RESEARCH_2026-11-01_direction_vs_size.md
     CALL_AM_MIN_CONF: float = _f("CALL_AM_MIN_CONF", 0.0)           # before 12:00 ET require this confidence instead (0 = same as CALL_MIN_CONF)
 
     # ── Strike/exit config (May 2026 HONEST RE-VALIDATION, Black-Scholes engine) ──

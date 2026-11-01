@@ -298,3 +298,21 @@ At trade 25 (or a HALT trigger): run the scoreboard, write the verdict in
 HANDOFF.md, and act per the table. If RETIRE: flip `WAVE_BAND_STRATEGY_ENABLED=false`,
 stop the instance, write the post-mortem. The deal that makes running this
 rational is that the gates actually bind.
+
+- **2026-11-01 — CONFIG L v3.1: the mech arm stands aside on LOUD mornings. Pre-registered Sat
+  22:50 ET / Sun 10:50 SGT, before the first scored order (Mon 2026-11-02 13:00 ET).**
+  Caspar asked whether "bad day → don't trade" is the rule, and whether a bad day means "sell calls
+  because we know it is going down". Measured on SPY 2020-07 → 2026-10 (1,575 days / 1,561 sessions,
+  Alpaca iex bars, `scripts/gap_vs_intraday.py`, `scripts/morning_vs_afternoon.py`, write-up in
+  `docs/RESEARCH_2026-11-01_direction_vs_size.md`): DIRECTION is not forecastable (corr gap→day −0.03,
+  corr morning→afternoon +0.03; after a >1% gap down the day continues down 45% and the high still
+  runs >0.30% above the open 79% of the time), SIZE is (corr morning range→afternoon range +0.50).
+  For the 13:00 pair at 0.30% the afternoon touches a side 42% of the time on the quietest-quarter
+  mornings and 98% on the loudest tenth; at ≈$12 credit vs ≈$30 stop a side needs ~71% to break
+  even, so mornings with range ≥ ~1.0% are negative by construction.
+  CHANGE: `CALL_MECH_MAX_AM_RANGE_PCT=1.0` — when (high−low)/open of the 09:30→13:00 bars exceeds
+  1.0% the pair is skipped, journaled as `stand_aside` with the range, and pinged. Skip-only: the gate
+  never adds a trade, never picks a side (the arm stays two-sided), never touches Caspar's /read
+  trades. Expected to skip ~30% of sessions. VERIFY after the trial: compare skipped vs traded
+  sessions on the NBBO surface (real credits), since loud days also pay more credit. If the skipped
+  cell was in fact positive on real credits, set the key to 0 and say so here.

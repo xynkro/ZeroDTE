@@ -55,7 +55,8 @@ def main():
     src_lines = []
     for src_key, label in (("mech", "MECH 13:00"), ("caspar", "CASPAR"), ("scan", "model read")):
         rs = [c for c in reads if str(c.get("source", "")).startswith(src_key)]
-        if not rs:
+        sa = [c for c in calls if str(c.get("source", "")).startswith(src_key) and c.get("decision") == "stand_aside"]   # v3.1 loud-morning skips
+        if not rs and not sa:
             continue
         tr = [ledger.get(c.get("trade_id")) for c in rs if c.get("trade_id")]
         tr = [t for t in tr if t and t.get("closed") and t.get("broker_realized_pnl") is not None]
@@ -66,7 +67,8 @@ def main():
             if cl and sp:
                 hits.append((cl > sp) if c["lean"] == "up" else (cl < sp))
         src_lines.append(f"{label}: reads {len(rs)} · dir {sum(hits)}/{len(hits)} · trades {len(pnl)} · real ${sum(pnl):+.0f}"
-                         + (f" · mean ${sum(pnl)/len(pnl):+.0f} · worst ${min(pnl):+.0f}" if pnl else ""))
+                         + (f" · mean ${sum(pnl)/len(pnl):+.0f} · worst ${min(pnl):+.0f}" if pnl else "")
+                         + (f" · stood aside {len(sa)} (loud morning: " + ", ".join(f"{c.get('am_range_pct', 0):.2f}%" for c in sa[-5:]) + ")" if sa else ""))
     n_dir = len(dir_hits); n_hit = sum(1 for h in dir_hits if h)
     n_tr = len(dollars); tot = sum(dollars)
     green_days = {}

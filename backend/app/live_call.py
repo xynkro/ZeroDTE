@@ -123,6 +123,33 @@ def _push(orch, text: str) -> None:
         log.warning("live_call telegram failed: %s", e)
 
 
+def morning_range_pct(bars, *, date: str, slot_min: int) -> tuple[float | None, int]:
+    """v3.1 loud-morning gate input: (high − low) / first open, in %, over the bars stamped `date`
+    (ET) from 09:30 up to (not including) `slot_min` minutes-since-midnight ET. Scale-free, so the
+    SPY×10 engine bars are fine. Returns (pct, n_bars); pct is None below 2 bars — the caller must
+    treat None as "cannot judge", never as "quiet"."""
+    o = hi = lo = None
+    n = 0
+    for b in bars:
+        t = b.time
+        if getattr(t, "tzinfo", None) is not None:
+            t = t.astimezone(ET)
+        if t.strftime("%Y-%m-%d") != date:
+            continue
+        m = t.hour * 60 + t.minute
+        if m < 9 * 60 + 30 or m >= slot_min:
+            continue
+        if o is None:
+            o = float(b.open)
+        h, l = float(b.high), float(b.low)
+        hi = h if hi is None else max(hi, h)
+        lo = l if lo is None else min(lo, l)
+        n += 1
+    if n < 2 or not o:
+        return None, n
+    return (hi - lo) / o * 100.0, n
+
+
 def _today_broker_pnl(orch, date: str) -> float:
     tot = 0.0
     for t in orch.paper_trades:

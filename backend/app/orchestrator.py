@@ -812,7 +812,33 @@ class Orchestrator:
 
         async def _run():
             try:
-                from .live_call import submit_call, load_calls
+                from .live_call import submit_call, load_calls, append_call, _push, morning_range_pct
+                # v3.1 (2026-11-01): LOUD-MORNING gate. Size carries into the afternoon (corr +0.50),
+                # direction does not (+0.03): on mornings with range > CALL_MECH_MAX_AM_RANGE_PCT the
+                # afternoon touches a 0.30% side 76–98% of the time, which cannot pay at ~$12 credit
+                # vs ~$30 stop. Skip-only; never picks a side. docs/RESEARCH_2026-11-01_direction_vs_size.md
+                thr = float(settings.CALL_MECH_MAX_AM_RANGE_PCT or 0.0)
+                if thr > 0:
+                    rng, nb = morning_range_pct(list(self.predictor._buffer), date=date, slot_min=m0)
+                    if rng is None:
+                        log.warning("mech gate: only %d morning bars in the buffer — cannot judge, proceeding ungated", nb)
+                    elif rng > thr:
+                        msg = (f"mech {settings.CALL_MECH_SLOT}: LOUD morning — 09:30→{settings.CALL_MECH_SLOT} SPY range "
+                               f"{rng:.2f}% > {thr:.2f}% ({nb} bars). Afternoons like this touch a 0.30% side 76–98% "
+                               f"of the time — standing aside")
+                        log.info(msg)
+                        try:
+                            append_call({"ts": datetime.now(timezone.utc).isoformat(), "date": date,
+                                         "source": f"mech@{settings.CALL_MECH_SLOT}", "lean": "both",
+                                         "decision": "stand_aside", "reason": "loud morning",
+                                         "am_range_pct": round(rng, 3), "am_range_max_pct": thr, "am_bars": nb,
+                                         "dry_run": False})
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("mech gate journal failed: %s", e)
+                        _push(self, "⚪ " + msg)
+                        return
+                    else:
+                        log.info("mech gate: morning range %.2f%% ≤ %.2f%% (%d bars) — proceeding", rng, thr, nb)
                 open_n = sum(1 for t in self.paper_trades if (not t.closed) or t.broker_status == "close_error")
                 n_today = sum(1 for c in load_calls() if c.get("date") == date and c.get("decision") == "submitted")
                 if settings.CALL_MAX_OPEN - open_n < 2 or settings.CALL_MAX_TRADES_PER_DAY - n_today < 2:

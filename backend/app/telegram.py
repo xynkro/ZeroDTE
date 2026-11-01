@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime, timezone
 from typing import Literal
@@ -166,29 +167,48 @@ def send(
         return None
 
 
+_CHAT_ID_RE = re.compile(r"^-?\d{3,}$")
+_warned_bad_group = False
+
+
+def _group_chat_id() -> str:
+    """TELEGRAM_GROUP_CHAT_ID, or "" when unset OR not a Telegram chat id. python-dotenv parses an
+    empty value followed by an inline comment (`KEY=   # note`) as the comment text itself; on
+    2026-11-01 that routed every WaveZero push to chat "# WaveZero own bot…" → 400 chat not found.
+    A non-numeric group id is treated as unset (DM fallback) and warned about once."""
+    global _warned_bad_group
+    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
+    if group and not _CHAT_ID_RE.match(group):
+        if not _warned_bad_group:
+            log.warning("TELEGRAM_GROUP_CHAT_ID is not a chat id (%r) — ignoring it, routing to DM", group[:40])
+            _warned_bad_group = True
+        return ""
+    return group
+
+
+def _topic_id(name: str) -> int | None:
+    raw = os.environ.get(name, "").strip()
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def _route_zero_dte() -> tuple[str | None, int | None]:
     """Return (chat_id, message_thread_id) for Zero DTE Signals topic, or
     (None, None) if not configured (caller falls back to DM)."""
-    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
-    topic = os.environ.get("TELEGRAM_TOPIC_ZERO_DTE", "").strip()
+    group = _group_chat_id()
     if not group:
         return None, None
-    try:
-        return group, int(topic) if topic else None
-    except ValueError:
-        return group, None
+    return group, _topic_id("TELEGRAM_TOPIC_ZERO_DTE")
 
 
 def _route_macro() -> tuple[str | None, int | None]:
     """Return (chat_id, message_thread_id) for Macro Financial News topic."""
-    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
-    topic = os.environ.get("TELEGRAM_TOPIC_MACRO", "").strip()
+    group = _group_chat_id()
     if not group:
         return None, None
-    try:
-        return group, int(topic) if topic else None
-    except ValueError:
-        return group, None
+    return group, _topic_id("TELEGRAM_TOPIC_MACRO")
 
 
 def _route_iron_condor() -> tuple[str | None, int | None]:
@@ -198,14 +218,10 @@ def _route_iron_condor() -> tuple[str | None, int | None]:
     The earlier 'bot can't post in newly-created forum topics' issue was fixed by
     removing + re-adding the bot to the topic — verified working. 🦅 once-daily.
     """
-    group = os.environ.get("TELEGRAM_GROUP_CHAT_ID", "").strip()
-    topic = os.environ.get("TELEGRAM_TOPIC_IRON_CONDOR", "").strip()
+    group = _group_chat_id()
     if not group:
         return None, None
-    try:
-        return group, int(topic) if topic else None
-    except ValueError:
-        return group, None
+    return group, _topic_id("TELEGRAM_TOPIC_IRON_CONDOR")
 
 
 def _emit(

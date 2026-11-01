@@ -185,7 +185,7 @@ class TelegramBotPoller:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                log.error("poll loop error: %s", e)
+                log.error("poll loop error: %r", e)   # %r: httpx timeouts stringify to "" and were unreadable
                 await asyncio.sleep(min(backoff, 30.0))
                 backoff = min(backoff * 2, 30.0)
 

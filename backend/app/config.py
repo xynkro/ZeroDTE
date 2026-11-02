@@ -254,6 +254,8 @@ class Settings:
     # Send-only Telegram (WaveZero): sends share MEIC's bot token safely; only the
     # getUpdates POLLER conflicts (409) — so it's the poller that gets the flag.
     TELEGRAM_POLLER_ENABLED: bool = _b("TELEGRAM_POLLER_ENABLED", True)
+    # Portfolio family (/portfolio in topic 31). Off on WaveZero: Tron owns those commands.
+    TELEGRAM_PUBLIC_COMMANDS_ENABLED: bool = _b("TELEGRAM_PUBLIC_COMMANDS_ENABLED", True)
 
     # ── Config L: live-read probe (pre-registered 2026-10-09) ──
     CALL_AUTO_SUBMIT: bool = _b("CALL_AUTO_SUBMIT", False)        # scan reads → one-lot paper trade

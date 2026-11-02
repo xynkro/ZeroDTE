@@ -221,6 +221,11 @@ class TelegramBotPoller:
         #  - Resolve sender_id → 'caspar' | 'sarah' via user_account_map
         #  - Unknown sender → polite registration nudge with their user_id
         if cmd in PUBLIC_COMMANDS or (cmd in {"start", "help"} and thread_id == 31):
+            # WaveZero sits in the shared group as an admin, so it sees these too. Tron owns them
+            # and DMs the figures; _handle_public replies in-thread, which would post them to the group.
+            if not settings.TELEGRAM_PUBLIC_COMMANDS_ENABLED:
+                log.info("public cmd /%s ignored — TELEGRAM_PUBLIC_COMMANDS_ENABLED is off", cmd)
+                return
             await self._handle_public(cmd, args, chat_id=chat_id, thread_id=thread_id,
                                       sender_id=sender_id, sender_name=sender_name,
                                       reply_to_msg_id=msg_id)

@@ -1,0 +1,14 @@
+[Unit]
+Description=WaveZero close-call test: score logged calls against the SIP daily bar (one shot, no trading)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=xynkro
+WorkingDirectory=/home/xynkro/Trading/ZeroDTE-Wave
+Environment=HOME=/home/xynkro
+Environment=PYTHONPATH=/home/xynkro/Trading/ZeroDTE-Wave
+TimeoutStartSec=300
+ExecStart=/home/xynkro/Trading/ZeroDTE-Wave/.venv/bin/python scripts/close_call.py score
+StandardOutput=append:/var/log/wavezero/closecall.log
+StandardError=append:/var/log/wavezero/closecall.log

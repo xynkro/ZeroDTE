@@ -299,6 +299,17 @@ HANDOFF.md, and act per the table. If RETIRE: flip `WAVE_BAND_STRATEGY_ENABLED=f
 stop the instance, write the post-mortem. The deal that makes running this
 rational is that the gates actually bind.
 
+- **2026-11-02 — CORRECTION to the 2026-10-30 replay expectation (no rule, gate or setting changed).**
+  The "+$51 over 15 sessions, +$3/trade" for 13:00 / 0.30% / $12 reproduces exactly, but that replay took
+  no fees, used the NEAREST strike (often under 0.30%) and retried for 15 minutes. With the engine's
+  actual strike logic, one shot and the $2 fee (`scripts/real_quote_replay.py`, strikes match the live
+  2026-10-30 order): 13:00 is −$22 on 9 trades (21 sides refused by the floor), +$13 if a stop needs two
+  5-minute rows, −$28 on 5 trades using the row nearest 13:01. Treat the mech arm's expectation as about $0,
+  not +$3. Mornings stay worse at 0.30%: 09:45 −$224 on 24 (−$107 with two rows), 09:35 −$179, 10:30 −$156.
+  11:00 is about as flat as 13:00 (−$3 on 17), so 13:00 is the least-bad cell tested with no demonstrated
+  edge. 15 sessions in a down-drift (13:00 calls +$52, puts −$74). At 9 trades per 15 sessions the 25-trade
+  gate takes about 42 sessions, so the 14-day trial will not settle the mech arm.
+
 - **2026-11-01 — CONFIG L v3.1: the mech arm stands aside on LOUD mornings. Pre-registered Sat
   22:50 ET / Sun 10:50 SGT, before the first scored order (Mon 2026-11-02 13:00 ET).**
   Caspar asked whether "bad day → don't trade" is the rule, and whether a bad day means "sell calls
@@ -316,3 +327,35 @@ rational is that the gates actually bind.
   trades. Expected to skip ~30% of sessions. VERIFY after the trial: compare skipped vs traded
   sessions on the NBBO surface (real credits), since loud days also pay more credit. If the skipped
   cell was in fact positive on real credits, set the key to 0 and say so here.
+
+- **2026-11-01 — CAPS: `CALL_MAX_OPEN` 2→3 and `CALL_MAX_TRADES_PER_DAY` 2→3, at Caspar's instruction. Set Sun
+  09:08 ET / 22:08 SGT, before the first scored order (Mon 2026-11-02 13:00 ET / Tue 02:00 SGT).**
+  With 2/2 the 13:00 pair used the whole allowance: a /read still open at 13:00 made the pair stand aside,
+  and a live pair refused later reads. Both keys had to move, because the pair needs two free OPEN slots as
+  well as two free DAY slots. Room is now one read plus the pair. Two reads before 13:00 still make the pair
+  stand aside (1 day slot left). The arms are scored by source, so the gates are unchanged.
+  RISK: the arithmetic worst day goes from -$376 to -$564 (3 x $188 max loss), past the -$480 day line,
+  because the halt only blocks new entries and does not close open ones. Reaching it needs all three
+  stops to fail on a gap or fast move.
+  CLOCKS: US daylight saving ended 2026-11-01, so until 2027-03-14 SGT = ET + 13h: 13:00 ET = 02:00 SGT,
+  15:25 ET = 04:25 SGT, close = 05:00 SGT. Entry and exit gates use zoneinfo ET and are unaffected.
+
+- **2026-11-02 — CLOSE-CALL TEST, pre-registered at Caspar's "go", 07:58 ET / 20:58 SGT, before the first call.**
+  QUESTION (Caspar): can Claude call the SPY close from the start of the day and macro news alone? No trades
+  attach to it and no trading setting changes.
+  CALL: every session by 09:40 ET, made from the 09:30–09:35 ET bars and macro news. It states a direction
+  (close above or below the 09:30 open) and a closing price. Neutral is not allowed and no session may be skipped.
+  No call by 09:40 ET counts as a miss. A close equal to the open counts as a miss.
+  SCORE: Alpaca `1Day` SIP SPY open and close, unadjusted, the source of the baselines. Log:
+  `backend/data/close_calls.jsonl`, written before the outcome is known. Each row names its caller.
+  GATE AT 14 SESSIONS (2 Nov to Thu 19 Nov ET / Fri 20 Nov SGT), both required:
+  (1) direction ≥ 11 of 14, which beats the 52.3% base rate at p = 0.042; (2) median |close − called close| as a
+  percentage of the open under 0.38%, the median miss of "close = open" since 2024.
+  9 or 10 right: extend to 42 sessions, needing 28 right. 8 or fewer: the test ends as failed. Direction ≥ 11 with
+  the price test failed is not a pass; it extends to 42 sessions on the same terms.
+  LIMITS: 14 sessions is harsh. A true 70% caller clears 11 of 14 about 35% of the time, and a coin at the base rate
+  about 4%. Five minutes of the session are known at the call, so the caller holds a small advantage over the
+  open-to-close base rate; the 09:35 price is logged so the result can also be read against "close = 09:35".
+  A PASS buys a paper test of the call as a side filter on Caspar's wave rule (oversold put, overbought call). It
+  does not put wave on the engine and does not touch the Config L gates.
+  NIGHT 1 (2 Nov, by hand): called down / 757.40 at 09:36 ET. SIP open 759.45, close 752.10: direction right, price miss 0.70% ("close = 09:35" missed 0.97%). AUTOMATED from Tue 3 Nov on the VM, same caller (claude-opus-5-5): `scripts/close_call.py`, `wavezero-closecall.timer` 09:35:20 ET, `wavezero-closescore.timer` 16:25 ET. News input is now Finnhub headlines plus the ForexFactory calendar; night 1 had no same-day headlines. The VM log is now the record. Scoring must end the SIP query over 15 minutes back (the free data plan returned 403 otherwise). Rules unchanged.

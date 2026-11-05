@@ -1,0 +1,10 @@
+[Unit]
+Description=Score the SPY close call each session at 16:25 ET (05:25 SGT in winter, 04:25 SGT in summer)
+
+[Timer]
+OnCalendar=Mon..Fri 16:25:00 America/New_York
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -26,7 +26,9 @@ ruvector.db
 backend/ruvector.db
 
 # Local tooling / logs
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/CLAUDE.md
 node_modules/
 *.log
 
